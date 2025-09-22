@@ -1,0 +1,98 @@
+# Rho-1 Recipe Configuration Example
+# This example shows configuration for Rho-1 weighted MTP
+
+# Run metadata
+run:
+  name: "rho1-wmtp_codecontests_exp1"
+  tags:
+    - "rho1"
+    - "wmtp"
+    - "codecontests"
+    - "experiment"
+
+# Model configuration
+model:
+  base_id: "facebook/multi-token-prediction"
+  rm_id: "sfair/Llama-3-8B-RM-Reward-Model"
+  ref_id: "ShearedLlama-1.3B"
+  tokenizer_pad_side: "right"
+  mtp:
+    n_heads: 4
+    horizon: 4
+
+# Training configuration for Rho-1
+train:
+  algo: "rho1-wmtp"  # Using Rho-1 algorithm
+  full_finetune: false
+  lora:
+    enabled: true  # Using LoRA for efficiency
+    r: 32
+    alpha: 64
+    dropout: 0.1
+    target_modules:
+      - "q_proj"
+      - "v_proj"
+      - "o_proj"
+      - "k_proj"
+
+# Optimizer configuration
+optim:
+  optimizer: "adamw"
+  lr: 2e-5  # Slightly higher for LoRA
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+  grad_clip: 1.0
+  scheduler: "linear"
+  warmup_ratio: 0.05
+
+# Data configuration
+data:
+  train:
+    sources: ["contest"]
+    max_length: 1024
+    batch_size: 16
+    pack_sequences: true
+  eval:
+    sources: ["contest", "mbpp"]
+    max_length: 1024
+    batch_size: 16
+    pack_sequences: false
+
+# Batching configuration
+batching:
+  global_batch_tokens: 2000000  # 2M tokens for LoRA
+  micro_batch_size: 2
+  grad_accum_steps: 32
+
+# Loss configuration
+loss:
+  weight_norm: "mean1.0_clip"
+  lambda: 0.5  # Higher weight for Rho-1
+  temperature: 0.5  # Lower temperature for sharper distribution
+  epsilon: 0.1
+  max_weight: 2.5
+
+# Critic configuration (not used but required by schema)
+critic:
+  target: "rm_sequence"
+  token_spread: "uniform"
+  delta_mode: "td"
+  normalize: "zscore"
+
+# Rho-1 specific configuration (active for this recipe)
+rho1:
+  score: "abs_excess_ce"
+  percentile_top_p: 0.15  # Top 15% tokens
+  refresh_per_epoch: true  # Refresh scores each epoch
+
+# Evaluation configuration
+eval:
+  protocol: "meta-mtp"
+  sampling:
+    temperature: 0.1  # Lower temperature for deterministic evaluation
+    top_p: 0.9
+    n: 5  # Generate 5 samples for pass@k
+  metrics:
+    - "contest_pass@1"
+    - "contest_pass@5"
+    - "mbpp_exact"
