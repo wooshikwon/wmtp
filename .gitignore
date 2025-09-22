@@ -1,0 +1,94 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.whl
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+.pytest_cache/
+htmlcov/
+.hypothesis/
+*.cover
+*.log
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Project specific
+.cache/
+models/
+dataset/
+runs/
+outputs/
+checkpoints/
+mlruns/
+*.pt
+*.pth
+*.safetensors
+*.bin
+
+# Config files with secrets
+configs/config.yaml
+configs/recipe.yaml
+!configs/*.example.yaml
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# MLflow
+mlruns/
+mlflow.db
+
+# Logs
+logs/
+*.log
+
+# uv
+.uv/
+
+# Reports
+reports/
+*.html
+*.xml
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+
+# AWS
+.aws/
+
+# Docker
+*.tar
