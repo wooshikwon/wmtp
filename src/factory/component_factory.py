@@ -217,8 +217,16 @@ class ComponentFactory:
             )
 
         loader_config = {
-            "storage_mode": config.storage.mode,
             "cache_dir": str(config.paths.cache),
+            # Nested storage config only (flattened keys removed)
+            "storage": {
+                "mode": config.storage.mode,
+                "s3": (config.storage.s3.model_dump() if config.storage.s3 else None),
+            },
+            # Ensure S3 utils share the same cache root
+            "paths": {
+                "cache": str(config.paths.cache),
+            },
         }
 
         # Add source-specific configuration
@@ -233,8 +241,7 @@ class ComponentFactory:
                 "ref": str(config.paths.models.ref_local),
             }
 
-        if config.storage.mode == "s3" and config.storage.s3:
-            loader_config["s3_config"] = config.storage.s3.model_dump()
+        # Note: s3_config(flat) is no longer supported. Use nested 'storage' only.
 
         if not loader_registry.exists(loader_key):
             # Return mock loader if not implemented yet

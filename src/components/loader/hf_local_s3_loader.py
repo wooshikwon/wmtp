@@ -46,8 +46,9 @@ class HFLocalS3Loader(ModelLoader):
         self.s3_config = config.get("s3_config", {})
 
         # Default model IDs (fallback to HuggingFace Hub)
+        # Note: Recipe/local paths always take precedence over these defaults.
         self.default_model_ids = {
-            "base": "facebook/multi-token-prediction-7b",
+            "base": "facebook/multi-token-prediction",
             "rm": "sfair/Llama-3-8B-RM-Reward-Model",
             "ref": "princeton-nlp/Sheared-LLaMA-1.3B",
         }
