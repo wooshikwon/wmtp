@@ -329,13 +329,18 @@ class TestLocalS3Fallback:
             mock_s3_client.head_bucket.return_value = True
 
             config = {
-                "cache_dir": tmpdir,
+                # Local-first path that doesn't exist
                 "local_path": "/nonexistent/path",
-                "storage_mode": "s3",
-                "s3_config": {
-                    "bucket": "test-bucket",
-                    "region": "us-east-1",
+                # Nested storage config (flattened keys removed)
+                "storage": {
+                    "mode": "s3",
+                    "s3": {
+                        "bucket": "test-bucket",
+                        "region": "us-east-1",
+                    },
                 },
+                # Share cache root
+                "paths": {"cache": tmpdir},
             }
 
             loader = MBPPDatasetLoader(config)
