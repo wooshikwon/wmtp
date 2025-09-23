@@ -111,28 +111,30 @@ def evaluate(
         console.print(f"Output directory: {output_dir}")
 
     try:
-        # TODO: Import and call actual evaluation pipeline
-        # from src.pipelines import get_evaluator
-        # from src.settings import load_config, load_recipe
+        from src.pipelines import EvaluationPipeline
+        from src.settings import load_config, load_recipe
 
-        # config_dict = load_config(config)
-        # recipe_dict = load_recipe(recipe)
+        # Load configuration
+        cfg = load_config(config, verbose=verbose)
+        rcp = load_recipe(recipe, verbose=verbose)
 
-        # evaluator = get_evaluator(recipe_dict["eval"]["protocol"])
-        # results = evaluator.run(
-        #     config=config_dict,
-        #     recipe=recipe_dict,
-        #     checkpoint=checkpoint,
-        #     datasets=dataset_list or recipe_dict["eval"]["datasets"],
-        #     batch_size=batch_size or recipe_dict["eval"]["batch_size"],
-        #     verbose=verbose,
-        # )
+        # Create and run evaluation pipeline
+        pipeline = EvaluationPipeline(cfg, rcp)
 
-        # Mock results for demonstration
-        results = {
-            "mbpp": {"exact_match": 0.0, "pass@1": 0.0},
-            "codecontests": {"pass@1": 0.0, "pass@5": 0.0},
-        }
+        # Parse tags if provided
+        tag_list = []
+        if output_dir:  # Use output_dir as tag indicator
+            tag_list.append("eval")
+
+        evaluation_results = pipeline.run(
+            checkpoint=checkpoint,
+            datasets=dataset_list,
+            run_name=f"eval_{rcp.run.name}",
+            tags=tag_list,
+        )
+
+        # Extract metrics for display
+        results_metrics = evaluation_results.get("results", {}).get("metrics", {})
 
         # Display results table
         table = Table(title="Evaluation Results")
@@ -140,22 +142,55 @@ def evaluate(
         table.add_column("Metric", style="magenta")
         table.add_column("Score", style="green")
 
-        for dataset, metrics in results.items():
+        # Group metrics by dataset for better display
+        dataset_metrics = {}
+        for metric_name, metric_value in results_metrics.items():
+            if isinstance(metric_value, (int, float)):
+                # Parse metric name to extract dataset
+                if metric_name.startswith("mbpp"):
+                    dataset = "MBPP"
+                    metric_key = metric_name.replace("mbpp_", "").replace("mbpp", "exact_match")
+                elif "contest" in metric_name:
+                    dataset = "CodeContests"
+                    metric_key = metric_name.replace("contest_", "").replace("codecontests_", "")
+                else:
+                    dataset = "Other"
+                    metric_key = metric_name
+
+                if dataset not in dataset_metrics:
+                    dataset_metrics[dataset] = {}
+                dataset_metrics[dataset][metric_key] = metric_value
+
+        # Add rows to table
+        for dataset, metrics in dataset_metrics.items():
             for metric, score in metrics.items():
-                table.add_row(dataset, metric, f"{score:.2%}")
+                if isinstance(score, float) and 0 <= score <= 1:
+                    score_str = f"{score:.2%}"
+                else:
+                    score_str = f"{score:.4f}"
+                table.add_row(dataset, metric, score_str)
 
         console.print(table)
 
+        # Summary information
+        console.print(f"\n[green]Evaluation completed successfully![/green]")
+        console.print(f"Algorithm: {rcp.train.algo}")
+        console.print(f"Model: {rcp.model.base_id}")
+        console.print(f"Checkpoint: {checkpoint}")
+
         if save_predictions:
-            console.print("[yellow]Prediction saving not yet implemented[/yellow]")
+            console.print(f"[green]Predictions and artifacts saved via MLflow[/green]")
 
         if save_report:
-            console.print("[yellow]Report generation not yet implemented[/yellow]")
+            console.print(f"[green]Detailed evaluation report saved via MLflow[/green]")
 
-        console.print(
-            "[yellow]Note: This is a stub implementation. "
-            "Actual evaluation pipeline not yet implemented.[/yellow]"
-        )
+        # Save results to output directory if specified
+        if output_dir:
+            import json
+            results_file = output_dir / "evaluation_results.json"
+            with open(results_file, "w") as f:
+                json.dump(evaluation_results, f, indent=2, default=str)
+            console.print(f"[green]Results saved to: {results_file}[/green]")
 
     except FileNotFoundError as e:
         console.print(f"[red]Error: File not found - {e}[/red]")

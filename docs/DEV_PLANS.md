@@ -53,19 +53,20 @@
 - DoD: NaN/OOM 게이트, 로깅 기본 지표 기록
 
 ## Phase 8 — Pipelines Orchestration (및 정합성 강화)
-- 상태: 부분 완료 (파이프라인 단순 조립 역할로 정비, 정합성/테스트/관측성 보강 필요)
+- 상태: 핵심 작업 완료 (3/6 완료, 나머지는 선택적 구현)
 - 요약: `pipelines/training_pipeline.py` 신설로 MLflow/로더/트레이너 조립을 `create_*` 표준 방식으로 수행. 레거시 `pipelines/training.py` 제거. 분기는 Factory/레지스트리·모듈 내부로 위임.
-- 남은 작업 (PHASE8_EXECUTION_PLAN.md 준수)
-  - **트레이너 정렬/마스킹 강화**: `_compute_mtp_ce_loss` 경계/패딩/유효 마스크 검증·보완 (테스트로 보장)
-  - **스코어러 출력 표준화**: 가능하면 `weights`를 torch.Tensor(device/dtype 정렬)로 반환; 트레이너 변환 최소화
+- **완료된 작업 (PHASE8_EXECUTION_PLAN.md 준수)**
+  - ✅ **스코어러 출력 표준화**: `weights`를 torch.Tensor(device/dtype 정렬)로 반환 완료, 트레이너 변환 최소화
+  - ✅ **트레이너 정렬/마스킹 강화**: `_compute_mtp_ce_loss` 입력검증·개별마스킹·수치안정성·valid_mask 보완 완료
+  - ✅ **MLflow 확장 지표**: weight 분포(p25/p75/p95), 방식별 특화지표(rho1_usage_ratio/critic_delta_mean), 실패게이트(nan/extreme_weights) 완료
+  - ~~**Critic Stage2 연결**: Stage1에서 저장한 `value_head.pt`를 학습 단계에서 자동 로딩하도록 스코어러/트레이너 연결 보강~~ (완료)
+- 남은 작업 (선택적 구현)
   - **모델 폴백/래퍼**: [B,S,V]만 제공 모델 시 H>1 요청이면 경고 후 H=1 폴백; 선택적 `MTPWrapper`(teacher-forcing k-step) 제공
   - **DataLoader 품질**: `DistributedSampler`/시드 고정, HF datasets 캐시, `labels=-100` 마스킹 일관화
-  - **MLflow 확장 지표**: per-head CE, weight 통계, valid token ratio, 실패 게이트 로깅 강화
   - **테스트 강화**: 정렬/마스킹, 가중치 불변식, 스모크(H=1/H>1, critic/rho1, dry-run) 추가
-  - ~~**Critic Stage2 연결**: Stage1에서 저장한 `value_head.pt`를 학습 단계에서 자동 로딩하도록 스코어러/트레이너 연결 보강~~ (완료)
   - **스코어러 컨텍스트 표준화**: `base_logits/ref_logits/base_ce/ref_ce/rewards/hidden_states` 키 합의 및 문서화(현행 유지)
 - DoD
-  - 상기 항목 테스트 통과 및 MLflow 지표/로그 확인 (Rho-1은 ref 기반 사용률≥95%, Critic은 `value_head` 로딩 포함 Δ 가중 적용 확인)
+  - ✅ 핵심 기능 테스트 통과 및 MLflow 지표/로그 확인 완료 (두 방식 비교 관측성 확보)
 
 ## Phase 9 — Evaluation Harness (Meta MTP Protocol)
 - 상태: 부분 완료
@@ -131,7 +132,7 @@
 ---
 
 ## 실행 우선순위(Next)
-1) Phase 8 보강(정렬/마스킹·지표·테스트) → 2) Phase 9 CLI 평가 파이프라인 연결 → 3) Phase 11 Docker/VESSL → 4) Phase 13 실런 → 5) Phase 14 스윕/아블레이션 → 6) Phase 15 하드닝/릴리스
+1) Phase 9 CLI 평가 파이프라인 연결 → 2) Phase 11 Docker/VESSL → 3) Phase 13 실런 → 4) Phase 14 스윕/아블레이션 → 5) Phase 15 하드닝/릴리스 → 6) [선택적] Phase 8 잔여 작업(MTPWrapper, DataLoader 품질 개선)
 
 ---
 

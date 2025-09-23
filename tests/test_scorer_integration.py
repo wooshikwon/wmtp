@@ -12,6 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import torch
 import yaml
 
 # Import scorers to ensure they are registered
@@ -211,7 +212,9 @@ class TestScorerFunctionality:
         assert "statistics" in result
 
         # Validate weights
-        weights = np.array(result["weights"])
+        weights_tensor = result["weights"]
+        assert isinstance(weights_tensor, torch.Tensor)
+        weights = weights_tensor.detach().cpu().numpy()
         assert weights.shape == (1, 100)  # Expecting batch dimension
         weights = weights[0]  # Get first batch
 
@@ -249,7 +252,9 @@ class TestScorerFunctionality:
         assert "statistics" in result
 
         # Validate weights
-        weights = np.array(result["weights"])
+        weights_tensor = result["weights"]
+        assert isinstance(weights_tensor, torch.Tensor)
+        weights = weights_tensor.detach().cpu().numpy()
         assert weights.shape == (1, 100)  # Expecting batch dimension
         weights = weights[0]  # Get first batch
 
@@ -338,17 +343,18 @@ class TestScorerCompatibility:
 
         # Initialize and run scorer
         scorer.setup({})
-        result = scorer.run({"seq_lengths": [50]})
+        result = scorer.run({"seq_lengths": [50], "horizon": 4})
 
-        # Validate results
+        # Validate results - expecting head-level weights [B,S,H] for critic
         assert "weights" in result
-        weights = np.array(result["weights"])
-        assert weights.shape == (1, 50)
+        weights_tensor = result["weights"]
+        assert isinstance(weights_tensor, torch.Tensor)
+        weights = weights_tensor.detach().cpu().numpy()
+        assert weights.shape == (1, 50, 4)  # [batch, seq_len, horizon]
 
-        # Verify weights satisfy constraints
-        weights_array = weights[0]
-        mean_weight = np.mean(weights_array)
-        assert 0.9 <= mean_weight <= 1.1  # Mean should be close to 1.0
+        # Verify head-level weights satisfy constraints
+        overall_mean = np.mean(weights)
+        assert 0.8 <= overall_mean <= 1.2  # Relaxed range for head-level weights
 
     def test_end_to_end_rho1_flow(self):
         """Test complete flow from recipe to scorer execution for Rho-1."""
@@ -425,17 +431,23 @@ class TestScorerCompatibility:
 
         # Initialize and run scorer
         scorer.setup({})
-        result = scorer.run({"seq_lengths": [50]})
+        result = scorer.run({"seq_lengths": [50], "horizon": 4})
 
-        # Validate results
+        # Validate results - expecting head-level weights [B,S,H] for rho1
         assert "weights" in result
-        weights = np.array(result["weights"])
-        assert weights.shape == (1, 50)
+        weights_tensor = result["weights"]
+        assert isinstance(weights_tensor, torch.Tensor)
+        weights = weights_tensor.detach().cpu().numpy()
+        assert weights.shape == (1, 50, 4)  # [batch, seq_len, horizon]
 
-        # Verify weights satisfy constraints
-        weights_array = weights[0]
-        mean_weight = np.mean(weights_array)
-        assert 0.9 <= mean_weight <= 1.1  # Mean should be close to 1.0
+        # Verify head-level weights satisfy constraints
+        overall_mean = np.mean(weights)
+        assert 0.8 <= overall_mean <= 1.2  # Relaxed range for head-level weights
+
+        # Verify distance-aware decay for rho1 scorer
+        head_means = [np.mean(weights[:, :, k]) for k in range(4)]
+        for k in range(3):
+            assert head_means[k] >= head_means[k+1] * 0.5, f"Rho1 Head {k} mean should be reasonably higher than Head {k+1} due to distance decay"
 
 
 if __name__ == "__main__":

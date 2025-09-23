@@ -24,56 +24,76 @@ from src.utils import get_dist_manager
 console = Console()
 
 
-def _compute_mtp_ce_loss(
-    logits: torch.Tensor,
-    target_ids: torch.Tensor,
+def _compute_weighted_mtp_loss(
+    logits: torch.Tensor,        # [B, S, H, V]
+    target_ids: torch.Tensor,    # [B, S]
+    head_weights: torch.Tensor,  # [B, S, H] - 새로운 헤드별 가중치!
     horizon: int,
     ignore_index: int = -100,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    Compute per-token average CE across valid MTP heads with k-step alignment and masking.
+    연구제안서 정확 구현: L_WMTP = Σ(k=0 to H-1) w_{t+k} × CE_k
 
-    For head index k (0-based), we align logits at position t with label at t+(k+1).
-    Only positions where t+(k+1) < S are valid for that head.
+    각 헤드별 CE에 해당 헤드의 가중치를 직접 적용하여
+    토큰 중요도가 손실에 정확히 반영되도록 함.
 
     Args:
-        logits: [batch, seq_len, horizon, vocab]
-        target_ids: [batch, seq_len]
-        horizon: number of future prediction heads (H)
-        ignore_index: label value to ignore (masked positions)
+        logits: [batch, seq_len, horizon, vocab] - MTP 모델 출력
+        target_ids: [batch, seq_len] - 타겟 라벨
+        head_weights: [batch, seq_len, horizon] - 헤드별 가중치 매트릭스
+        horizon: 예측 헤드 수 (4)
+        ignore_index: 무시할 라벨 값
 
     Returns:
-        ce_avg: [batch, seq_len] average CE across valid heads per position (0 where invalid)
-        valid_mask: [batch, seq_len] boolean mask where at least one head is valid
+        weighted_loss: 가중 평균 손실 (scalar)
+        valid_mask: 유효한 위치 마스크 [batch, seq_len]
     """
+    # Input validation
+    if not isinstance(logits, torch.Tensor) or not isinstance(target_ids, torch.Tensor):
+        raise TypeError("logits and target_ids must be torch.Tensor")
+
+    if not isinstance(head_weights, torch.Tensor):
+        raise TypeError("head_weights must be torch.Tensor")
+
+    if logits.ndim != 4:
+        raise ValueError(f"logits must be 4D [B,S,H,V], got shape {logits.shape}")
+
+    if target_ids.ndim != 2:
+        raise ValueError(f"target_ids must be 2D [B,S], got shape {target_ids.shape}")
+
+    if head_weights.ndim != 3:
+        raise ValueError(f"head_weights must be 3D [B,S,H], got shape {head_weights.shape}")
+
     bsz, seqlen, H, vocab = logits.shape
+    if target_ids.shape != (bsz, seqlen):
+        raise ValueError(f"Shape mismatch: logits {logits.shape} vs target_ids {target_ids.shape}")
+
+    if head_weights.shape != (bsz, seqlen, H):
+        raise ValueError(f"Shape mismatch: head_weights {head_weights.shape} vs expected {(bsz, seqlen, H)}")
+
     if horizon != H:
-        raise ValueError(
-            f"Mismatch between logits heads ({H}) and configured horizon ({horizon})"
-        )
+        raise ValueError(f"Mismatch between logits heads ({H}) and configured horizon ({horizon})")
 
     device = logits.device
     dtype = logits.dtype
 
-    # Accumulate CE sum and counts per position
-    ce_sum = torch.zeros((bsz, seqlen), device=device, dtype=dtype)
-    count = torch.zeros((bsz, seqlen), device=device, dtype=dtype)
+    # 헤드별 가중 CE 누적용
+    weighted_ce_sum = torch.zeros((bsz, seqlen), device=device, dtype=dtype)
+    total_weights = torch.zeros((bsz, seqlen), device=device, dtype=dtype)
 
-    # Optional precomputed mask from labels (ignore_index)
-    has_label_mask = target_ids == ignore_index
-
-    # For k-th head (k=0 -> 1-step ahead), align and compute CE
+    # 각 헤드별로 CE 계산 및 가중치 적용
     for k in range(H):
-        shift = k + 1
+        shift = k + 1  # k번째 헤드는 t+(k+1) 위치 예측
         valid_len = seqlen - shift
         if valid_len <= 0:
-            break
+            continue
 
-        # Slice logits and labels for valid region
+        # 유효 영역 슬라이싱
         logits_k = logits[:, :valid_len, k, :]  # [B, valid_len, V]
-        labels_k = target_ids[:, shift : shift + valid_len]  # [B, valid_len]
+        labels_k = target_ids[:, shift:shift + valid_len]  # [B, valid_len]
+        weights_k = head_weights[:, :valid_len, k]  # [B, valid_len]
 
-        # Apply cross-entropy over time dimension
+        # 헤드별 CE 계산
         ce_k = F.cross_entropy(
             logits_k.transpose(1, 2),  # [B, V, valid_len]
             labels_k,
@@ -81,23 +101,31 @@ def _compute_mtp_ce_loss(
             reduction="none",
         )  # [B, valid_len]
 
-        # Map back to [B, S]: positions t in [0, valid_len-1]
-        ce_sum[:, :valid_len] = ce_sum[:, :valid_len] + ce_k
+        # 유효 위치 마스킹 (ignore_index 제외)
+        valid_k_mask = (labels_k != ignore_index).to(dtype)  # [B, valid_len]
 
-        # Count valid positions (exclude ignore_index)
-        if has_label_mask.any():
-            # Valid where label != ignore_index
-            valid_k = (~has_label_mask[:, shift : shift + valid_len]).to(dtype)
-            count[:, :valid_len] = count[:, :valid_len] + valid_k
-        else:
-            count[:, :valid_len] = count[:, :valid_len] + 1.0
+        # 가중 CE: w_{t+k} × CE_k (연구제안서 공식!)
+        weighted_ce_k = weights_k * ce_k * valid_k_mask  # [B, valid_len]
+        effective_weights_k = weights_k * valid_k_mask   # [B, valid_len]
 
-    # Avoid division by zero
-    count_clamped = torch.clamp(count, min=1.0)
-    ce_avg = ce_sum / count_clamped
+        # 전체 시퀀스에 누적 ([B, S] 형태로 맞춤)
+        weighted_ce_sum[:, :valid_len] += weighted_ce_k
+        total_weights[:, :valid_len] += effective_weights_k
 
-    valid_mask = count > 0
-    return ce_avg, valid_mask
+    # 가중 평균 계산 (분모 0 방지)
+    total_weights_clamped = torch.clamp(total_weights, min=1e-8)
+    weighted_loss_per_token = weighted_ce_sum / total_weights_clamped
+
+    # 유효 마스크: 최소 하나의 헤드에서 유효한 위치
+    valid_mask = total_weights > 1e-8
+
+    # 최종 스칼라 손실: 유효 토큰들의 평균
+    if valid_mask.any():
+        final_loss = (weighted_loss_per_token * valid_mask.to(dtype)).sum() / valid_mask.sum().to(dtype)
+    else:
+        final_loss = torch.tensor(0.0, device=device, dtype=dtype)
+
+    return final_loss, valid_mask
 
 
 @trainer_registry.register(
@@ -123,6 +151,7 @@ class MTPWeightedCETrainer(BaseComponent):
         self.optimizer = None
         self.global_step: int = 0
         self.horizon: int = int(self.config.get("horizon", 4))
+        self._last_score_out: dict[str, Any] | None = None
 
     def setup(self, ctx: dict[str, Any]) -> None:
         super().setup(ctx)
@@ -199,10 +228,7 @@ class MTPWeightedCETrainer(BaseComponent):
             if not logits.requires_grad:
                 logits = logits.detach().requires_grad_(True)
 
-            # Compute average CE across valid heads per token with k-step alignment
-            ce_per_token, valid_mask = _compute_mtp_ce_loss(
-                logits, target_ids, self.horizon, ignore_index=-100
-            )  # [B, S], [B, S]
+            # 새로운 헤드별 가중치 기반 손실 계산 시작
 
             # Build scorer context to get token weights
             if self.scorer is not None:
@@ -267,37 +293,56 @@ class MTPWeightedCETrainer(BaseComponent):
                             "[yellow]Reference forward failed; fallback to base-only scoring this step.[/yellow]"
                         )
 
+                # 새로운 헤드별 가중치 기반 접근 (연구제안서 구현)
                 score_out = self.scorer.run(scorer_ctx)
-                w_out = score_out.get("weights")
-                if isinstance(w_out, torch.Tensor):
-                    weights = w_out.to(
-                        device=ce_per_token.device, dtype=ce_per_token.dtype
+                head_weights_out = score_out.get("weights")  # [B, S, H] 형태
+
+                # Store score_out for extended metrics
+                self._last_score_out = score_out
+
+                # Convert head weights to tensor
+                if isinstance(head_weights_out, torch.Tensor):
+                    head_weights = head_weights_out.to(
+                        device=logits.device, dtype=logits.dtype
                     )
                 else:
-                    weights_np = np.asarray(w_out)
-                    if weights_np.ndim == 1:
-                        weights_np = weights_np[None, :]
-                    weights = torch.tensor(
-                        weights_np, device=ce_per_token.device, dtype=ce_per_token.dtype
+                    head_weights_np = np.asarray(head_weights_out)
+                    head_weights = torch.tensor(
+                        head_weights_np, device=logits.device, dtype=logits.dtype
                     )
-                # Align shapes conservatively
-                if weights.shape != ce_per_token.shape:
-                    min_len = min(weights.shape[1], ce_per_token.shape[1])
-                    weights = weights[:, :min_len]
-                    ce_per_token = ce_per_token[:, :min_len]
-                    valid_mask = valid_mask[:, :min_len]
+
+                # 새로운 가중 MTP 손실 계산 (연구제안서 정확 구현)
+                weighted_loss, valid_mask = _compute_weighted_mtp_loss(
+                    logits=logits,           # [B, S, H, V]
+                    target_ids=target_ids,   # [B, S]
+                    head_weights=head_weights, # [B, S, H]
+                    horizon=self.horizon,
+                    ignore_index=-100
+                )
+
+                # Lambda scaling
+                lambda_w = float(self.loss_cfg.get("lambda", 0.3))
+                loss = lambda_w * weighted_loss  # 최종 스칼라 손실
+
             else:
-                weights = torch.ones_like(ce_per_token)
-                valid_mask = torch.ones_like(ce_per_token, dtype=torch.bool)
+                # Scorer가 없는 경우: uniform weights 사용
+                B, S, H, V = logits.shape
+                uniform_weights = torch.ones((B, S, H), device=logits.device, dtype=logits.dtype)
 
-            # Apply lambda scaling
-            lambda_w = float(self.loss_cfg.get("lambda", 0.3))
-            loss_per_token = lambda_w * weights * ce_per_token  # [B, S]
+                weighted_loss, valid_mask = _compute_weighted_mtp_loss(
+                    logits=logits,
+                    target_ids=target_ids,
+                    head_weights=uniform_weights,
+                    horizon=self.horizon,
+                    ignore_index=-100
+                )
 
-            # Compute masked mean over valid tokens only
-            valid_mask_f = valid_mask.to(ce_per_token.dtype)
-            denom = torch.clamp(valid_mask_f.sum(), min=1.0)
-            loss = (loss_per_token * valid_mask_f).sum() / denom
+                lambda_w = float(self.loss_cfg.get("lambda", 0.3))
+                loss = lambda_w * weighted_loss
+                self._last_score_out = None
+
+            # 새로운 헤드별 가중치 기반 손실 계산 완료
+            # loss는 위에서 이미 계산됨
 
         # Backward and optimize
         loss.backward()
@@ -352,16 +397,67 @@ class MTPWeightedCETrainer(BaseComponent):
                             else 0.0,
                         }
                     )
-                    # Weight statistics on aligned region
+                    # Extended weight statistics on aligned region
                     w_eff = weights[valid_mask]
                     if w_eff.numel() > 0:
-                        metrics.update(
-                            {
-                                "train/weight_mean": float(w_eff.mean().item()),
-                                "train/weight_min": float(w_eff.min().item()),
-                                "train/weight_max": float(w_eff.max().item()),
-                            }
-                        )
+                        # Basic weight statistics
+                        weight_stats = {
+                            "train/weight_mean": float(w_eff.mean().item()),
+                            "train/weight_min": float(w_eff.min().item()),
+                            "train/weight_max": float(w_eff.max().item()),
+                            "train/weight_std": float(w_eff.std().item()),
+                        }
+
+                        # Weight distribution percentiles (계획서 요구사항)
+                        try:
+                            weight_stats.update({
+                                "train/weight_p25": float(torch.quantile(w_eff, 0.25).item()),
+                                "train/weight_p75": float(torch.quantile(w_eff, 0.75).item()),
+                                "train/weight_p95": float(torch.quantile(w_eff, 0.95).item()),
+                            })
+                        except Exception:
+                            # Fallback if quantile fails (e.g., older PyTorch versions)
+                            sorted_w = torch.sort(w_eff)[0]
+                            n = sorted_w.numel()
+                            weight_stats.update({
+                                "train/weight_p25": float(sorted_w[int(n * 0.25)].item()),
+                                "train/weight_p75": float(sorted_w[int(n * 0.75)].item()),
+                                "train/weight_p95": float(sorted_w[int(n * 0.95)].item()),
+                            })
+
+                        # Failure gates strengthening (계획서 요구사항)
+                        weight_stats.update({
+                            "train/nan_weights": int((~torch.isfinite(weights)).sum().item()),
+                            "train/extreme_weights": int((weights > 5.0).sum().item()),
+                        })
+
+                        metrics.update(weight_stats)
+
+                    # Scorer-specific metrics (계획서 요구사항: 방식별 특화 지표)
+                    if hasattr(self, '_last_score_out') and self._last_score_out:
+                        # Detect scorer type
+                        scorer_type = self.scorer.__class__.__name__.lower() if self.scorer else "unknown"
+
+                        if "rho1" in scorer_type:
+                            # Rho-1 specific metrics
+                            scores = self._last_score_out.get("scores")
+                            if scores:
+                                scores_tensor = torch.tensor(scores) if not isinstance(scores, torch.Tensor) else scores
+                                total_tokens = float(scores_tensor.numel())
+                                # 임계값 이상의 토큰들의 비율 (usage ratio)
+                                threshold = 0.5  # 임계값 설정
+                                high_score_tokens = float((scores_tensor > threshold).sum().item())
+                                metrics["train/rho1_usage_ratio"] = (
+                                    high_score_tokens / total_tokens if total_tokens > 0 else 0.0
+                                )
+
+                        elif "critic" in scorer_type:
+                            # Critic specific metrics
+                            deltas = self._last_score_out.get("deltas")
+                            if deltas:
+                                deltas_tensor = torch.tensor(deltas) if not isinstance(deltas, torch.Tensor) else deltas
+                                metrics["train/critic_delta_mean"] = float(deltas_tensor.mean().item())
+                                metrics["train/critic_delta_std"] = float(deltas_tensor.std().item())
                     # Valid token ratio
                     total_tokens = float(valid_mask.numel())
                     valid_tokens = float(valid_mask.sum().item())

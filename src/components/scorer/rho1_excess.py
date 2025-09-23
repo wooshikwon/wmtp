@@ -25,15 +25,22 @@ from src.components.registry import scorer_registry
 @scorer_registry.register("rho1-excess-v1", category="scorer", version="1.0.0")
 class Rho1ExcessScorer(BaseComponent):
     """
-    Rho-1 reference-based token importance scorer.
+    Rho-1 reference-based head-level importance scorer.
 
-    Computes token importance weights based on excess cross-entropy
-    between base and reference models.
+    Computes head-level importance weights based on excess cross-entropy
+    between base and reference models, using distance-aware decay to
+    generate different weights for each MTP prediction head.
+
+    Mathematical foundation:
+    1. Token importance: s_t = |CE^ref_t - CE^base_t| (absolute CE excess)
+    2. Head weighting: w_{t,k} = s_t * exp(-decay_rate * k)
+    3. Distance decay: closer heads (k=0) get stronger weights
+    4. Output format: [batch, seq_len, horizon] for MTP compatibility
     """
 
     def __init__(self, config: dict[str, Any] | None = None):
         """
-        Initialize Rho-1 scorer.
+        Initialize Rho-1 head-level scorer.
 
         Args:
             config: Scorer configuration including:
@@ -41,6 +48,11 @@ class Rho1ExcessScorer(BaseComponent):
                 - percentile_top_p: Top percentile to emphasize (default: 0.2)
                 - refresh_per_epoch: Whether to refresh scores (default: False)
                 - temperature: Softmax temperature (default: 0.7)
+                - head_decay_rate: Head distance decay rate (default: 0.5)
+                - normalize_heads: Whether to normalize head weights (default: True)
+                - head_temperature: Temperature for head softmax (default: 0.7)
+                - epsilon: Minimum weight value (default: 0.05)
+                - max_weight: Maximum weight value (default: 3.0)
         """
         super().__init__(config)
         self.score_method = self.config.get("score", "abs_excess_ce")
@@ -53,6 +65,8 @@ class Rho1ExcessScorer(BaseComponent):
     ) -> torch.Tensor:
         """
         Compute cross-entropy loss for each token.
+
+        Used as input for head-level weight computation.
 
         Args:
             logits: Model output logits [batch, seq_len, vocab_size]
@@ -85,7 +99,10 @@ class Rho1ExcessScorer(BaseComponent):
         self, base_ce: np.ndarray, ref_ce: np.ndarray, method: str = "abs_excess"
     ) -> np.ndarray:
         """
-        Compute cross-entropy excess scores.
+        Compute cross-entropy excess scores for token importance.
+
+        These token-level scores are later converted to head-level weights
+        using distance-aware decay in _compute_head_weights().
 
         Following BLUEPRINT formula:
         - abs_excess: s_t = |CE^ref_t - CE^base_t|
@@ -93,12 +110,12 @@ class Rho1ExcessScorer(BaseComponent):
         - diff_excess: s_t = CE^ref_t - CE^base_t
 
         Args:
-            base_ce: Cross-entropy from base model
-            ref_ce: Cross-entropy from reference model
+            base_ce: Cross-entropy from base model [seq_len]
+            ref_ce: Cross-entropy from reference model [seq_len]
             method: Scoring method
 
         Returns:
-            Excess scores for each token
+            Token-level excess scores [seq_len]
         """
         if method == "abs_excess_ce" or method == "abs_excess":
             # Absolute difference: |CE^ref - CE^base|
@@ -122,16 +139,19 @@ class Rho1ExcessScorer(BaseComponent):
         """
         Apply percentile-based emphasis to top-scoring tokens.
 
+        Emphasizes tokens in top p% percentile before converting to head-level weights.
+        This focuses head-level learning on the most important tokens.
+
         Following BLUEPRINT: emphasize tokens in top p% percentile
         to focus learning on most important tokens.
 
         Args:
-            scores: Raw importance scores
+            scores: Raw token importance scores [seq_len]
             percentile_top_p: Top percentile to emphasize (0.0-1.0)
             emphasis_type: Type of emphasis ('soft', 'hard', 'sigmoid')
 
         Returns:
-            Scores with emphasis applied
+            Emphasized token scores [seq_len]
         """
         # Calculate threshold for top p%
         threshold = np.percentile(scores, (1 - percentile_top_p) * 100)
@@ -158,66 +178,74 @@ class Rho1ExcessScorer(BaseComponent):
 
         return scores * emphasis
 
-    def normalize_and_weight(
-        self,
-        scores: np.ndarray,
-        temperature: float = 0.7,
-        epsilon: float = 0.05,
-        max_weight: float = 3.0,
-    ) -> np.ndarray:
+    def _compute_head_weights(self, token_weights: np.ndarray, horizon: int = 4) -> np.ndarray:
         """
-        Apply full normalization pipeline as per BLUEPRINT.
+        Convert token-level weights to head-level weights using distance-aware decay.
 
-        Pipeline (same as CriticDeltaScorer):
-        1. Z-score normalization
-        2. Softmax with temperature
-        3. Scale to mean 1.0
-        4. Clip to [ε, W_max]
-        5. Re-normalize to mean 1.0
+        Each head k predicts token at position t+k+1, so closer predictions should
+        receive stronger weights. Uses exponential decay based on prediction distance.
+
+        Mathematical foundation:
+        - Head k predicts t+k+1 position (k=0,1,2,3 for horizon=4)
+        - Distance factor: f_k = exp(-decay_rate * k)
+        - Head weight: w_{t,k} = s_t * f_k
+        - Normalization: ensure each token's head weights sum appropriately
 
         Args:
-            scores: Raw importance scores
-            temperature: Softmax temperature
-            epsilon: Minimum weight value
-            max_weight: Maximum weight value
+            token_weights: Token importance scores [batch, seq_len]
+            horizon: Number of MTP heads (default=4)
 
         Returns:
-            Normalized weights with mean 1.0
+            head_weights: Head-level importance weights [batch, seq_len, horizon]
         """
-        # Step 1: Z-score normalization
-        mean = np.mean(scores)
-        std = np.std(scores) + 1e-8
-        normalized = (scores - mean) / std
+        batch_size, seq_len = token_weights.shape
+        head_weights = np.zeros((batch_size, seq_len, horizon))
 
-        # Step 2: Softmax with temperature
-        # w_t = softmax(s_t / T)
-        exp_values = np.exp(normalized / temperature)
-        weights = exp_values / np.sum(exp_values)
+        # Distance-based decay rate (configurable)
+        decay_rate = self.config.get("head_decay_rate", 0.5)
 
-        # Step 3: Scale to have mean 1.0
-        # Since softmax sums to 1, multiply by length for mean 1
-        L = float(len(weights))
-        weights = weights * L
+        # Compute distance factors for each head
+        # Head k=0: immediate next token (factor=1.0)
+        # Head k=1: token after next (factor=exp(-0.5)≈0.6)
+        # Head k=2: two tokens ahead (factor=exp(-1.0)≈0.37)
+        # Head k=3: three tokens ahead (factor=exp(-1.5)≈0.22)
+        distance_factors = np.array([np.exp(-decay_rate * k) for k in range(horizon)])
 
-        # Step 4: Clip to valid range [ε, W_max]
-        weights = np.clip(weights, epsilon, max_weight)
+        for b in range(batch_size):
+            for t in range(seq_len):
+                token_score = token_weights[b, t]
 
-        # Step 5: Re-normalize mean to exactly 1.0 without a second clip
-        total = np.sum(weights)
-        if total > 0:
-            scale = L / total
-            weights = weights * scale
+                # Apply distance-based weighting to each head
+                raw_head_weights = token_score * distance_factors
 
-        # Final safety check for NaN/Inf
-        if not np.all(np.isfinite(weights)):
-            # Fallback to uniform weights
-            weights = np.ones_like(weights)
+                # Optional: apply softmax normalization across heads for this token
+                # This ensures head weights sum to the original token weight
+                if self.config.get("normalize_heads", True):
+                    # Softmax with temperature for smooth distribution
+                    temp = self.config.get("head_temperature", 0.7)
+                    exp_vals = np.exp(raw_head_weights / temp)
+                    softmax_weights = exp_vals / (np.sum(exp_vals) + 1e-8)
 
-        return weights
+                    # Scale to preserve original token weight magnitude
+                    head_weights[b, t] = softmax_weights * token_score
+                else:
+                    # Direct application without normalization
+                    head_weights[b, t] = raw_head_weights
+
+        # Final global normalization to ensure reasonable overall magnitude
+        # Target: overall mean ≈ 1.0 for compatibility with trainer expectations
+        current_mean = np.mean(head_weights)
+        if current_mean > 0:
+            target_mean = 1.0
+            scale_factor = target_mean / current_mean
+            head_weights = head_weights * scale_factor
+
+        return head_weights
+
 
     def run(self, ctx: dict[str, Any]) -> dict[str, Any]:
         """
-        Compute token importance scores using reference model CE excess.
+        Compute head-level importance weights using reference model CE excess.
 
         Args:
             ctx: Context containing:
@@ -227,10 +255,11 @@ class Rho1ExcessScorer(BaseComponent):
                 - ref_ce: Pre-computed CE from reference model [batch, seq_len] (optional)
                 - target_ids: Target token IDs [batch, seq_len] (optional)
                 - seq_lengths: Actual sequence lengths [batch]
+                - horizon: Number of MTP heads (optional, default=4)
 
         Returns:
             Dictionary containing:
-                - weights: Token-level importance weights [batch, seq_len]
+                - weights: Head-level importance weights [batch, seq_len, horizon]
                 - scores: Raw CE excess scores [batch, seq_len]
                 - statistics: Weight statistics
         """
@@ -243,6 +272,7 @@ class Rho1ExcessScorer(BaseComponent):
         ref_ce = ctx.get("ref_ce")
         target_ids = ctx.get("target_ids")
         seq_lengths = ctx.get("seq_lengths", [100])
+        horizon = ctx.get("horizon", 4)  # MTP heads count
 
         # For demonstration without actual model inputs
         if base_ce is None or ref_ce is None:
@@ -263,7 +293,7 @@ class Rho1ExcessScorer(BaseComponent):
                 batch_size = len(seq_lengths)
                 max_seq_len = max(seq_lengths)
 
-                all_weights = []
+                all_token_weights = []
                 all_scores = []
 
                 for b in range(batch_size):
@@ -290,20 +320,39 @@ class Rho1ExcessScorer(BaseComponent):
                         scores, self.percentile_top_p, emphasis_type="soft"
                     )
 
-                    # Normalize and compute weights
-                    weights = self.normalize_and_weight(
-                        emphasized_scores,
-                        temperature=self.temperature,
-                        epsilon=self.config.get("epsilon", 0.05),
-                        max_weight=self.config.get("max_weight", 3.0),
-                    )
+                    # Convert emphasized scores to token-level weights (simplified normalization)
+                    # Z-score normalization + softmax
+                    mean_score = np.mean(emphasized_scores)
+                    std_score = np.std(emphasized_scores) + 1e-8
+                    normalized_scores = (emphasized_scores - mean_score) / std_score
 
-                    all_weights.append(weights)
+                    # Softmax with temperature
+                    exp_values = np.exp(normalized_scores / self.temperature)
+                    token_weights = exp_values / np.sum(exp_values)
+
+                    # Scale to have mean 1.0 (preserve magnitude)
+                    token_weights = token_weights * float(len(token_weights))
+
+                    # Clip to valid range
+                    epsilon = self.config.get("epsilon", 0.05)
+                    max_weight = self.config.get("max_weight", 3.0)
+                    token_weights = np.clip(token_weights, epsilon, max_weight)
+
+                    # Re-normalize to mean 1.0
+                    total = np.sum(token_weights)
+                    if total > 0:
+                        scale = float(len(token_weights)) / total
+                        token_weights = token_weights * scale
+
+                    all_token_weights.append(token_weights)
                     all_scores.append(scores)
 
-                # Stack results
-                weights = np.array(all_weights)
+                # Stack results - token weights [B,S]
+                token_weights = np.array(all_token_weights)
                 scores = np.array(all_scores)
+
+                # Convert to head-level weights [B,S,H]
+                head_weights = self._compute_head_weights(token_weights, horizon)
         else:
             # Real implementation with actual CE values
             batch_size = base_ce.shape[0] if len(base_ce.shape) > 1 else 1
@@ -312,7 +361,7 @@ class Rho1ExcessScorer(BaseComponent):
                 base_ce = base_ce.reshape(1, -1)
                 ref_ce = ref_ce.reshape(1, -1)
 
-            all_weights = []
+            all_token_weights = []
             all_scores = []
 
             for b in range(batch_size):
@@ -326,43 +375,75 @@ class Rho1ExcessScorer(BaseComponent):
                     scores, self.percentile_top_p, emphasis_type="soft"
                 )
 
-                # Normalize and compute weights
-                weights = self.normalize_and_weight(
-                    emphasized_scores,
-                    temperature=self.temperature,
-                    epsilon=self.config.get("epsilon", 0.05),
-                    max_weight=self.config.get("max_weight", 3.0),
-                )
+                # Convert emphasized scores to token-level weights (simplified normalization)
+                # Z-score normalization + softmax
+                mean_score = np.mean(emphasized_scores)
+                std_score = np.std(emphasized_scores) + 1e-8
+                normalized_scores = (emphasized_scores - mean_score) / std_score
 
-                all_weights.append(weights)
+                # Softmax with temperature
+                exp_values = np.exp(normalized_scores / self.temperature)
+                token_weights = exp_values / np.sum(exp_values)
+
+                # Scale to have mean 1.0 (preserve magnitude)
+                token_weights = token_weights * float(len(token_weights))
+
+                # Clip to valid range
+                epsilon = self.config.get("epsilon", 0.05)
+                max_weight = self.config.get("max_weight", 3.0)
+                token_weights = np.clip(token_weights, epsilon, max_weight)
+
+                # Re-normalize to mean 1.0
+                total = np.sum(token_weights)
+                if total > 0:
+                    scale = float(len(token_weights)) / total
+                    token_weights = token_weights * scale
+
+                all_token_weights.append(token_weights)
                 all_scores.append(scores)
 
-            weights = np.array(all_weights)
+            # Stack results - token weights [B,S]
+            token_weights = np.array(all_token_weights)
             scores = np.array(all_scores)
 
-        # Compute statistics
+            # Convert to head-level weights [B,S,H]
+            head_weights = self._compute_head_weights(token_weights, horizon)
+
+        # Compute head-level statistics
         statistics = {
-            "mean_weight": float(np.mean(weights)),
-            "std_weight": float(np.std(weights)),
-            "min_weight": float(np.min(weights)),
-            "max_weight": float(np.max(weights)),
+            "mean_weight": float(np.mean(head_weights)),
+            "std_weight": float(np.std(head_weights)),
+            "min_weight": float(np.min(head_weights)),
+            "max_weight": float(np.max(head_weights)),
             "mean_score": float(np.mean(scores)),
             "std_score": float(np.std(scores)),
             "top_p_threshold": float(
                 np.percentile(scores, (1 - self.percentile_top_p) * 100)
             ),
-            "nan_count": int(np.sum(~np.isfinite(weights))),
+            "nan_count": int(np.sum(~np.isfinite(head_weights))),
+            # Head-specific statistics
+            "head_mean_weights": [float(np.mean(head_weights[:, :, k])) for k in range(horizon)],
+            "head_std_weights": [float(np.std(head_weights[:, :, k])) for k in range(horizon)],
         }
 
-        # Verify statistical invariants
+        # Verify statistical invariants for head-level weights
+        overall_mean = statistics["mean_weight"]
         assert (
-            0.95 <= statistics["mean_weight"] <= 1.05
-        ), f"Mean weight {statistics['mean_weight']} not in [0.95, 1.05]"
-        assert statistics["nan_count"] == 0, "NaN values in weights"
+            0.8 <= overall_mean <= 1.2
+        ), f"Head-level mean weight {overall_mean} not in reasonable range [0.8, 1.2]"
+        assert statistics["nan_count"] == 0, "NaN values in head weights"
+
+        # Determine target device and dtype from context
+        target_device = ctx.get("device", "cpu")
+        target_dtype = ctx.get("dtype", torch.float32)
+
+        # Convert to torch.Tensor with proper device/dtype [B,S,H]
+        head_weights_tensor = torch.tensor(
+            head_weights, device=target_device, dtype=target_dtype
+        )
 
         return {
-            "weights": weights.tolist(),
-            "weights_tensor": torch.tensor(weights, dtype=torch.float32),
-            "scores": scores.tolist(),
-            "statistics": statistics,
+            "weights": head_weights_tensor,  # [B,S,H] tensor
+            "scores": scores.tolist(),       # [B,S] raw scores
+            "statistics": statistics,        # Head-level statistics
         }

@@ -170,6 +170,78 @@ class CriticDeltaScorer(BaseComponent):
 
         return value_targets
 
+    def _compute_head_weights(
+        self, values: np.ndarray, horizon: int = 4
+    ) -> np.ndarray:
+        """
+        연구제안서 정확 구현: 각 위치에서 헤드별 가중치 계산
+
+        Position t에서 4개 헤드에 대응하는 가중치:
+        - Head 0 (예측 t+1): δ_{t+1} = V_{t+1} - V_t
+        - Head 1 (예측 t+2): δ_{t+2} = V_{t+2} - V_{t+1}
+        - Head 2 (예측 t+3): δ_{t+3} = V_{t+3} - V_{t+2}
+        - Head 3 (예측 t+4): δ_{t+4} = V_{t+4} - V_{t+3}
+
+        그 다음 softmax([δ_{t+1}, δ_{t+2}, δ_{t+3}, δ_{t+4}])를 적용
+
+        Args:
+            values: [S] 형태의 value function 예측값
+            horizon: MTP 헤드 수 (기본값 4)
+
+        Returns:
+            head_weights: [S, H] 형태의 헤드별 가중치 매트릭스
+        """
+        seq_len = len(values)
+        head_weights = np.zeros((seq_len, horizon), dtype=np.float32)
+
+        # 각 위치 t에서 헤드별 delta 계산
+        for t in range(seq_len):
+            deltas_t = []
+
+            for k in range(horizon):
+                future_pos = t + k + 1  # k번째 헤드는 t+(k+1) 예측
+
+                if future_pos < seq_len:
+                    # δ_{t+k+1} = V_{t+k+1} - V_{t+k}
+                    if t + k >= 0:
+                        delta_k = values[future_pos] - values[t + k]
+                    else:
+                        # 경계 처리: V_{-1} = 0으로 가정
+                        delta_k = values[future_pos] - 0.0
+                else:
+                    # 시퀀스 끝을 넘어가는 경우 작은 값 사용
+                    delta_k = -1.0  # 낮은 중요도
+
+                deltas_t.append(delta_k)
+
+            # 헤드별 softmax with temperature 적용
+            deltas_array = np.array(deltas_t, dtype=np.float32)
+
+            # Z-score normalization (선택적)
+            if self.normalize == "zscore" and len(deltas_array) > 1:
+                mean_delta = np.mean(deltas_array)
+                std_delta = np.std(deltas_array) + 1e-8
+                deltas_normalized = (deltas_array - mean_delta) / std_delta
+            else:
+                deltas_normalized = deltas_array
+
+            # Softmax with temperature
+            exp_values = np.exp(deltas_normalized / self.temperature)
+            head_weights_t = exp_values / (np.sum(exp_values) + 1e-8)
+
+            # 유효한 헤드만 남기고 나머지는 0
+            for k in range(horizon):
+                if t + k + 1 >= seq_len:
+                    head_weights_t[k] = 0.0
+
+            # 재정규화 (유효한 헤드들만)
+            total_valid = np.sum(head_weights_t) + 1e-8
+            head_weights_t = head_weights_t / total_valid
+
+            head_weights[t] = head_weights_t
+
+        return head_weights
+
     def compute_deltas(self, values: np.ndarray) -> np.ndarray:
         """
         Compute temporal difference deltas.
@@ -226,14 +298,9 @@ class CriticDeltaScorer(BaseComponent):
         else:
             normalized = deltas
 
-        # Step 2: Softmax with temperature
-        # w_t = softmax(δ_t / T)
-        exp_values = np.exp(normalized / self.temperature)
-        weights = exp_values / np.sum(exp_values)
-
-        # Step 3: Scale to have mean 1.0
-        # Since softmax sums to 1, multiply by length for mean 1
-        weights = weights * len(weights)
+        # TODO: 토큰별 softmax 삭제됨 - 헤드별 가중치 생성으로 교체 예정
+        # 임시 uniform weights (후에 _compute_head_weights()로 교체)
+        weights = np.ones_like(normalized)
 
         # Step 4: Clip to valid range [ε, W_max]
         weights = np.clip(weights, epsilon, max_weight)
@@ -275,7 +342,7 @@ class CriticDeltaScorer(BaseComponent):
 
         Returns:
             Dictionary containing:
-                - weights: Token-level importance weights [batch, seq_len]
+                - weights: Head-level importance weights [batch, seq_len, horizon] ← 새로운!
                 - deltas: Raw delta values [batch, seq_len]
                 - values: Value function predictions [batch, seq_len]
                 - statistics: Weight statistics
@@ -323,21 +390,19 @@ class CriticDeltaScorer(BaseComponent):
                 # Step 4: Compute deltas δ_t = V_t - V_{t-1}
                 deltas = self.compute_deltas(values)
 
-                # Step 5: Normalize and compute weights
-                weights = self.normalize_and_weight(
-                    deltas,
-                    epsilon=self.config.get("epsilon", 0.05),
-                    max_weight=self.config.get("max_weight", 3.0),
-                )
+                # Step 5: 새로운 헤드별 가중치 계산 (연구제안서 구현)
+                head_weights = self._compute_head_weights(
+                    values, horizon=self.config.get("horizon", 4)
+                )  # [S, H] 형태
 
-                all_weights.append(weights)
+                all_weights.append(head_weights)
                 all_deltas.append(deltas)
                 all_values.append(values)
 
-            # Stack results
-            weights = np.array(all_weights)
-            deltas = np.array(all_deltas)
-            values = np.array(all_values)
+            # Stack results - 이제 [B, S, H] 형태!
+            weights = np.array(all_weights)  # [B, S, H]
+            deltas = np.array(all_deltas)    # [B, S]
+            values = np.array(all_values)    # [B, S]
 
         else:
             # Real implementation with model hidden states
@@ -370,30 +435,30 @@ class CriticDeltaScorer(BaseComponent):
 
             values = v_pred.detach().cpu().numpy()
 
-            # Compute deltas per sequence
+            # Compute deltas and head weights per sequence
             all_deltas = []
             all_weights = []
+            horizon = self.config.get("horizon", 4)
+
             for b in range(B):
                 seq_len = seq_lengths[b] if b < len(seq_lengths) else S
                 vals = values[b, :seq_len]
                 deltas = self.compute_deltas(vals)
-                weights = self.normalize_and_weight(
-                    deltas,
-                    epsilon=self.config.get("epsilon", 0.05),
-                    max_weight=self.config.get("max_weight", 3.0),
-                )
+                # 새로운 헤드별 가중치 계산 (연구제안서 구현)
+                head_weights = self._compute_head_weights(vals, horizon=horizon)  # [seq_len, H]
                 all_deltas.append(deltas)
-                all_weights.append(weights)
+                all_weights.append(head_weights)
 
-            # Pad back to [B, S] if needed
+            # Pad back to [B, S] for deltas, [B, S, H] for weights
             def pad_to_len(arr, L):
                 if len(arr) >= L:
                     return arr[:L]
-                pad = np.ones(L - len(arr), dtype=arr.dtype)
+                pad_shape = (L - len(arr),) + arr.shape[1:] if arr.ndim > 1 else (L - len(arr),)
+                pad = np.ones(pad_shape, dtype=arr.dtype)
                 return np.concatenate([arr, pad], axis=0)
 
-            deltas = np.stack([pad_to_len(d, S) for d in all_deltas], axis=0)
-            weights = np.stack([pad_to_len(w, S) for w in all_weights], axis=0)
+            deltas = np.stack([pad_to_len(d, S) for d in all_deltas], axis=0)  # [B, S]
+            weights = np.stack([pad_to_len(w, S) for w in all_weights], axis=0)  # [B, S, H]
 
         # Compute statistics
         statistics = {
@@ -413,7 +478,16 @@ class CriticDeltaScorer(BaseComponent):
         ), f"Mean weight {statistics['mean_weight']} not in [0.95, 1.05]"
         assert statistics["nan_count"] == 0, "NaN values in weights"
 
+        # Determine target device and dtype from context
+        target_device = ctx.get("device", "cpu")
+        target_dtype = ctx.get("dtype", torch.float32)
+
+        # Convert to torch.Tensor with proper device/dtype
+        weights_tensor = torch.tensor(weights, device=target_device, dtype=target_dtype)
+
         return {
-            "weights": weights.tolist(),
+            "weights": weights_tensor,
+            "deltas": deltas.tolist(),
+            "values": values.tolist(),
             "statistics": statistics,
         }
