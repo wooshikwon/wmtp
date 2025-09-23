@@ -97,27 +97,27 @@ def train(
         console.print(f"[green]Resuming from checkpoint: {resume}[/green]")
 
     try:
-        from src.pipelines import get_pipeline
+        from src.pipelines import run_training_pipeline
         from src.settings import load_config, load_recipe
 
         cfg = load_config(config, verbose=verbose)
         rcp = load_recipe(recipe, verbose=verbose)
 
-        Pipeline = get_pipeline(rcp.train.algo)
-        pipeline = Pipeline(cfg, rcp)
-        outputs = pipeline.run(
+        outputs = run_training_pipeline(
+            cfg,
+            rcp,
             run_name=run_name,
             tags=tag_list,
-            resume=bool(resume),
             dry_run=dry_run,
             max_steps=10 if dry_run else None,
-            verbose=verbose,
         )
 
         if dry_run:
             console.print("[green]Configuration validation passed![/green]")
         else:
-            console.print(f"[green]Training finished. Metrics: {outputs.trainer_metrics}[/green]")
+            console.print(
+                f"[green]Training finished. Metrics: {outputs.trainer_metrics}[/green]"
+            )
 
     except FileNotFoundError as e:
         console.print(f"[red]Error: File not found - {e}[/red]")

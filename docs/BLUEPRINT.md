@@ -223,14 +223,14 @@ class Registry:
 
 ### 3.2 팩토리
 
-* `factory/settings_factory.py`: pydantic 검증된 dict → 선택된 레지스트리 엔트리로 컴포넌트 인스턴스화
-* **선택 규칙**: `recipe.train.algo`에 따라 scorer 선택, `full_finetune/lora.enabled`에 따라 trainer 내부 경로 분기
+* `factory/component_factory.py`: Pydantic 검증된 설정 → 레지스트리 키 기반 컴포넌트 인스턴스화
+* **선택 규칙**: `recipe.train.algo`에 따라 scorer 선택, `full_finetune/lora.enabled`에 따라 트레이너 내부 경로 분기
 
 ---
 
 ## 4) 파이프라인 정의
 
-### 4.1 Critic-Weighted MTP (2-Stage)
+### 4.1 Critic-Weighted MTP (2-Stage, 선택/옵션)
 
 1. **Critic 학습(값함수 회귀)**
 
@@ -246,7 +246,7 @@ class Registry:
 * 최종손실: $\mathcal{L} = \lambda \cdot \sum_t w_t \cdot \frac{1}{H}\sum_{k=1}^H CE_k(t)$
 * 기본: $H=4$, $\lambda=0.3$, $T=0.7$, **bf16**, **FSDP**, **cosine + warmup 3%**
 
-### 4.2 Rho-1 (Reference-Weighted MTP)
+### 4.2 Rho-1 (Reference-Weighted MTP, 기본/Default)
 
 * **점수**: $s_t = |CE^{ref}_t - CE^{base}_t|$ (abs\_excess\_ce)
 * **정규화**: z-score → softmax(T) → 평균 1.0 정규화 + 클립
@@ -301,6 +301,8 @@ uv run python -m src.cli.eval  --config configs/config.yaml --recipe configs/rec
 
 * `train` 옵션: `--resume`, `--tags`, `--dry-run`
 * `eval` 옵션: `--datasets mbpp,contest`, `--save-report`
+
+> 구현 매핑: `src/cli/train.py`는 `src/pipelines/training.py:TrainingPipeline`을 사용하고, `src/settings` 로더로 YAML을 검증한다. `src/cli/eval.py`는 `ComponentFactory`를 통해 `meta-mtp-evaluator`를 구성하도록 연결(개선 과제)하며, `dataset-mbpp-loader`/`dataset-contest-loader`와 `hf-local-s3-loader`를 재사용한다.
 
 ---
 
@@ -372,11 +374,18 @@ run:
 
 * **s3.py**: download\_if\_missing(path\_spec) / upload\_artifact / exists / etag
 * **mlflow\.py**: init(experiment, run\_name, tags), log\_params/metrics/artifacts, auto-resume
-* **hf.py**: 안전한 `from_pretrained`(로컬 우선→S3→HF), tokenizer resize 규칙
+* **hf.py**: 안전한 `from_pretrained`(로컬 우선→S3→HF), tokenizer resize 규칙, (선택) **MTPWrapper** 설계 지침: [B,S,V] 출력 모델에 대해 H>1 요청 시 teacher-forcing 기반 k-step 로짓 생성. 기본은 H=1 폴백.
 * **dist.py**: FSDP 초기화/auto wrap/ckpt, seed 설정, throughput 측정
 * **eval.py**: MBPP/Contest 드라이버(프로토콜 캡슐화)
 
 > *금지*: 다른 디렉터리에서 임시 유틸 정의 금지. 모든 공통 함수를 **utils** 로 집중.
+
+### 구현 매핑 요약
+
+* Registry 키는 `kebab-case`로 통일: 예) `critic-delta-v1`, `rho1-excess-v1`, `mtp-weighted-ce-trainer`
+* Factory: `factory/component_factory.py`에서 알고리즘→스코어러, 스케줄러/옵티마이저/로더 선택 및 Mock 폴백
+* Pipeline: `pipelines/training.py` 단일 파이프라인이 critic/rho1 모두 지원 (algo에 의해 scorer 교체)
+* Evaluator: `components/evaluator/{mbpp_eval.py,codecontests.py,meta_mtp.py}` 구현됨. `cli/eval.py` 연결 작업 예정
 
 ---
 
@@ -411,11 +420,11 @@ run:
 
 ## 부록 A) 내부 컴포넌트 이름 규약(권장)
 
-* loader: `hf_local_s3_loader`, `dataset_mbpp_loader`, `dataset_contest_loader`
-* scorer: `critic_delta_v1`, `rho1_excess_v1`
-* trainer: `mtp_weighted_ce_trainer`
-* optimizer: `adamw_bf16_fused`
-* evaluator: `mbpp_eval_v1`, `contest_eval_v1`
+* loader: `hf-local-s3-loader`, `dataset-mbpp-loader`, `dataset-contest-loader`
+* scorer: `critic-delta-v1`, `rho1-excess-v1`
+* trainer: `mtp-weighted-ce-trainer`
+* optimizer: `adamw-bf16-fused`
+* evaluator: `mbpp-v1`, `codecontests-v1`, `meta-mtp-evaluator`
 
 ---
 

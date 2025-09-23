@@ -41,6 +41,8 @@ env/
 # Project specific
 .cache/
 models/
+!src/components/models/
+
 dataset/
 runs/
 outputs/

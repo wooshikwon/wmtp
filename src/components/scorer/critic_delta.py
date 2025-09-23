@@ -60,7 +60,7 @@ class CriticDeltaScorer(BaseComponent):
         self.value_head_trained = False
 
     def setup(self, ctx: dict[str, Any]) -> None:
-        """Initialize value head if needed."""
+        """Initialize value head if needed and optionally load from checkpoint."""
         super().setup(ctx)
 
         # Initialize value head based on hidden size
@@ -71,6 +71,17 @@ class CriticDeltaScorer(BaseComponent):
                 nn.ReLU(),
                 nn.Linear(hidden_size // 2, 1),
             )
+
+        # Optionally load trained value head weights
+        value_head_path = ctx.get("value_head_path")
+        if value_head_path:
+            try:
+                state = torch.load(value_head_path, map_location="cpu")
+                self.value_head.load_state_dict(state)
+                self.value_head_trained = True
+            except Exception:
+                # Non-fatal: continue with randomly initialized head
+                self.value_head_trained = False
 
     def spread_reward_to_tokens(
         self,
@@ -281,7 +292,6 @@ class CriticDeltaScorer(BaseComponent):
         if hidden_states is None:
             # Mock implementation
             batch_size = len(rewards)
-            max_seq_len = max(seq_lengths)
 
             all_weights = []
             all_deltas = []
@@ -331,10 +341,59 @@ class CriticDeltaScorer(BaseComponent):
 
         else:
             # Real implementation with model hidden states
-            # This would use the actual value_head neural network
-            raise NotImplementedError(
-                "Full implementation requires actual model hidden states"
-            )
+            # Use the value head to predict values and compute deltas/weights
+            if self.value_head is None:
+                # Initialize a default head assuming last dim is hidden size
+                hidden_size = int(hidden_states.shape[-1])
+                self.value_head = nn.Sequential(
+                    nn.Linear(hidden_size, hidden_size // 2),
+                    nn.ReLU(),
+                    nn.Linear(hidden_size // 2, 1),
+                )
+
+            hs = hidden_states
+            if isinstance(hs, torch.Tensor):
+                hs_tensor = hs
+            else:
+                hs_tensor = torch.tensor(hs, dtype=torch.float32)
+
+            B, S, H = hs_tensor.shape
+            # Ensure value_head on same device/dtype
+            try:
+                self.value_head = self.value_head.to(
+                    device=hs_tensor.device, dtype=hs_tensor.dtype
+                )
+            except Exception:
+                self.value_head = self.value_head.to(device=hs_tensor.device)
+            with torch.set_grad_enabled(False):
+                v_pred = self.value_head(hs_tensor.view(B * S, H)).view(B, S)
+
+            values = v_pred.detach().cpu().numpy()
+
+            # Compute deltas per sequence
+            all_deltas = []
+            all_weights = []
+            for b in range(B):
+                seq_len = seq_lengths[b] if b < len(seq_lengths) else S
+                vals = values[b, :seq_len]
+                deltas = self.compute_deltas(vals)
+                weights = self.normalize_and_weight(
+                    deltas,
+                    epsilon=self.config.get("epsilon", 0.05),
+                    max_weight=self.config.get("max_weight", 3.0),
+                )
+                all_deltas.append(deltas)
+                all_weights.append(weights)
+
+            # Pad back to [B, S] if needed
+            def pad_to_len(arr, L):
+                if len(arr) >= L:
+                    return arr[:L]
+                pad = np.ones(L - len(arr), dtype=arr.dtype)
+                return np.concatenate([arr, pad], axis=0)
+
+            deltas = np.stack([pad_to_len(d, S) for d in all_deltas], axis=0)
+            weights = np.stack([pad_to_len(w, S) for w in all_weights], axis=0)
 
         # Compute statistics
         statistics = {
@@ -354,15 +413,7 @@ class CriticDeltaScorer(BaseComponent):
         ), f"Mean weight {statistics['mean_weight']} not in [0.95, 1.05]"
         assert statistics["nan_count"] == 0, "NaN values in weights"
 
-        # Also return torch tensors for downstream consumers (trainer) to avoid conversions
-        weights_tensor = torch.tensor(weights, dtype=torch.float32)
-        deltas_tensor = torch.tensor(deltas, dtype=torch.float32)
-        values_tensor = torch.tensor(values, dtype=torch.float32)
-
         return {
             "weights": weights.tolist(),
-            "weights_tensor": weights_tensor,
-            "deltas": deltas.tolist(),
-            "values": values.tolist(),
             "statistics": statistics,
         }

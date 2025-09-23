@@ -38,6 +38,15 @@ src/
 * **`pipelines/*`** 는 **비즈니스 로직의 실제 오케스트레이션만** 담당.
 * **`settings/*`** 는 **입력 검증 및 변환** 외의 일을 하지 않는다(파일 I/O 최소화).
 
+### 구조 일관성(Non-Negotiable)
+
+* **설정 주도 실행**: 동작은 오직 `config.yaml`+`recipe.yaml`로 결정. 코드에 상수/매직 넘버 삽입 금지.
+* **플러그인 규약 준수**: 신규 기능은 반드시 레지스트리에 `kebab-case` 키로 등록하고 팩토리에서 조립한다.
+* **경계 단일화**: 외부 IO/런타임 접근은 `src/utils/`로만 집중. 다른 계층에서 직접 호출 금지.
+* **파이프라인 최소 책임**: 파이프라인은 컴포넌트 조립과 수명주기 관리만 담당(학습/평가 로직은 컴포넌트 내부).
+* **테스트 가능한 계약**: 컴포넌트는 `setup(ctx)->run(ctx)->dict` 계약을 반드시 지키고, 상태는 `ctx`로 명시 전달.
+* **문서-코드 동기화**: 구조/원칙 변경 시 `DEV_PLANS.md`/`DEV_PRINCIPLE.md`를 먼저 갱신 후 구현한다.
+
 ---
 
 ## 3) 코딩 스타일 & 품질
@@ -50,7 +59,7 @@ src/
   * 파일/모듈: `snake_case.py`
   * 클래스: `PascalCase`
   * 함수/변수: `snake_case`
-  * 레지스트리 키: `kebab-case` (예: `critic_delta_v1`, `rho1_excess_v1`)
+  * 레지스트리 키: `kebab-case` (예: `critic-delta-v1`, `rho1-excess-v1`)
 * **함수 길이**: 50줄 내외 권장(복잡도 ↑ 시 분리).
 * **예외 처리**: 사용자 입력/IO/분산 초기화/모델 로딩 등 **경계 지점에 명시적 try/except**.
 * **로그**: 인프라 로그는 `logging` 표준 사용, 실험 로그는 `utils/mlflow.py`에 위임.
@@ -98,7 +107,7 @@ uv run python -m src.cli.eval  --config configs/config.yaml --recipe configs/rec
 
 ## 6) 레지스트리·팩토리
 
-* **Registry**: `register("critic_delta_v1")(cls)` 데코레이터로 플러그인 등록.
+* **Registry**: `register("critic-delta-v1")(cls)` 데코레이터로 플러그인 등록.
 * **Factory**: Pydantic 통과한 `settings: dict` → 필요한 컴포넌트 인스턴스 생성.
 * **교체 가능성**: 스코어러/트레이너/옵티마이저는 **키만 바꾸면 교체** 가능해야 한다.
 
@@ -114,13 +123,14 @@ class Component(Protocol):
 
 ## 7) 학습 파이프라인(안정장치 포함)
 
-### 7.1 Critic-Weighted MTP
+### 7.1 Critic-Weighted MTP (선택/옵션)
 
 * Stage-1: RM 시퀀스 보상 → 토큰 분배(`gae` 권장) → Value Head 회귀
 * Stage-2: δ\_t → z-score → softmax(T) → mean-1.0 정규화 + \[ε, Wmax] 클립 → MTP CE 가중
 * **안정화**: `bf16`, FSDP(full), activation checkpointing, grad clip=1.0, warmup 3%
+* **비고**: 연구개선안 취지에 따라 **critic-free 경로(Rho-1)** 를 **기본(Default)** 으로 우선 적용하고, 본 경로는 선택적으로 사용한다.
 
-### 7.2 Rho-1 Weighted MTP
+### 7.2 Rho-1 Weighted MTP (기본/Default)
 
 * `|CE_ref - CE_base|` → z-score → softmax(T) → mean-1.0 + 클립
 * 상위 p% 연속 가중 강화(하드 드롭 지양), 대규모면 사전 프리컴퓨트

@@ -8,9 +8,9 @@ grad clipping, FSDP wrapping via utils.dist, and MLflow logging hooks.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
-import math
 import numpy as np
 import torch
 import torch.nn as nn
@@ -19,8 +19,7 @@ from rich.console import Console
 
 from src.components.base import BaseComponent
 from src.components.registry import trainer_registry
-from src.utils import FSDPConfig, get_dist_manager
-
+from src.utils import get_dist_manager
 
 console = Console()
 
@@ -48,7 +47,7 @@ def _compute_mtp_ce_loss(
         valid_mask: [batch, seq_len] boolean mask where at least one head is valid
     """
     bsz, seqlen, H, vocab = logits.shape
-    if H != horizon:
+    if horizon != H:
         raise ValueError(
             f"Mismatch between logits heads ({H}) and configured horizon ({horizon})"
         )
@@ -61,7 +60,7 @@ def _compute_mtp_ce_loss(
     count = torch.zeros((bsz, seqlen), device=device, dtype=dtype)
 
     # Optional precomputed mask from labels (ignore_index)
-    has_label_mask = (target_ids == ignore_index)
+    has_label_mask = target_ids == ignore_index
 
     # For k-th head (k=0 -> 1-step ahead), align and compute CE
     for k in range(H):
@@ -72,7 +71,7 @@ def _compute_mtp_ce_loss(
 
         # Slice logits and labels for valid region
         logits_k = logits[:, :valid_len, k, :]  # [B, valid_len, V]
-        labels_k = target_ids[:, shift:shift + valid_len]  # [B, valid_len]
+        labels_k = target_ids[:, shift : shift + valid_len]  # [B, valid_len]
 
         # Apply cross-entropy over time dimension
         ce_k = F.cross_entropy(
@@ -88,7 +87,7 @@ def _compute_mtp_ce_loss(
         # Count valid positions (exclude ignore_index)
         if has_label_mask.any():
             # Valid where label != ignore_index
-            valid_k = (~has_label_mask[:, shift:shift + valid_len]).to(dtype)
+            valid_k = (~has_label_mask[:, shift : shift + valid_len]).to(dtype)
             count[:, :valid_len] = count[:, :valid_len] + valid_k
         else:
             count[:, :valid_len] = count[:, :valid_len] + 1.0
@@ -101,7 +100,9 @@ def _compute_mtp_ce_loss(
     return ce_avg, valid_mask
 
 
-@trainer_registry.register("mtp-weighted-ce-trainer", category="trainer", version="1.0.0")
+@trainer_registry.register(
+    "mtp-weighted-ce-trainer", category="trainer", version="1.0.0"
+)
 class MTPWeightedCETrainer(BaseComponent):
     """
     Trainer that applies token weights to MTP CE across heads.
@@ -148,7 +149,9 @@ class MTPWeightedCETrainer(BaseComponent):
         if mp not in {"bf16", "fp16", "fp32"}:
             mp = "bf16"
         self._amp_dtype = (
-            torch.bfloat16 if mp == "bf16" else (torch.float16 if mp == "fp16" else torch.float32)
+            torch.bfloat16
+            if mp == "bf16"
+            else (torch.float16 if mp == "fp16" else torch.float32)
         )
 
         # Attach scorer if provided
@@ -159,16 +162,25 @@ class MTPWeightedCETrainer(BaseComponent):
         # Optional MLflow manager for logging
         self.mlflow = ctx.get("mlflow_manager")
 
+        # Optional auxiliary models/tokenizers for scorers
+        self.ref_model: nn.Module | None = ctx.get("ref_model")
+        self.rm_model: nn.Module | None = ctx.get("rm_model")
+        self.base_tokenizer = ctx.get("base_tokenizer")
+        self.ref_tokenizer = ctx.get("ref_tokenizer")
+
     def train_step(self, batch: dict[str, Any]) -> dict[str, Any]:
         if self.model is None:
             raise RuntimeError("Trainer not initialized. Call setup() first.")
 
         self.model.train()
 
-        input_ids: torch.Tensor = batch["input_ids"]  # [B, S]
+        # Note: input_ids may be unused by this method
         target_ids: torch.Tensor = batch["labels"]  # [B, S]
 
-        with torch.autocast(device_type="cuda" if torch.cuda.is_available() else "cpu", dtype=self._amp_dtype):
+        with torch.autocast(
+            device_type="cuda" if torch.cuda.is_available() else "cpu",
+            dtype=self._amp_dtype,
+        ):
             # Model is expected to output logits for each horizon head
             outputs: dict[str, Any] | torch.Tensor = self.model(**batch)
 
@@ -197,12 +209,70 @@ class MTPWeightedCETrainer(BaseComponent):
                 scorer_ctx = {
                     "base_logits": logits[:, :, 0, :],  # provide one head if needed
                     "target_ids": target_ids,
-                    "seq_lengths": [int(target_ids.shape[1])] * int(target_ids.shape[0]),
+                    "seq_lengths": [int(target_ids.shape[1])]
+                    * int(target_ids.shape[0]),
                 }
+
+                # Provide hidden_states to critic scorer if available
+                try:
+                    hidden_states = None
+                    if isinstance(outputs, dict) and "hidden_states" in outputs:
+                        hs = outputs["hidden_states"]
+                        hidden_states = hs[-1] if isinstance(hs, (list | tuple)) else hs
+                    elif hasattr(outputs, "hidden_states"):
+                        hs = outputs.hidden_states
+                        hidden_states = hs[-1] if isinstance(hs, (list | tuple)) else hs
+                    if hidden_states is not None and hidden_states.ndim == 3:
+                        scorer_ctx["hidden_states"] = hidden_states
+                except Exception:
+                    # Hidden states are optional; ignore failures
+                    pass
+                # Optionally compute reference logits for Rho-1 scorer
+                if self.ref_model is not None:
+                    try:
+                        with (
+                            torch.no_grad(),
+                            torch.autocast(
+                                device_type="cuda"
+                                if torch.cuda.is_available()
+                                else "cpu",
+                                dtype=self._amp_dtype,
+                            ),
+                        ):
+                            ref_outputs = self.ref_model(
+                                input_ids=batch.get("input_ids"),
+                                attention_mask=batch.get("attention_mask"),
+                            )
+                            ref_logits = (
+                                ref_outputs["logits"]
+                                if isinstance(ref_outputs, dict)
+                                and "logits" in ref_outputs
+                                else ref_outputs
+                            )
+                        if ref_logits is not None and ref_logits.ndim == 3:
+                            ref_vocab = ref_logits.shape[-1]
+                            # ensure no negative labels included for max
+                            valid_tids = target_ids[target_ids >= 0]
+                            max_tid = (
+                                int(valid_tids.max().item())
+                                if valid_tids.numel() > 0
+                                else 0
+                            )
+                            if max_tid < ref_vocab:
+                                scorer_ctx["ref_logits"] = ref_logits
+                    except Exception:
+                        from rich.console import Console as _C
+
+                        _C().print(
+                            "[yellow]Reference forward failed; fallback to base-only scoring this step.[/yellow]"
+                        )
+
                 score_out = self.scorer.run(scorer_ctx)
                 w_out = score_out.get("weights")
                 if isinstance(w_out, torch.Tensor):
-                    weights = w_out.to(device=ce_per_token.device, dtype=ce_per_token.dtype)
+                    weights = w_out.to(
+                        device=ce_per_token.device, dtype=ce_per_token.dtype
+                    )
                 else:
                     weights_np = np.asarray(w_out)
                     if weights_np.ndim == 1:
@@ -254,20 +324,32 @@ class MTPWeightedCETrainer(BaseComponent):
                         shift = k + 1
                         valid_len = seqlen - shift
                         if valid_len <= 0:
-                            ce_head_means.append(torch.tensor(0.0, device=logits.device))
+                            ce_head_means.append(
+                                torch.tensor(0.0, device=logits.device)
+                            )
                             continue
                         logits_k = logits[:, :valid_len, k, :]
-                        labels_k = target_ids[:, shift:shift + valid_len]
+                        labels_k = target_ids[:, shift : shift + valid_len]
                         ce_k = F.cross_entropy(
-                            logits_k.transpose(1, 2), labels_k, ignore_index=-100, reduction="none"
+                            logits_k.transpose(1, 2),
+                            labels_k,
+                            ignore_index=-100,
+                            reduction="none",
                         )
                         ce_head_means.append(ce_k.mean())
                     ce_head_means = torch.stack(ce_head_means)
-                    metrics = {f"train/ce_head_{i}": float(x) for i, x in enumerate(ce_head_means)}
+                    metrics = {
+                        f"train/ce_head_{i}": float(x)
+                        for i, x in enumerate(ce_head_means)
+                    }
                     metrics.update(
                         {
                             "train/loss": float(loss.detach().item()),
-                            "train/ce_mean": float((ce_per_token[valid_mask]).mean().item()) if valid_mask.any() else 0.0,
+                            "train/ce_mean": float(
+                                (ce_per_token[valid_mask]).mean().item()
+                            )
+                            if valid_mask.any()
+                            else 0.0,
                         }
                     )
                     # Weight statistics on aligned region
@@ -292,13 +374,21 @@ class MTPWeightedCETrainer(BaseComponent):
                 pass
 
         # Failure gates
-        if not torch.isfinite(loss) or not torch.isfinite(ce_per_token).all() or not torch.isfinite(weights).all():
+        if (
+            not torch.isfinite(loss)
+            or not torch.isfinite(ce_per_token).all()
+            or not torch.isfinite(weights).all()
+        ):
             if self.mlflow is not None:
                 try:
-                    self.mlflow.log_metrics({"train/failure": 1.0}, step=self.global_step)
+                    self.mlflow.log_metrics(
+                        {"train/failure": 1.0}, step=self.global_step
+                    )
                 except Exception:
                     pass
-            raise RuntimeError("Detected NaN/Inf in loss or inputs; aborting training step.")
+            raise RuntimeError(
+                "Detected NaN/Inf in loss or inputs; aborting training step."
+            )
 
         return {
             "loss": float(loss.detach().item()),
@@ -325,5 +415,3 @@ class MTPWeightedCETrainer(BaseComponent):
             if max_steps is not None and step + 1 >= max_steps:
                 break
         return metrics
-
-
