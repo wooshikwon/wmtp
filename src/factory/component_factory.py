@@ -8,7 +8,6 @@ and create appropriate component instances using the registry pattern.
 from typing import Any
 
 from src.components.base import (
-    Component,
     Evaluator,
     Loader,
     Optimizer,
@@ -106,10 +105,6 @@ class ComponentFactory:
             scorer_config = {}
 
         # Create scorer from registry
-        if not scorer_registry.exists(scorer_key):
-            # Return mock scorer if not implemented yet
-            return MockScorer(scorer_config)
-
         return scorer_registry.create(scorer_key, scorer_config)
 
     @classmethod
@@ -154,10 +149,6 @@ class ComponentFactory:
             "scorer": scorer,
         }
 
-        if not trainer_registry.exists(trainer_key):
-            # Return mock trainer if not implemented yet
-            return MockTrainer(trainer_config)
-
         return trainer_registry.create(trainer_key, trainer_config)
 
     @classmethod
@@ -189,10 +180,6 @@ class ComponentFactory:
             "scheduler": recipe.optim.scheduler,
             "warmup_ratio": recipe.optim.warmup_ratio,
         }
-
-        if not optimizer_registry.exists(optimizer_key):
-            # Return mock optimizer if not implemented yet
-            return MockOptimizer(optimizer_config)
 
         return optimizer_registry.create(optimizer_key, optimizer_config)
 
@@ -243,9 +230,35 @@ class ComponentFactory:
 
         # Note: s3_config(flat) is no longer supported. Use nested 'storage' only.
 
-        if not loader_registry.exists(loader_key):
-            # Return mock loader if not implemented yet
-            return MockLoader(loader_config)
+        return loader_registry.create(loader_key, loader_config)
+
+    @classmethod
+    def create_model_loader(cls, config: Config) -> Loader:
+        """
+        Create model loader (separated from generic data loader for clarity).
+
+        Returns:
+            Loader instance configured for model loading
+        """
+        loader_key = cls.LOADER_MAP.get("model")
+        if not loader_key:
+            raise ValueError("No loader mapping found for 'model'.")
+
+        loader_config = {
+            "cache_dir": str(config.paths.cache),
+            "storage": {
+                "mode": config.storage.mode,
+                "s3": (config.storage.s3.model_dump() if config.storage.s3 else None),
+            },
+            "paths": {
+                "cache": str(config.paths.cache),
+            },
+            "model_paths": {
+                "base": str(config.paths.models.base_local),
+                "rm": str(config.paths.models.rm_local),
+                "ref": str(config.paths.models.ref_local),
+            },
+        }
 
         return loader_registry.create(loader_key, loader_config)
 
@@ -276,118 +289,6 @@ class ComponentFactory:
             "batch_size": recipe.data.eval.batch_size,
         }
 
-        if not evaluator_registry.exists(evaluator_key):
-            # Return mock evaluator if not implemented yet
-            return MockEvaluator(evaluator_config)
-
         return evaluator_registry.create(evaluator_key, evaluator_config)
 
-    @classmethod
-    def build_pipeline_components(
-        cls,
-        recipe: Recipe,
-        config: Config,
-    ) -> dict[str, Component]:
-        """
-        Build all components needed for a training pipeline.
-
-        Args:
-            recipe: Recipe configuration
-            config: Environment configuration
-
-        Returns:
-            Dictionary of component name to instance
-        """
-        components = {}
-
-        # Create scorer based on algorithm
-        components["scorer"] = cls.create_scorer(recipe)
-
-        # Create trainer with scorer
-        components["trainer"] = cls.create_trainer(recipe, config, components["scorer"])
-
-        # Create data loaders
-        for source in recipe.data.train.sources:
-            components[f"train_loader_{source}"] = cls.create_data_loader(
-                source, config
-            )
-
-        for source in recipe.data.eval.sources:
-            components[f"eval_loader_{source}"] = cls.create_data_loader(source, config)
-
-        # Create model loader
-        components["model_loader"] = cls.create_data_loader("model", config)
-
-        # Create evaluator
-        components["evaluator"] = cls.create_evaluator(recipe, config)
-
-        # Note: Optimizer is created after model is loaded
-        # components["optimizer"] = cls.create_optimizer(recipe, model.parameters())
-
-        return components
-
-
-# Mock implementations for testing
-class MockScorer:
-    """Mock scorer for testing."""
-
-    def __init__(self, config: dict[str, Any] | None = None):
-        self.config = config or {}
-
-    def setup(self, ctx: dict[str, Any]) -> None:
-        pass
-
-    def run(self, ctx: dict[str, Any]) -> dict[str, Any]:
-        return {"scores": [1.0] * 100}
-
-
-class MockTrainer:
-    """Mock trainer for testing."""
-
-    def __init__(self, config: dict[str, Any] | None = None):
-        self.config = config or {}
-
-    def setup(self, ctx: dict[str, Any]) -> None:
-        pass
-
-    def run(self, ctx: dict[str, Any]) -> dict[str, Any]:
-        return {"loss": 0.5}
-
-
-class MockOptimizer:
-    """Mock optimizer for testing."""
-
-    def __init__(self, config: dict[str, Any] | None = None):
-        self.config = config or {}
-
-    def setup(self, ctx: dict[str, Any]) -> None:
-        pass
-
-    def run(self, ctx: dict[str, Any]) -> dict[str, Any]:
-        return {"lr": self.config.get("lr", 1e-5)}
-
-
-class MockLoader:
-    """Mock loader for testing."""
-
-    def __init__(self, config: dict[str, Any] | None = None):
-        self.config = config or {}
-
-    def setup(self, ctx: dict[str, Any]) -> None:
-        pass
-
-    def run(self, ctx: dict[str, Any]) -> dict[str, Any]:
-        return {"data": []}
-
-
-class MockEvaluator:
-    """Mock evaluator for testing."""
-
-    def __init__(self, config: dict[str, Any] | None = None):
-        self.config = config or {}
-
-    def setup(self, ctx: dict[str, Any]) -> None:
-        pass
-
-    def run(self, ctx: dict[str, Any]) -> dict[str, Any]:
-        return {"metrics": {"accuracy": 0.95}}
+    # build_pipeline_components removed: use create_* methods directly in pipelines

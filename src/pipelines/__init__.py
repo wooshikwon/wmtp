@@ -1,8 +1,7 @@
 """Training and evaluation pipelines for WMTP framework."""
 
-from .training import TrainingPipeline, get_pipeline  # noqa: F401
+from .training_pipeline import run_training_pipeline  # noqa: F401
 
 __all__ = [
-    "TrainingPipeline",
-    "get_pipeline",
+    "run_training_pipeline",
 ]
