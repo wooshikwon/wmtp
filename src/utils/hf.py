@@ -437,4 +437,39 @@ __all__ = [
     "resize_token_embeddings",
     "get_model_size",
     "get_dtype",
+    "safe_from_pretrained",
 ]
+
+
+def safe_from_pretrained(
+    model_id: str,
+    model_class: type[PreTrainedModel] = AutoModelForCausalLM,
+    device_map: str | dict | None = None,
+    torch_dtype: torch.dtype | None = None,
+    trust_remote_code: bool = False,
+    cache_dir: str | Path | None = None,
+    **kwargs,
+) -> PreTrainedModel:
+    """
+    Safe wrapper for from_pretrained with explicit cache and options.
+
+    This utility centralizes model loading to keep usage consistent and
+    avoid direct transformers imports outside utils.
+    """
+    load_kwargs = dict(
+        device_map=device_map,
+        torch_dtype=torch_dtype,
+        trust_remote_code=trust_remote_code,
+        **kwargs,
+    )
+    if cache_dir is not None:
+        load_kwargs["cache_dir"] = str(cache_dir)
+
+    try:
+        return model_class.from_pretrained(model_id, **load_kwargs)
+    except Exception:
+        # Fallback: if specific class fails, try AutoModelForCausalLM then AutoModel
+        try:
+            return AutoModelForCausalLM.from_pretrained(model_id, **load_kwargs)
+        except Exception:
+            return AutoModel.from_pretrained(model_id, **load_kwargs)

@@ -48,7 +48,7 @@ class HFLocalS3Loader(ModelLoader):
         # Default model IDs (fallback to HuggingFace Hub)
         # Note: Recipe/local paths always take precedence over these defaults.
         self.default_model_ids = {
-            "base": "facebook/multi-token-prediction",
+            "base": "facebook/multi-token-prediction-7b",
             "rm": "sfair/Llama-3-8B-RM-Reward-Model",
             "ref": "princeton-nlp/Sheared-LLaMA-1.3B",
         }

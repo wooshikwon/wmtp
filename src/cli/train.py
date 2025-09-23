@@ -97,31 +97,27 @@ def train(
         console.print(f"[green]Resuming from checkpoint: {resume}[/green]")
 
     try:
-        # TODO: Import and call actual training pipeline
-        # from src.pipelines import get_pipeline
-        # from src.settings import load_config, load_recipe
+        from src.pipelines import get_pipeline
+        from src.settings import load_config, load_recipe
 
-        # config_dict = load_config(config)
-        # recipe_dict = load_recipe(recipe)
+        cfg = load_config(config, verbose=verbose)
+        rcp = load_recipe(recipe, verbose=verbose)
 
-        # pipeline = get_pipeline(recipe_dict["train"]["algo"])
-        # pipeline.run(
-        #     config=config_dict,
-        #     recipe=recipe_dict,
-        #     run_name=run_name,
-        #     resume=resume,
-        #     tags=tag_list,
-        #     dry_run=dry_run,
-        #     verbose=verbose,
-        # )
+        Pipeline = get_pipeline(rcp.train.algo)
+        pipeline = Pipeline(cfg, rcp)
+        outputs = pipeline.run(
+            run_name=run_name,
+            tags=tag_list,
+            resume=bool(resume),
+            dry_run=dry_run,
+            max_steps=10 if dry_run else None,
+            verbose=verbose,
+        )
 
-        if not dry_run:
-            console.print(
-                "[yellow]Training pipeline not yet implemented. "
-                "This is a stub implementation.[/yellow]"
-            )
-        else:
+        if dry_run:
             console.print("[green]Configuration validation passed![/green]")
+        else:
+            console.print(f"[green]Training finished. Metrics: {outputs.trainer_metrics}[/green]")
 
     except FileNotFoundError as e:
         console.print(f"[red]Error: File not found - {e}[/red]")

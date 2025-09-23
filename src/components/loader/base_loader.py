@@ -40,7 +40,13 @@ class BaseLoader(BaseComponent, ABC):
             cache_dir: Local cache directory for S3 downloads
         """
         super().__init__(config)
-        self.cache_dir = Path(cache_dir)
+        # Prefer config.paths.cache if provided
+        cfg_cache = (
+            Path(config.get("paths", {}).get("cache"))
+            if config.get("paths", {}).get("cache")
+            else Path(cache_dir)
+        )
+        self.cache_dir = cfg_cache
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
         # Initialize S3 manager if configured

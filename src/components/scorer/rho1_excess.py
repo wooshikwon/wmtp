@@ -196,27 +196,17 @@ class Rho1ExcessScorer(BaseComponent):
 
         # Step 3: Scale to have mean 1.0
         # Since softmax sums to 1, multiply by length for mean 1
-        weights = weights * len(weights)
+        L = float(len(weights))
+        weights = weights * L
 
         # Step 4: Clip to valid range [ε, W_max]
         weights = np.clip(weights, epsilon, max_weight)
 
-        # Step 5: Re-normalize to ensure mean is exactly 1.0
-        # But ensure we don't exceed max_weight after renormalization
-        current_mean = np.mean(weights)
-        if current_mean != 1.0:
-            # Scale towards mean 1.0 but respect bounds
-            scale_factor = 1.0 / current_mean
-            scaled_weights = weights * scale_factor
-
-            # If scaling would exceed max_weight, use alternative approach
-            if np.any(scaled_weights > max_weight):
-                # Use iterative approach to get as close to mean=1.0 as possible
-                # while respecting bounds
-                weights = weights - (current_mean - 1.0)
-                weights = np.clip(weights, epsilon, max_weight)
-            else:
-                weights = scaled_weights
+        # Step 5: Re-normalize mean to exactly 1.0 without a second clip
+        total = np.sum(weights)
+        if total > 0:
+            scale = L / total
+            weights = weights * scale
 
         # Final safety check for NaN/Inf
         if not np.all(np.isfinite(weights)):
@@ -372,6 +362,7 @@ class Rho1ExcessScorer(BaseComponent):
 
         return {
             "weights": weights.tolist(),
+            "weights_tensor": torch.tensor(weights, dtype=torch.float32),
             "scores": scores.tolist(),
             "statistics": statistics,
         }

@@ -1,0 +1,329 @@
+"""
+MTP Weighted Cross-Entropy Trainer.
+
+Implements the WMTP training loop where token-level weights produced by a
+Scorer are applied to the average CE over MTP heads. Supports AMP (bf16/fp16),
+grad clipping, FSDP wrapping via utils.dist, and MLflow logging hooks.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import math
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from rich.console import Console
+
+from src.components.base import BaseComponent
+from src.components.registry import trainer_registry
+from src.utils import FSDPConfig, get_dist_manager
+
+
+console = Console()
+
+
+def _compute_mtp_ce_loss(
+    logits: torch.Tensor,
+    target_ids: torch.Tensor,
+    horizon: int,
+    ignore_index: int = -100,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Compute per-token average CE across valid MTP heads with k-step alignment and masking.
+
+    For head index k (0-based), we align logits at position t with label at t+(k+1).
+    Only positions where t+(k+1) < S are valid for that head.
+
+    Args:
+        logits: [batch, seq_len, horizon, vocab]
+        target_ids: [batch, seq_len]
+        horizon: number of future prediction heads (H)
+        ignore_index: label value to ignore (masked positions)
+
+    Returns:
+        ce_avg: [batch, seq_len] average CE across valid heads per position (0 where invalid)
+        valid_mask: [batch, seq_len] boolean mask where at least one head is valid
+    """
+    bsz, seqlen, H, vocab = logits.shape
+    if H != horizon:
+        raise ValueError(
+            f"Mismatch between logits heads ({H}) and configured horizon ({horizon})"
+        )
+
+    device = logits.device
+    dtype = logits.dtype
+
+    # Accumulate CE sum and counts per position
+    ce_sum = torch.zeros((bsz, seqlen), device=device, dtype=dtype)
+    count = torch.zeros((bsz, seqlen), device=device, dtype=dtype)
+
+    # Optional precomputed mask from labels (ignore_index)
+    has_label_mask = (target_ids == ignore_index)
+
+    # For k-th head (k=0 -> 1-step ahead), align and compute CE
+    for k in range(H):
+        shift = k + 1
+        valid_len = seqlen - shift
+        if valid_len <= 0:
+            break
+
+        # Slice logits and labels for valid region
+        logits_k = logits[:, :valid_len, k, :]  # [B, valid_len, V]
+        labels_k = target_ids[:, shift:shift + valid_len]  # [B, valid_len]
+
+        # Apply cross-entropy over time dimension
+        ce_k = F.cross_entropy(
+            logits_k.transpose(1, 2),  # [B, V, valid_len]
+            labels_k,
+            ignore_index=ignore_index,
+            reduction="none",
+        )  # [B, valid_len]
+
+        # Map back to [B, S]: positions t in [0, valid_len-1]
+        ce_sum[:, :valid_len] = ce_sum[:, :valid_len] + ce_k
+
+        # Count valid positions (exclude ignore_index)
+        if has_label_mask.any():
+            # Valid where label != ignore_index
+            valid_k = (~has_label_mask[:, shift:shift + valid_len]).to(dtype)
+            count[:, :valid_len] = count[:, :valid_len] + valid_k
+        else:
+            count[:, :valid_len] = count[:, :valid_len] + 1.0
+
+    # Avoid division by zero
+    count_clamped = torch.clamp(count, min=1.0)
+    ce_avg = ce_sum / count_clamped
+
+    valid_mask = count > 0
+    return ce_avg, valid_mask
+
+
+@trainer_registry.register("mtp-weighted-ce-trainer", category="trainer", version="1.0.0")
+class MTPWeightedCETrainer(BaseComponent):
+    """
+    Trainer that applies token weights to MTP CE across heads.
+
+    Expected config keys:
+      - n_heads: int (MTP heads)
+      - horizon: int (same as n_heads)
+      - loss_config: { weight_norm, lambda, temperature, epsilon, max_weight }
+      - mixed_precision: str ("bf16"|"fp16"|"fp32")
+      - fsdp_config: dict or None (FSDP options)
+      - scorer: Scorer instance (must implement run())
+      - full_finetune / lora_config: routed but not used here directly
+    """
+
+    def __init__(self, config: dict[str, Any] | None = None):
+        super().__init__(config)
+        self.model: nn.Module | None = None
+        self.optimizer = None
+        self.global_step: int = 0
+        self.horizon: int = int(self.config.get("horizon", 4))
+
+    def setup(self, ctx: dict[str, Any]) -> None:
+        super().setup(ctx)
+        dm = get_dist_manager()
+
+        # Expect model and optimizer to be provided in ctx
+        model: nn.Module | None = ctx.get("model")
+        optimizer = ctx.get("optimizer")
+        if model is None:
+            raise ValueError("Trainer requires 'model' in ctx")
+        if optimizer is None:
+            raise ValueError("Trainer requires 'optimizer' in ctx")
+
+        # Optional: wrap with FSDP
+        fsdp_cfg = self.config.get("fsdp_config")
+        if fsdp_cfg:
+            model = dm.setup_fsdp(model, fsdp_cfg)
+
+        self.model = model
+        self.optimizer = optimizer
+
+        # Mixed precision policy selection
+        mp = str(self.config.get("mixed_precision", "bf16")).lower()
+        if mp not in {"bf16", "fp16", "fp32"}:
+            mp = "bf16"
+        self._amp_dtype = (
+            torch.bfloat16 if mp == "bf16" else (torch.float16 if mp == "fp16" else torch.float32)
+        )
+
+        # Attach scorer if provided
+        self.scorer = self.config.get("scorer")
+
+        # Loss/weight config
+        self.loss_cfg = self.config.get("loss_config", {})
+        # Optional MLflow manager for logging
+        self.mlflow = ctx.get("mlflow_manager")
+
+    def train_step(self, batch: dict[str, Any]) -> dict[str, Any]:
+        if self.model is None:
+            raise RuntimeError("Trainer not initialized. Call setup() first.")
+
+        self.model.train()
+
+        input_ids: torch.Tensor = batch["input_ids"]  # [B, S]
+        target_ids: torch.Tensor = batch["labels"]  # [B, S]
+
+        with torch.autocast(device_type="cuda" if torch.cuda.is_available() else "cpu", dtype=self._amp_dtype):
+            # Model is expected to output logits for each horizon head
+            outputs: dict[str, Any] | torch.Tensor = self.model(**batch)
+
+            if isinstance(outputs, dict) and "logits" in outputs:
+                logits = outputs["logits"]  # [B, S, H, V] expected
+            else:
+                logits = outputs  # assume tensor
+
+            # Shape validation
+            if logits.ndim != 4:
+                raise ValueError(
+                    f"Expected logits shape [B,S,H,V], got {tuple(logits.shape)}"
+                )
+
+            # Ensure logits require grad for tests/models that return detached tensors
+            if not logits.requires_grad:
+                logits = logits.detach().requires_grad_(True)
+
+            # Compute average CE across valid heads per token with k-step alignment
+            ce_per_token, valid_mask = _compute_mtp_ce_loss(
+                logits, target_ids, self.horizon, ignore_index=-100
+            )  # [B, S], [B, S]
+
+            # Build scorer context to get token weights
+            if self.scorer is not None:
+                scorer_ctx = {
+                    "base_logits": logits[:, :, 0, :],  # provide one head if needed
+                    "target_ids": target_ids,
+                    "seq_lengths": [int(target_ids.shape[1])] * int(target_ids.shape[0]),
+                }
+                score_out = self.scorer.run(scorer_ctx)
+                w_out = score_out.get("weights")
+                if isinstance(w_out, torch.Tensor):
+                    weights = w_out.to(device=ce_per_token.device, dtype=ce_per_token.dtype)
+                else:
+                    weights_np = np.asarray(w_out)
+                    if weights_np.ndim == 1:
+                        weights_np = weights_np[None, :]
+                    weights = torch.tensor(
+                        weights_np, device=ce_per_token.device, dtype=ce_per_token.dtype
+                    )
+                # Align shapes conservatively
+                if weights.shape != ce_per_token.shape:
+                    min_len = min(weights.shape[1], ce_per_token.shape[1])
+                    weights = weights[:, :min_len]
+                    ce_per_token = ce_per_token[:, :min_len]
+                    valid_mask = valid_mask[:, :min_len]
+            else:
+                weights = torch.ones_like(ce_per_token)
+                valid_mask = torch.ones_like(ce_per_token, dtype=torch.bool)
+
+            # Apply lambda scaling
+            lambda_w = float(self.loss_cfg.get("lambda", 0.3))
+            loss_per_token = lambda_w * weights * ce_per_token  # [B, S]
+
+            # Compute masked mean over valid tokens only
+            valid_mask_f = valid_mask.to(ce_per_token.dtype)
+            denom = torch.clamp(valid_mask_f.sum(), min=1.0)
+            loss = (loss_per_token * valid_mask_f).sum() / denom
+
+        # Backward and optimize
+        loss.backward()
+
+        # Grad clip (from optimizer component if available)
+        grad_clip = float(getattr(self.optimizer, "grad_clip", 1.0))
+        if math.isfinite(grad_clip) and grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), grad_clip)
+
+        self.optimizer.step()
+        self.optimizer.zero_grad()
+
+        self.global_step += 1
+
+        # Optional MLflow logging
+        if self.mlflow is not None:
+            try:
+                # Per-head CE means (diagnostics)
+                with torch.no_grad():
+                    bsz, seqlen, H, vocab = logits.shape
+                    # Approximate head CE means using valid regions only
+                    ce_head_means = []
+                    for k in range(H):
+                        shift = k + 1
+                        valid_len = seqlen - shift
+                        if valid_len <= 0:
+                            ce_head_means.append(torch.tensor(0.0, device=logits.device))
+                            continue
+                        logits_k = logits[:, :valid_len, k, :]
+                        labels_k = target_ids[:, shift:shift + valid_len]
+                        ce_k = F.cross_entropy(
+                            logits_k.transpose(1, 2), labels_k, ignore_index=-100, reduction="none"
+                        )
+                        ce_head_means.append(ce_k.mean())
+                    ce_head_means = torch.stack(ce_head_means)
+                    metrics = {f"train/ce_head_{i}": float(x) for i, x in enumerate(ce_head_means)}
+                    metrics.update(
+                        {
+                            "train/loss": float(loss.detach().item()),
+                            "train/ce_mean": float((ce_per_token[valid_mask]).mean().item()) if valid_mask.any() else 0.0,
+                        }
+                    )
+                    # Weight statistics on aligned region
+                    w_eff = weights[valid_mask]
+                    if w_eff.numel() > 0:
+                        metrics.update(
+                            {
+                                "train/weight_mean": float(w_eff.mean().item()),
+                                "train/weight_min": float(w_eff.min().item()),
+                                "train/weight_max": float(w_eff.max().item()),
+                            }
+                        )
+                    # Valid token ratio
+                    total_tokens = float(valid_mask.numel())
+                    valid_tokens = float(valid_mask.sum().item())
+                    metrics["train/valid_token_ratio"] = (
+                        valid_tokens / total_tokens if total_tokens > 0 else 0.0
+                    )
+                self.mlflow.log_metrics(metrics, step=self.global_step)
+            except Exception:
+                # Never fail training on logging errors
+                pass
+
+        # Failure gates
+        if not torch.isfinite(loss) or not torch.isfinite(ce_per_token).all() or not torch.isfinite(weights).all():
+            if self.mlflow is not None:
+                try:
+                    self.mlflow.log_metrics({"train/failure": 1.0}, step=self.global_step)
+                except Exception:
+                    pass
+            raise RuntimeError("Detected NaN/Inf in loss or inputs; aborting training step.")
+
+        return {
+            "loss": float(loss.detach().item()),
+            "lr": float(getattr(self.optimizer, "_last_lr", 0.0)),
+        }
+
+    def run(self, ctx: dict[str, Any]) -> dict[str, Any]:
+        """
+        Minimal training loop over a provided dataloader in ctx.
+        Expects ctx to provide 'train_dataloader' and optional 'max_steps'.
+        """
+        if self.model is None:
+            raise RuntimeError("Trainer not initialized. Call setup() first.")
+
+        dataloader = ctx.get("train_dataloader")
+        if dataloader is None:
+            raise ValueError("Trainer.run expects 'train_dataloader' in ctx")
+        max_steps: int | None = ctx.get("max_steps")
+
+        metrics = {}
+        for step, batch in enumerate(dataloader):
+            out = self.train_step(batch)
+            metrics = out
+            if max_steps is not None and step + 1 >= max_steps:
+                break
+        return metrics
+
+

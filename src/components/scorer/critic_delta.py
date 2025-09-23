@@ -15,6 +15,7 @@ Mathematical foundation:
 from typing import Any
 
 import numpy as np
+import torch
 import torch.nn as nn
 
 from src.components.base import BaseComponent
@@ -353,8 +354,14 @@ class CriticDeltaScorer(BaseComponent):
         ), f"Mean weight {statistics['mean_weight']} not in [0.95, 1.05]"
         assert statistics["nan_count"] == 0, "NaN values in weights"
 
+        # Also return torch tensors for downstream consumers (trainer) to avoid conversions
+        weights_tensor = torch.tensor(weights, dtype=torch.float32)
+        deltas_tensor = torch.tensor(deltas, dtype=torch.float32)
+        values_tensor = torch.tensor(values, dtype=torch.float32)
+
         return {
             "weights": weights.tolist(),
+            "weights_tensor": weights_tensor,
             "deltas": deltas.tolist(),
             "values": values.tolist(),
             "statistics": statistics,

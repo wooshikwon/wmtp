@@ -179,7 +179,8 @@ class Loss(BaseModel):
         default=0.3,
         gt=0,
         le=1,
-        field_alias="lambda",
+        validation_alias="lambda",
+        serialization_alias="lambda",
         description="Loss weight strength",
     )
     temperature: float = Field(default=0.7, gt=0, description="Softmax temperature")
