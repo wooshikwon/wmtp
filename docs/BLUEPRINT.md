@@ -13,7 +13,7 @@
 
   * Base(MTP): **facebook/multi-token-prediction**(7B\_1T\_4 계열; n\_heads=4 기본), tokenizer 공유
   * Reward Model: **sfair/Llama-3-8B-RM-Reward-Model** (시퀀스 보상 → 토큰 분배 필요)
-  * Reference(Rho-1): **Sheared LLaMA 1.3B**(head=1, CE 기준점)
+  * Reference(Rho-1): **CodeLlama-7B-Python**(코드 도메인 특화, MTP와 tokenizer/vocab 호환)
 * **파인튜닝 방식**: **Full fine-tuning 기본**, `recipe.yaml`로 **LoRA/QLoRA 옵션** 토글
 * **데이터·평가**: **MBPP, CodeContests** 사용. Meta MTP 논문과 동일 프로토콜/지표(예: MBPP exact-match, CodeContests pass\@k) 재현
 * **분산/정밀도**: A100(40/80GB) 기준 **bf16** 우선, **FSDP**(Auto Wrap + Activation Checkpointing) 기본. 대규모 시 **ZeRO-3** 대안
@@ -22,7 +22,7 @@
 * **S3 레이아웃**:
 
   * `s3://<bucket>/datasets/{mbpp,contest}/…`
-  * `s3://<bucket>/models/{7b_1t_4,llama3_8b_rm,sheared_llama_1.3b}/…`
+  * `s3://<bucket>/models/{7b_1t_4,llama3_8b_rm,codellama_7b_python}/…`
   * `s3://<bucket>/mlflow/` (tracking/registry/artifacts)
 * **로컬 우선 정책**: 로컬 경로 **존재 시 로컬 사용**, 없으면 S3에서 **미러링 후 캐시**
 * **보안/시크릿**: VESSL Secret + 런타임 env(ACCESS\_KEY/SECRET, MLFLOW\_\*), 코드 내 하드코딩 금지
@@ -36,7 +36,7 @@ project/
 ├─ models/                       # (옵션) 로컬 캐시/직접 배치 경로
 │  ├─ 7b_1t_4/
 │  ├─ Llama_3_8B_RM/
-│  └─ sheared_llama_1.3B/
+│  └─ codellama_7b_python/
 ├─ dataset/
 │  ├─ mbpp/
 │  └─ contest/
@@ -87,7 +87,7 @@ paths:
   models:
     base_local: "models/7b_1t_4"
     rm_local: "models/Llama_3_8B_RM"
-    ref_local: "models/sheared_llama_1.3B"
+    ref_local: "models/codellama_7b_python"
   datasets:
     mbpp_local: "dataset/mbpp"
     contest_local: "dataset/contest"
@@ -131,7 +131,7 @@ run:
 model:
   base_id: "facebook/multi-token-prediction"
   rm_id: "sfair/Llama-3-8B-RM-Reward-Model"
-  ref_id: "ShearedLlama-1.3B"         # 정확 HF id로 교체
+  ref_id: "codellama/CodeLlama-7b-Python-hf"
   tokenizer_pad_side: "right"
   mtp:
     n_heads: 4
@@ -374,7 +374,7 @@ run:
 
 * **s3.py**: download\_if\_missing(path\_spec) / upload\_artifact / exists / etag
 * **mlflow\.py**: init(experiment, run\_name, tags), log\_params/metrics/artifacts, auto-resume
-* **hf.py**: 안전한 `from_pretrained`(로컬 우선→S3→HF), tokenizer resize 규칙, (선택) **MTPWrapper** 설계 지침: [B,S,V] 출력 모델에 대해 H>1 요청 시 teacher-forcing 기반 k-step 로짓 생성. 기본은 H=1 폴백.
+* **hf.py**: 안전한 `from_pretrained`(로컬 우선→S3→HF), tokenizer resize 규칙, (선택) **MTPWrapper** 설계 지침: [B,S,V] 출력 모델에 대해 H>1 요청 시 teacher-forcing 기반 k-step 로짓 생성. 기본은 H=1 폴백. Reference 모델은 MTP 모델과 동일한 tokenizer 사용 권장(CodeLlama-7B-Python).
 * **dist.py**: FSDP 초기화/auto wrap/ckpt, seed 설정, throughput 측정
 * **eval.py**: MBPP/Contest 드라이버(프로토콜 캡슐화)
 

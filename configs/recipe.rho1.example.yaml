@@ -13,8 +13,7 @@ run:
 # Model configuration
 model:
   base_id: "facebook/multi-token-prediction"
-  rm_id: "sfair/Llama-3-8B-RM-Reward-Model"
-  ref_id: "ShearedLlama-1.3B"
+  ref_id: "codellama/CodeLlama-7b-Python-hf"  # CodeLlama for better CE distribution matching
   tokenizer_pad_side: "right"
   mtp:
     n_heads: 4
@@ -71,13 +70,6 @@ loss:
   temperature: 0.5  # Lower temperature for sharper distribution
   epsilon: 0.1
   max_weight: 2.5
-
-# Critic configuration (not used but required by schema)
-critic:
-  target: "rm_sequence"
-  token_spread: "uniform"
-  delta_mode: "td"
-  normalize: "zscore"
 
 # Rho-1 specific configuration (active for this recipe)
 rho1:

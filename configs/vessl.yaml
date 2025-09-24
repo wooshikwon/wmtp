@@ -1,0 +1,88 @@
+# VESSL Configuration for WMTP Fine-Tuning Framework
+name: wmtp-finetune
+description: Weighted Multi-Token Prediction Fine-Tuning
+
+# Docker image specification
+image: wmtp:latest  # Will be replaced with actual registry URL
+
+# Resource specifications
+resources:
+  cluster: vessl-gcp-oregon  # Update with your cluster
+  preset: v1-a100-4-pod  # 4x A100 GPUs
+  # Alternative presets for different experiments:
+  # preset: v1-a100-1-pod  # Single A100 for testing
+  # preset: v1-v100-4-pod  # 4x V100 for cost efficiency
+
+# No volume mounts - using S3 directly
+# Models and datasets will be downloaded from S3/HuggingFace on demand
+
+# Environment variables
+env:
+  # MLflow tracking (using wmtp bucket)
+  MLFLOW_TRACKING_URI: s3://wmtp/mlflow
+  MLFLOW_REGISTRY_URI: s3://wmtp/mlflow
+
+  # S3 configuration (use VESSL secrets)
+  AWS_ACCESS_KEY_ID: ${secret:AWS_ACCESS_KEY_ID}
+  AWS_SECRET_ACCESS_KEY: ${secret:AWS_SECRET_ACCESS_KEY}
+  AWS_DEFAULT_REGION: ap-northeast-2
+  S3_BUCKET_NAME: wmtp
+
+  # HuggingFace token for model downloads
+  HF_TOKEN: ${secret:HF_TOKEN}
+
+  # PyTorch settings
+  TORCH_CUDA_ARCH_LIST: "8.0"  # A100 architecture
+  PYTORCH_CUDA_ALLOC_CONF: "max_split_size_mb:512"
+
+  # Distributed training
+  MASTER_ADDR: localhost
+  MASTER_PORT: 29500
+
+  # Logging
+  TRANSFORMERS_VERBOSITY: info
+  ACCELERATE_LOG_LEVEL: info
+
+# Command to run
+command: |
+  # Setup environment
+  echo "Setting up environment for S3-based execution..."
+
+  # Create cache directories
+  mkdir -p /tmp/models /tmp/datasets /tmp/.cache
+
+  # Export environment variables for Python to use
+  export PYTHONUNBUFFERED=1
+
+  # Run training with VESSL config (S3 mode)
+  echo "Starting training with S3 storage..."
+  uv run python -m src.cli.train \
+    --config configs/config.vessl.yaml \
+    --recipe configs/recipe.rho1.example.yaml
+
+  # After training, run evaluation
+  echo "Running evaluation..."
+  uv run python -m src.cli.eval \
+    --config configs/config.vessl.yaml \
+    --recipe configs/recipe.rho1.example.yaml \
+    --checkpoint /tmp/models/checkpoints/final.pt
+
+# Monitoring and alerts
+monitoring:
+  gpu_utilization:
+    threshold: 0.8
+    duration: 300  # 5 minutes
+  memory_usage:
+    threshold: 0.9
+
+# Auto-restart policy
+restart_policy:
+  condition: on-failure
+  max_attempts: 3
+
+# Secrets to configure (add via VESSL UI or use .env file values)
+secrets:
+  - AWS_ACCESS_KEY_ID      # From .env file
+  - AWS_SECRET_ACCESS_KEY   # From .env file
+  - HF_TOKEN                # From .env file
+  - S3_BUCKET_NAME          # Optional if hardcoded above

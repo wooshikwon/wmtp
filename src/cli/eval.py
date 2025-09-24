@@ -71,7 +71,7 @@ def evaluate(
         "--save-report",
         help="Generate and save detailed evaluation report",
     ),
-    batch_size: int | None = typer.Option(
+    batch_size: int | None = typer.Option(  # noqa: ARG001
         None,
         "--batch-size",
         "-b",
@@ -131,6 +131,8 @@ def evaluate(
             datasets=dataset_list,
             run_name=f"eval_{rcp.run.name}",
             tags=tag_list,
+            save_predictions=save_predictions,
+            save_report=save_report,
         )
 
         # Extract metrics for display
@@ -145,14 +147,18 @@ def evaluate(
         # Group metrics by dataset for better display
         dataset_metrics = {}
         for metric_name, metric_value in results_metrics.items():
-            if isinstance(metric_value, (int, float)):
+            if isinstance(metric_value, int | float):
                 # Parse metric name to extract dataset
                 if metric_name.startswith("mbpp"):
                     dataset = "MBPP"
-                    metric_key = metric_name.replace("mbpp_", "").replace("mbpp", "exact_match")
+                    metric_key = metric_name.replace("mbpp_", "").replace(
+                        "mbpp", "exact_match"
+                    )
                 elif "contest" in metric_name:
                     dataset = "CodeContests"
-                    metric_key = metric_name.replace("contest_", "").replace("codecontests_", "")
+                    metric_key = metric_name.replace("contest_", "").replace(
+                        "codecontests_", ""
+                    )
                 else:
                     dataset = "Other"
                     metric_key = metric_name
@@ -173,20 +179,15 @@ def evaluate(
         console.print(table)
 
         # Summary information
-        console.print(f"\n[green]Evaluation completed successfully![/green]")
+        console.print("\n[green]Evaluation completed successfully![/green]")
         console.print(f"Algorithm: {rcp.train.algo}")
         console.print(f"Model: {rcp.model.base_id}")
         console.print(f"Checkpoint: {checkpoint}")
 
-        if save_predictions:
-            console.print(f"[green]Predictions and artifacts saved via MLflow[/green]")
-
-        if save_report:
-            console.print(f"[green]Detailed evaluation report saved via MLflow[/green]")
-
         # Save results to output directory if specified
         if output_dir:
             import json
+
             results_file = output_dir / "evaluation_results.json"
             with open(results_file, "w") as f:
                 json.dump(evaluation_results, f, indent=2, default=str)

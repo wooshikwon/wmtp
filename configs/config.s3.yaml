@@ -1,0 +1,62 @@
+# VESSL Environment Configuration for WMTP Fine-Tuning Framework
+# This configuration is for VESSL GPU environments with S3 storage
+
+# Project metadata
+project: "mtp_ft"
+seed: 42
+
+# Storage configuration - Using S3 for VESSL
+storage:
+  mode: "s3"  # S3 mode for VESSL deployment
+  s3:
+    bucket: "wmtp"
+    region: "ap-northeast-2"
+    prefix: "mtpfw/"
+
+# Path configurations for S3
+paths:
+  models:
+    # S3 paths - models will be downloaded from HF or S3
+    base_s3: "models/7b_1t_4"
+    rm_s3: "models/Llama_3_8B_RM"
+    ref_s3: "models/CodeLlama-7B-Python"
+    # Local cache for downloaded models
+    base_local: "/tmp/models/7b_1t_4"
+    rm_local: "/tmp/models/Llama_3_8B_RM"
+    ref_local: "/tmp/models/CodeLlama-7B-Python"
+  datasets:
+    # S3 paths for datasets
+    mbpp_s3: "datasets/mbpp"
+    contest_s3: "datasets/contest"
+    # Local cache for downloaded datasets
+    mbpp_local: "/tmp/datasets/mbpp"
+    contest_local: "/tmp/datasets/contest"
+  cache: "/tmp/.cache"
+
+# MLflow configuration with S3 backend
+mlflow:
+  experiment: "mtp/wmtp"
+  tracking_uri: "s3://wmtp/mlflow"
+  registry_uri: "s3://wmtp/mlflow"
+  artifact_location: "s3://wmtp/mlflow-artifacts"
+
+# Launcher configuration
+launcher:
+  target: "vessl"
+  distributed:
+    enabled: true
+    backend: "nccl"
+
+# VESSL-specific settings
+runtime:
+  num_workers: 8  # DataLoader workers
+  prefetch_factor: 2
+  persistent_workers: true
+  mixed_precision: "fp16"  # or "bf16" for A100
+
+# Checkpointing to S3
+checkpoint:
+  save_to_s3: true
+  s3_prefix: "checkpoints/"
+  keep_last_n: 3
+  save_interval: 1000  # steps
