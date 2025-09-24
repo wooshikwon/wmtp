@@ -1,15 +1,21 @@
 """
-Critic-based token importance scorer implementation.
+Critic-WMTP 알고리즘: 강화학습의 가치함수로 토큰 중요도를 계산합니다.
 
-This module implements the critic-weighted scoring approach using
-a reward model to compute token-level importance weights following
-the WMTP Critic-Delta algorithm from BLUEPRINT.md.
+WMTP 연구에서 핵심 아이디어:
+"더 큰 가치 증가 = 더 중요한 토큰"
 
-Mathematical foundation:
-1. RM sequence reward R → token-level rewards r_t via GAE
-2. Value function V_θ(h_t) regression: min Σ_t (V_θ(h_t) - V̂_t)²
-3. Delta computation: δ_t = V_t - V_{t-1} (V_{-1} = 0)
-4. Weight normalization: w_t = softmax(δ_t / T) with mean=1.0 enforcement
+이 모듈은 연구제안서의 Critic-Weighted 방식을 구현합니다:
+- Stage 1: RM(Reward Model) 보상으로 가치헤드 사전 학습
+- Stage 2: 학습된 가치헤드로 토큰별 중요도 δ_t = V(s_t) - V(s_{t-1}) 계산
+
+수학적 원리 (연구제안서 공식):
+1. 시퀀스 보상 R → GAE로 토큰별 가치 목표값 V̂_t 생성
+2. 가치함수 학습: min Σ_t (V_θ(h_t) - V̂_t)²
+3. Delta 계산: δ_t = V_t - V_{t-1} (여기서 V_{-1} = 0)
+4. 헤드별 가중치: w_{t+k} = softmax([δ_{t+1}, δ_{t+2}, δ_{t+3}, δ_{t+4}])
+
+최종 출력: [batch, seq_len, horizon] 형태의 헤드별 가중치
+각 헤드 k는 t+(k+1) 위치의 토큰을 예측하므로 해당 위치의 delta를 가중치로 사용
 """
 
 from typing import Any
@@ -25,26 +31,48 @@ from src.components.registry import scorer_registry
 @scorer_registry.register("critic-delta-v1", category="scorer", version="1.0.0")
 class CriticDeltaScorer(BaseComponent):
     """
-    Critic-based token importance scorer.
+    Critic-WMTP 방식: 강화학습 가치함수로 토큰 중요도를 계산하는 스코어러입니다.
 
-    Implements the two-stage approach:
-    1. Stage 1: Train value head V_θ to predict cumulative rewards
-    2. Stage 2: Use V_θ to compute token deltas for importance weighting
+    연구 맥락:
+    WMTP의 세 가지 알고리즘 중 하나로, 강화학습의 가치함수 개념을 활용합니다.
+    "미래에 더 큰 보상을 가져다주는 토큰 = 더 중요한 토큰"이라는 직관을 구현합니다.
+
+    2단계 학습 프로세스:
+    Stage 1: 가치헤드 사전학습
+    - RM이 제공한 시퀀스 보상 R을 토큰별로 분배 (GAE 사용)
+    - Value Head V_θ(h_t)가 토큰별 누적 보상을 예측하도록 학습
+    - 손실함수: L = Σ_t (V_θ(h_t) - V̂_t)²
+
+    Stage 2: Delta 기반 가중치 생성
+    - 학습된 가치함수로 각 토큰의 가치 V_t 계산
+    - Delta 계산: δ_t = V_t - V_{t-1} (가치 증가량)
+    - 헤드별 가중치: softmax([δ_{t+1}, δ_{t+2}, δ_{t+3}, δ_{t+4}])
+
+    장점: 이론적으로 탄탄한 강화학습 기반
+    단점: 가치함수 학습의 불안정성 (교수님 피드백)
     """
 
     def __init__(self, config: dict[str, Any] | None = None):
         """
-        Initialize critic scorer.
+        Critic 스코어러를 초기화합니다.
 
-        Args:
-            config: Scorer configuration including:
-                - target: Target for critic (default: "rm_sequence")
-                - token_spread: Method for spreading rewards (default: "gae")
-                - delta_mode: Delta computation mode (default: "td")
-                - normalize: Normalization method (default: "zscore")
-                - temperature: Softmax temperature (default: 0.7)
-                - gamma: Discount factor for GAE (default: 0.99)
-                - gae_lambda: GAE lambda parameter (default: 0.95)
+        연구 맥락:
+        이 설정들은 연구제안서의 Critic-WMTP 알고리즘 구현에 필수적입니다.
+        각 파라미터는 강화학습 이론과 실제 구현 안정성을 고려하여 설계되었습니다.
+
+        매개변수:
+            config: 스코어러 설정 딕셔너리
+                - target: Critic 목표 ("rm_sequence" - RM 시퀀스 보상 사용)
+                - token_spread: 보상 분배 방법 ("gae" - GAE 방식 추천)
+                - delta_mode: Delta 계산 모드 ("td" - Temporal Difference)
+                - normalize: 정규화 방법 ("zscore" - Z점수 정규화)
+                - temperature: Softmax 온도 (0.7 - 적당히 sharp한 분포)
+                - gamma: GAE 할인계수 (0.99 - 미래 보상 중시)
+                - gae_lambda: GAE 람다값 (0.95 - bias-variance 균형)
+
+        주의사항:
+        - gamma는 너무 낮으면 단기적 보상만 고려, 너무 높으면 분산 증가
+        - temperature는 낮을수록 sharp, 높을수록 uniform한 분포
         """
         super().__init__(config)
         self.target = self.config.get("target", "rm_sequence")
@@ -55,32 +83,38 @@ class CriticDeltaScorer(BaseComponent):
         self.gamma = self.config.get("gamma", 0.99)
         self.gae_lambda = self.config.get("gae_lambda", 0.95)
 
-        # Value head will be initialized when needed
+        # 가치헤드는 필요할 때 초기화됩니다 (Stage 1에서 학습, Stage 2에서 사용)
         self.value_head: nn.Module | None = None
-        self.value_head_trained = False
+        self.value_head_trained = False  # Stage 1 완료 여부 표시
 
     def setup(self, ctx: dict[str, Any]) -> None:
-        """Initialize value head if needed and optionally load from checkpoint."""
+        """
+        가치헤드를 초기화하고 필요시 체크포인트에서 로드합니다.
+
+        연구 맥락:
+        Critic-WMTP는 2단계 학습이므로 가치헤드의 초기화가 중요합니다.
+        Stage 1에서 학습한 가치헤드를 Stage 2에서 재사용해야 합니다.
+        """
         super().setup(ctx)
 
-        # Initialize value head based on hidden size
-        hidden_size = ctx.get("hidden_size", 4096)  # Default for 7B model
+        # 모델 크기에 따른 가치헤드 초기화 (7B 모델 기본값: 4096)
+        hidden_size = ctx.get("hidden_size", 4096)
         if self.value_head is None:
             self.value_head = nn.Sequential(
-                nn.Linear(hidden_size, hidden_size // 2),
-                nn.ReLU(),
-                nn.Linear(hidden_size // 2, 1),
+                nn.Linear(hidden_size, hidden_size // 2),  # 은닉상태 → 중간층 (2048)
+                nn.ReLU(),  # 비선형 활성화
+                nn.Linear(hidden_size // 2, 1),  # 중간층 → 스칼라 가치 예측
             )
 
-        # Optionally load trained value head weights
+        # Stage 1에서 학습한 가치헤드 가중치 로드 (선택적)
         value_head_path = ctx.get("value_head_path")
         if value_head_path:
             try:
                 state = torch.load(value_head_path, map_location="cpu")
                 self.value_head.load_state_dict(state)
-                self.value_head_trained = True
+                self.value_head_trained = True  # Stage 1 완료됨
             except Exception:
-                # Non-fatal: continue with randomly initialized head
+                # 치명적 오류 아님: 랜덤 초기화된 헤드로 계속 진행
                 self.value_head_trained = False
 
     def spread_reward_to_tokens(
@@ -170,9 +204,7 @@ class CriticDeltaScorer(BaseComponent):
 
         return value_targets
 
-    def _compute_head_weights(
-        self, values: np.ndarray, horizon: int = 4
-    ) -> np.ndarray:
+    def _compute_head_weights(self, values: np.ndarray, horizon: int = 4) -> np.ndarray:
         """
         연구제안서 정확 구현: 각 위치에서 헤드별 가중치 계산
 
@@ -401,8 +433,8 @@ class CriticDeltaScorer(BaseComponent):
 
             # Stack results - 이제 [B, S, H] 형태!
             weights = np.array(all_weights)  # [B, S, H]
-            deltas = np.array(all_deltas)    # [B, S]
-            values = np.array(all_values)    # [B, S]
+            deltas = np.array(all_deltas)  # [B, S]
+            values = np.array(all_values)  # [B, S]
 
         else:
             # Real implementation with model hidden states
@@ -445,7 +477,9 @@ class CriticDeltaScorer(BaseComponent):
                 vals = values[b, :seq_len]
                 deltas = self.compute_deltas(vals)
                 # 새로운 헤드별 가중치 계산 (연구제안서 구현)
-                head_weights = self._compute_head_weights(vals, horizon=horizon)  # [seq_len, H]
+                head_weights = self._compute_head_weights(
+                    vals, horizon=horizon
+                )  # [seq_len, H]
                 all_deltas.append(deltas)
                 all_weights.append(head_weights)
 
@@ -453,12 +487,16 @@ class CriticDeltaScorer(BaseComponent):
             def pad_to_len(arr, L):
                 if len(arr) >= L:
                     return arr[:L]
-                pad_shape = (L - len(arr),) + arr.shape[1:] if arr.ndim > 1 else (L - len(arr),)
+                pad_shape = (
+                    (L - len(arr),) + arr.shape[1:] if arr.ndim > 1 else (L - len(arr),)
+                )
                 pad = np.ones(pad_shape, dtype=arr.dtype)
                 return np.concatenate([arr, pad], axis=0)
 
             deltas = np.stack([pad_to_len(d, S) for d in all_deltas], axis=0)  # [B, S]
-            weights = np.stack([pad_to_len(w, S) for w in all_weights], axis=0)  # [B, S, H]
+            weights = np.stack(
+                [pad_to_len(w, S) for w in all_weights], axis=0
+            )  # [B, S, H]
 
         # Compute statistics
         statistics = {

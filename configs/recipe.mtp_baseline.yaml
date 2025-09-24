@@ -1,0 +1,81 @@
+# MTP Baseline Recipe - Standard MTP without weighting for comparison
+# This provides the baseline for evaluating WMTP improvements
+
+# Run metadata
+run:
+  name: "mtp_baseline_mbpp"
+  tags:
+    - "baseline"
+    - "mtp"
+    - "mbpp"
+
+# Model configuration
+model:
+  base_id: "facebook/multi-token-prediction"
+  ref_id: "codellama/CodeLlama-7b-Python-hf"  # Not used for baseline but required by schema
+  tokenizer_pad_side: "right"
+  mtp:
+    n_heads: 4
+    horizon: 4
+
+# Training configuration for baseline
+train:
+  algo: "mtp-baseline"  # Key difference: no token weighting
+  full_finetune: true
+  lora:
+    enabled: false
+    r: 8
+    alpha: 16
+    dropout: 0.05
+    target_modules:
+      - "q_proj"
+      - "v_proj"
+
+# Optimizer configuration
+optim:
+  optimizer: "adamw"
+  lr: 1.0e-5
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+  grad_clip: 1.0
+  scheduler: "cosine"
+  warmup_ratio: 0.05
+
+# Data configuration
+data:
+  train:
+    sources: ["mbpp"]
+    max_length: 512
+    batch_size: 2
+    pack_sequences: false
+  eval:
+    sources: ["mbpp"]
+    max_length: 512
+    batch_size: 4
+    pack_sequences: false
+
+# Batching configuration
+batching:
+  global_batch_tokens: 1000000
+  micro_batch_size: 2
+  grad_accum_steps: 16
+
+# Loss configuration
+loss:
+  weight_norm: "none"      # No weight normalization for baseline
+  lambda: 0.001            # Minimal weight (required > 0 by schema)
+  temperature: 1.0         # No temperature scaling
+  epsilon: 1.0e-8
+  max_weight: 1.01         # Minimal amplification (> 1.0 required)
+
+# Evaluation configuration
+eval:
+  protocol: "meta-mtp"
+  sampling:
+    temperature: 0.1
+    top_p: 0.9
+    n: 1
+  metrics:
+    - "mbpp_exact"
+
+# Note: No critic or rho1 sections needed for baseline

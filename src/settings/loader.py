@@ -5,6 +5,8 @@ This module provides functions to load and validate configuration files
 with detailed error messages for debugging.
 """
 
+import os
+import re
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -27,15 +29,59 @@ class ConfigurationError(Exception):
     pass
 
 
+def substitute_env_vars(data: Any) -> Any:
+    """
+    Recursively substitute environment variables in configuration data.
+
+    Supports patterns like:
+    - ${VAR_NAME}
+    - ${VAR_NAME:-default_value}
+
+    Args:
+        data: Configuration data (dict, list, string, or other types)
+
+    Returns:
+        Data with environment variables substituted
+    """
+    if isinstance(data, dict):
+        return {key: substitute_env_vars(value) for key, value in data.items()}
+    elif isinstance(data, list):
+        return [substitute_env_vars(item) for item in data]
+    elif isinstance(data, str):
+        # Pattern for ${VAR_NAME} or ${VAR_NAME:-default}
+        pattern = r"\$\{([^}]+)\}"
+
+        def replace_env_var(match):
+            var_expr = match.group(1)
+
+            # Check for default value pattern: VAR_NAME:-default
+            if ":-" in var_expr:
+                var_name, default_value = var_expr.split(":-", 1)
+                return os.getenv(var_name.strip(), default_value.strip())
+            else:
+                # Simple variable substitution
+                var_name = var_expr.strip()
+                env_value = os.getenv(var_name)
+                if env_value is None:
+                    raise ConfigurationError(
+                        f"Environment variable '{var_name}' not found and no default provided"
+                    )
+                return env_value
+
+        return re.sub(pattern, replace_env_var, data)
+    else:
+        return data
+
+
 def load_yaml(path: str | Path) -> dict[str, Any]:
     """
-    Load a YAML file and return as dictionary.
+    Load a YAML file and return as dictionary with environment variable substitution.
 
     Args:
         path: Path to YAML file
 
     Returns:
-        Dictionary containing YAML contents
+        Dictionary containing YAML contents with environment variables substituted
 
     Raises:
         ConfigurationError: If file cannot be loaded or parsed
@@ -54,6 +100,9 @@ def load_yaml(path: str | Path) -> dict[str, Any]:
 
         if data is None:
             raise ConfigurationError(f"Empty configuration file: {path}")
+
+        # Substitute environment variables
+        data = substitute_env_vars(data)
 
         return data
 

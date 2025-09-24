@@ -37,7 +37,9 @@ class Model(BaseModel):
     """Model configuration."""
 
     base_id: str = Field(..., description="Base MTP model identifier")
-    rm_id: str = Field(..., description="Reward model identifier")
+    rm_id: str | None = Field(
+        None, description="Reward model identifier (required for critic-wmtp)"
+    )
     ref_id: str = Field(..., description="Reference model identifier")
     tokenizer_pad_side: Literal["left", "right"] = Field(
         default="right", description="Tokenizer padding side"
@@ -83,7 +85,7 @@ class LoRAConfig(BaseModel):
 class Train(BaseModel):
     """Training configuration."""
 
-    algo: Literal["critic-wmtp", "rho1-wmtp"] = Field(
+    algo: Literal["mtp-baseline", "critic-wmtp", "rho1-wmtp"] = Field(
         ..., description="Training algorithm"
     )
     full_finetune: bool = Field(default=True, description="Full fine-tuning mode")
@@ -294,11 +296,18 @@ class Recipe(BaseModel):
                 raise ValueError(
                     "critic configuration is required when algo='critic-wmtp'"
                 )
+            if self.model.rm_id is None:
+                raise ValueError(
+                    "rm_id in model configuration is required when algo='critic-wmtp'"
+                )
             # Rho1 config is ignored for critic algorithm
         elif self.train.algo == "rho1-wmtp":
             if self.rho1 is None:
                 raise ValueError("rho1 configuration is required when algo='rho1-wmtp'")
             # Critic config is ignored for rho1 algorithm
+        elif self.train.algo == "mtp-baseline":
+            # No critic or rho1 config needed for baseline
+            pass
         else:
             raise ValueError(f"Unknown algorithm: {self.train.algo}")
         return self

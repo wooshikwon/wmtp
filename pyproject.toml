@@ -25,6 +25,8 @@ dependencies = [
     "sentencepiece>=0.2.0",
     "protobuf>=3.20.0",
     "safetensors>=0.4.0",
+    "botocore>=1.40.35",
+    "fairscale>=0.4.13",
 ]
 
 [project.optional-dependencies]

@@ -13,8 +13,8 @@ import numpy as np
 import torch
 
 from src.components.base import BaseComponent
-from src.components.models.rm import compute_sequence_rewards
 from src.components.registry import trainer_registry
+from src.components.reward.sequence_reward import compute_sequence_rewards
 from src.components.scorer.critic_delta import CriticDeltaScorer
 
 

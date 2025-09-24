@@ -1,8 +1,24 @@
 """
-Base loader implementation with local-first S3 mirroring policy.
+WMTP 로더 시스템의 기반: 로컬 우선 S3 미러링 정책
 
-This module provides the foundation for all data and model loaders,
-implementing the local-first policy with automatic S3 fallback.
+WMTP 연구 맥락:
+이 모듈은 WMTP 실험의 핵심 인프라입니다. 연구자들이 세 가지 알고리즘
+(baseline/critic/rho1)을 실험할 때, 동일한 모델과 데이터셋을 안정적으로
+로드할 수 있도록 보장합니다.
+
+핵심 철학:
+"로컬 파일 → 캐시 → S3 다운로드" 순서로 효율적인 데이터 접근
+
+지원하는 실험 환경:
+- 개발자 로컬 환경: 로컬 파일 직접 사용
+- VESSL 클러스터: S3에서 자동 다운로드 및 캐싱
+- 오프라인 환경: 미리 다운로드된 캐시 활용
+
+WMTP에서의 역할:
+1. Facebook Native MTP 모델 안정적 로딩 (consolidated.pth)
+2. 코딩 평가 데이터셋 일관된 전처리 (MBPP/CodeContests/HumanEval)
+3. 실험 재현성 보장 (동일한 캐시 키 → 동일한 데이터)
+4. GPU 클러스터 비용 절약 (중복 다운로드 방지)
 """
 
 import hashlib
@@ -21,10 +37,27 @@ console = Console()
 
 class BaseLoader(BaseComponent, ABC):
     """
-    Abstract base class for all loaders.
+    모든 WMTP 로더의 추상 기본 클래스입니다.
 
-    Implements local-first policy: check local path first,
-    fall back to S3 with caching if not found.
+    연구 맥락:
+    WMTP 실험에서는 다양한 환경(로컬/클러스터)에서 동일한 데이터에 접근해야 합니다.
+    이 클래스는 "로컬 우선" 정책으로 효율적이고 안정적인 데이터 로딩을 보장합니다.
+
+    동작 원리:
+    1단계: 로컬 경로 확인 (가장 빠름)
+    2단계: 로컬 캐시 확인 (이미 다운로드된 파일)
+    3단계: S3에서 다운로드 후 캐싱 (클러스터 환경)
+    4단계: 오류 발생 (모든 경로 실패시)
+
+    WMTP 실험 시나리오:
+    - 개발: configs/config.local.yaml + 로컬 파일
+    - 클러스터: configs/config.vessl.yaml + S3 자동 다운로드
+    - CI/CD: 캐시된 파일로 빠른 테스트
+
+    상속 구조:
+    BaseLoader
+    ├── DatasetLoader (MBPP, CodeContests, HumanEval)
+    └── ModelLoader (Facebook MTP, HuggingFace)
     """
 
     def __init__(
