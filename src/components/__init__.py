@@ -13,6 +13,7 @@ from .loader.dataset import (
 from .loader.model import (
     CheckpointLoader,
     HFModelLoader,
+    MTPNativeCPULoader,
     MTPNativeLoader,
 )
 
@@ -40,6 +41,7 @@ __all__ = [
     # Model Loaders
     "HFModelLoader",
     "MTPNativeLoader",
+    "MTPNativeCPULoader",
     "CheckpointLoader",
     # Dataset Loaders
     "MBPPDatasetLoader",

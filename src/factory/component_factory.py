@@ -370,7 +370,16 @@ class ComponentFactory:
                     "7b_1t_4" in base_path.lower()
                     or "consolidated" in base_path.lower()
                 ):
-                    loader_key = "mtp-native"  # 📌 권장: 최고 성능
+                    # CPU 환경에서는 메모리 최적화된 로더 사용
+                    compute_backend = (
+                        config.devices.compute_backend
+                        if hasattr(config, "devices")
+                        else "auto"
+                    )
+                    if compute_backend == "cpu":
+                        loader_key = "mtp-native-cpu"  # 📌 CPU 전용 메모리 최적화
+                    else:
+                        loader_key = "mtp-native"  # 📌 GPU/기본 성능
                 else:
                     # HuggingFace로 변환된 MTP 모델의 경우
                     loader_key = "hf-model"
