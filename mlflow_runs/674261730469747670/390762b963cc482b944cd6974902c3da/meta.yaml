@@ -1,0 +1,14 @@
+artifact_uri: file:///Users/wesley/Desktop/wooshikwon/wmtp/mlflow_runs/674261730469747670/390762b963cc482b944cd6974902c3da/artifacts
+end_time: null
+entry_point_name: ''
+experiment_id: '674261730469747670'
+lifecycle_stage: active
+run_id: 390762b963cc482b944cd6974902c3da
+run_name: mtp baseline_quick_61b50784
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1758698746386
+status: 1
+tags: []
+user_id: wesley

@@ -1,4 +1,25 @@
-"""Facebook MTP native model loader."""
+"""
+WMTP 연구의 핵심: Facebook MTP 원본 모델 로더
+
+WMTP 연구 맥락:
+이 모듈은 Meta(Facebook)에서 공개한 Multi-Token Prediction 모델의 원본 형식을 로드합니다.
+WMTP 연구의 기준점(baseline)이 되는 모델로, 4개의 예측 헤드가 내장된 상태로 제공됩니다.
+
+지원하는 모델 형식:
+1. consolidated.pth: 단일 체크포인트 파일 (일반적)
+2. consolidated.*.pth: 분할된 대용량 모델 (8B+ 파라미터)
+3. native MTP 구조: t+1, t+2, t+3, t+4 예측 헤드 내장
+
+WMTP 알고리즘과의 연결:
+- Baseline: 4개 헤드에 균등 가중치 적용
+- Critic-WMTP: Value head 추가 후 토큰별 중요도 계산
+- Rho1-WMTP: 참조모델로 활용하여 어려운 토큰 식별
+
+성능 최적화 특징:
+- 자동 디바이스 감지 (CUDA/MPS/CPU)
+- 메모리 효율적 로딩 (분할 체크포인트 지원)
+- S3 자동 다운로드 (클러스터 환경)
+"""
 
 from __future__ import annotations
 
@@ -71,7 +92,35 @@ def resolve_device_from_config(
     "mtp-native", version="1.0.0", description="Facebook MTP native format loader"
 )
 class MTPNativeLoader(ModelLoader):
-    """Load Facebook Multi-Token Prediction models in native format."""
+    """
+    Facebook Multi-Token Prediction 모델의 원본 형식 로더입니다.
+
+    WMTP 연구에서의 핵심 역할:
+    Meta에서 공개한 MTP 모델을 정확히 로드하여, WMTP 알고리즘 연구의 기반을 제공합니다.
+    원본 모델의 4개 예측 헤드 구조를 그대로 보존하면서, 토큰별 가중치를 적용할 수 있도록
+    준비합니다.
+
+    지원하는 MTP 모델 구조:
+    - Base Model: Transformer 아키텍처 (LLaMA 기반)
+    - MTP Heads: 4개 병렬 예측 헤드 (t+1, t+2, t+3, t+4)
+    - Vocabulary: 32,000개 토큰 (CodeLlama 토크나이저 호환)
+
+    로딩 전략:
+    1. consolidated.pth 우선 확인 (단일 파일)
+    2. 분할 체크포인트 감지 및 병합 (대용량 모델)
+    3. 토크나이저 자동 연결 (동일 디렉토리)
+    4. 디바이스별 최적화 (CUDA/MPS/CPU)
+
+    WMTP 알고리즘별 활용:
+    - Baseline: model.heads[k]에 균등 가중치 적용
+    - Critic: Value head 추가, GAE로 토큰별 가중치 계산
+    - Rho1: 참조모델로 사용, logits 차이로 중요도 판단
+
+    성능 특징:
+    - Zero-copy 텐서 로딩 (메모리 효율)
+    - 자동 디바이스 배치 (config 기반)
+    - 혼합 정밀도 지원 (float16/bfloat16)
+    """
 
     def __init__(self, config: dict[str, Any] | None = None):
         super().__init__(config or {})

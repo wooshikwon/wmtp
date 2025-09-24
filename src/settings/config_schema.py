@@ -110,6 +110,12 @@ class MLflow(BaseModel):
             absolute_path = Path.cwd() / relative_path
             return f"file://{absolute_path.resolve()}"
 
+        # 환경 변수 치환 후 상대 경로 처리 (예: ./mlflow_runs)
+        if v.startswith("./") or (not v.startswith(("s3://", "file://", "http://", "https://")) and "/" in v):
+            # 상대 경로를 file:// URI로 변환
+            path = Path(v).resolve()
+            return f"file://{path}"
+
         # 표준 URI 형식 검증
         if not v.startswith(("s3://", "file://", "http://", "https://")):
             raise ValueError(
