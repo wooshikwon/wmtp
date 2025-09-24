@@ -271,8 +271,12 @@ class Recipe(BaseModel):
     data: Data = Field(..., description="Data configuration")
     batching: Batching = Field(..., description="Batching configuration")
     loss: Loss = Field(..., description="Loss configuration")
-    critic: Critic = Field(..., description="Critic configuration")
-    rho1: Rho1 = Field(..., description="Rho-1 configuration")
+    critic: Critic | None = Field(
+        default=None, description="Critic configuration (required for critic-wmtp)"
+    )
+    rho1: Rho1 | None = Field(
+        default=None, description="Rho-1 configuration (required for rho1-wmtp)"
+    )
     eval: Eval = Field(..., description="Evaluation configuration")
 
     model_config = ConfigDict(
@@ -284,13 +288,17 @@ class Recipe(BaseModel):
 
     @model_validator(mode="after")
     def validate_algo_config(self):
-        """Ensure algorithm-specific configs are consistent."""
+        """Ensure algorithm-specific configs are present and valid."""
         if self.train.algo == "critic-wmtp":
-            # Critic algorithm uses critic config
-            pass
+            if self.critic is None:
+                raise ValueError(
+                    "critic configuration is required when algo='critic-wmtp'"
+                )
+            # Rho1 config is ignored for critic algorithm
         elif self.train.algo == "rho1-wmtp":
-            # Rho-1 algorithm uses rho1 config
-            pass
+            if self.rho1 is None:
+                raise ValueError("rho1 configuration is required when algo='rho1-wmtp'")
+            # Critic config is ignored for rho1 algorithm
         else:
             raise ValueError(f"Unknown algorithm: {self.train.algo}")
         return self

@@ -1,0 +1,34 @@
+# WMTP Fine-Tuning Framework Docker Image
+# Base image with PyTorch 2.4.0 and CUDA 12.1
+FROM pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    curl \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv for Python package management
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Copy project files
+COPY pyproject.toml uv.lock ./
+COPY src/ ./src/
+COPY configs/ ./configs/
+COPY tests/ ./tests/
+
+# Install Python dependencies using uv
+# Use frozen sync to ensure reproducible builds
+RUN uv sync --frozen
+
+# Environment variables (will be overridden at runtime by VESSL/local config)
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app:$PYTHONPATH
+
+# Default command - can be overridden in vessl.yaml or docker run
+CMD ["uv", "run", "python", "-m", "src.cli.train", "--help"]
