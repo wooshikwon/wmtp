@@ -100,7 +100,17 @@ class MLflow(BaseModel):
     @field_validator("tracking_uri", "registry_uri")
     @classmethod
     def validate_uri(cls, v: str) -> str:
-        """Validate MLflow URIs are S3."""
+        """Validate and normalize MLflow URIs for both local and remote environments."""
+        from pathlib import Path
+
+        # 로컬 개발: 상대 경로를 절대 경로로 변환
+        if v.startswith("file://./"):
+            # file://./mlflow_runs → file:///absolute/path/to/mlflow_runs
+            relative_path = v[7:]  # "./mlflow_runs" 추출
+            absolute_path = Path.cwd() / relative_path
+            return f"file://{absolute_path.resolve()}"
+
+        # 표준 URI 형식 검증
         if not v.startswith(("s3://", "file://", "http://", "https://")):
             raise ValueError(
                 f"Invalid MLflow URI: {v}. Must start with s3://, file://, http://, or https://"
@@ -141,6 +151,12 @@ class FSDPConfig(BaseModel):
 class Devices(BaseModel):
     """Device and distributed training configuration."""
 
+    compute_backend: Literal["cuda", "mps", "cpu", "auto"] = Field(
+        default="auto", description="Compute backend (auto=runtime detection)"
+    )
+    device_ids: list[int] | None = Field(
+        default=None, description="Specific device IDs to use (None=auto detect)"
+    )
     mixed_precision: Literal["bf16", "fp16", "fp32"] = Field(
         default="bf16", description="Mixed precision mode"
     )
@@ -154,6 +170,35 @@ class Devices(BaseModel):
             # Note: bf16 requires Ampere or newer GPUs (A100, A6000, etc.)
             pass  # Will validate at runtime based on actual hardware
         return v
+
+    @field_validator("compute_backend")
+    @classmethod
+    def validate_compute_backend(cls, v: str) -> str:
+        """Validate compute backend compatibility."""
+        import torch
+
+        if v == "cuda" and not torch.cuda.is_available():
+            # 경고만 출력, 런타임에서 fallback 처리
+            pass
+        elif v == "mps" and not (
+            hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+        ):
+            # MPS 지원 여부 검증
+            pass
+        return v
+
+    @model_validator(mode="after")
+    def validate_device_compatibility(self):
+        """환경별 디바이스 설정 호환성 검증."""
+        # MPS는 bf16을 지원하지 않음
+        if self.compute_backend == "mps" and self.mixed_precision == "bf16":
+            self.mixed_precision = "fp16"  # 자동 수정
+
+        # 단일 GPU 환경에서는 FSDP 비활성화
+        if self.device_ids and len(self.device_ids) == 1:
+            self.fsdp.enabled = False
+
+        return self
 
 
 class Config(BaseModel):

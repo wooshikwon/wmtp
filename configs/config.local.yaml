@@ -19,7 +19,7 @@ paths:
   models:
     base_local: "models/7b_1t_4"
     rm_local: "models/Llama_3_8B_RM"
-    ref_local: "models/CodeLlama-7B-Python"
+    ref_local: "models/codellama_7b_python"
   datasets:
     mbpp_local: "dataset/mbpp"
     contest_local: "dataset/contest"

@@ -1,17 +1,27 @@
 """
 Data and model loaders for WMTP framework.
 
-This module provides loaders for datasets and models with
-local-first S3 fallback support.
+This module provides individual loaders for datasets and models,
+each registered as separate components in the registry.
 """
 
 # Import base classes
 from .base_loader import BaseLoader, DatasetLoader, ModelLoader
 
-# Import concrete implementations
-from .dataset_contest_loader import CodeContestsDatasetLoader
-from .dataset_mbpp_loader import MBPPDatasetLoader
-from .hf_local_s3_loader import HFLocalS3Loader
+# Import all dataset loaders (auto-registers them)
+from .dataset import (
+    CodeContestsDatasetLoader,
+    CustomDatasetLoader,
+    HumanEvalDatasetLoader,
+    MBPPDatasetLoader,
+)
+
+# Import all model loaders (auto-registers them)
+from .model import (
+    CheckpointLoader,
+    HFModelLoader,
+    MTPNativeLoader,
+)
 
 # Export all loaders
 __all__ = [
@@ -19,28 +29,27 @@ __all__ = [
     "BaseLoader",
     "DatasetLoader",
     "ModelLoader",
-    # Concrete loaders
-    "HFLocalS3Loader",
+    # Model loaders
+    "HFModelLoader",
+    "MTPNativeLoader",
+    "CheckpointLoader",
+    # Dataset loaders
     "MBPPDatasetLoader",
     "CodeContestsDatasetLoader",
+    "HumanEvalDatasetLoader",
+    "CustomDatasetLoader",
 ]
 
-# Loader registry keys for reference
-LOADER_REGISTRY_KEYS = {
-    "model": "hf-local-s3-loader",
-    "mbpp": "dataset-mbpp-loader",
-    "contest": "dataset-contest-loader",
+# Registry keys for loaders
+MODEL_LOADER_KEYS = {
+    "huggingface": "hf-model",
+    "mtp-native": "mtp-native",
+    "checkpoint": "checkpoint",
 }
 
-
-def get_loader_key(source: str) -> str:
-    """
-    Get the registry key for a data source.
-
-    Args:
-        source: Data source name
-
-    Returns:
-        Registry key for the loader
-    """
-    return LOADER_REGISTRY_KEYS.get(source, source)
+DATASET_LOADER_KEYS = {
+    "mbpp": "mbpp-dataset",
+    "codecontests": "codecontests-dataset",
+    "humaneval": "humaneval-dataset",
+    "custom": "custom-dataset",
+}

@@ -1,15 +1,22 @@
 """
-Rho-1 reference-based token importance scorer implementation.
+Rho1-WMTP 알고리즘: 참조모델과의 차이로 어려운 토큰을 찾아 중요도를 계산합니다.
 
-This module implements the Rho-1 scoring approach using
-reference model cross-entropy to identify important tokens
-following the WMTP Rho-1 algorithm from BLUEPRINT.md.
+WMTP 연구에서 핵심 아이디어:
+"참조모델도 어려워하는 토큰 = 중요한 토큰"
 
-Mathematical foundation:
-1. Score computation: s_t = |CE^ref_t - CE^base_t| (absolute CE excess)
-2. Percentile-based emphasis for top p% tokens
-3. Normalization pipeline: z-score → softmax(T) → mean 1.0 → clip → renormalize
-4. Statistical invariants: mean=1.0±ε, no NaN/Inf, range [ε, W_max]
+이 모듈은 연구개선안에서 권장하는 Rho-1 방식을 구현합니다:
+- Critic 학습의 불안정성 없이 바로 가중치 계산 가능
+- Microsoft Rho-1 연구의 "Not All Tokens Are What You Need" 철학
+- CodeLlama 참조모델로 코딩 도메인 특화 토큰 선별
+
+수학적 원리:
+1. 토큰별 중요도: s_t = |CE^ref_t - CE^base_t| (교차엔트로피 차이)
+2. Percentile 강조: 상위 p% 토큰에 추가 가중치
+3. 헤드별 분배: 거리 감쇠 적용 (가까운 헤드일수록 높은 가중치)
+4. 정규화: Z-score → softmax → mean=1.0 강제 → clipping
+
+장점: Critic 없이 직접 계산 가능, 안정적
+교수님 피드백 반영: GRPO처럼 복잡한 value estimation 제거
 """
 
 from typing import Any
@@ -25,34 +32,53 @@ from src.components.registry import scorer_registry
 @scorer_registry.register("rho1-excess-v1", category="scorer", version="1.0.0")
 class Rho1ExcessScorer(BaseComponent):
     """
-    Rho-1 reference-based head-level importance scorer.
+    Rho1-WMTP 방식: 참조모델 차이 기반으로 헤드별 중요도를 계산하는 스코어러입니다.
 
-    Computes head-level importance weights based on excess cross-entropy
-    between base and reference models, using distance-aware decay to
-    generate different weights for each MTP prediction head.
+    연구 맥락:
+    WMTP의 세 가지 알고리즘 중 하나로, 연구개선안에서 권장하는 방식입니다.
+    Microsoft Rho-1의 "선택적 언어모델링" 아이디어를 MTP에 적용했습니다.
+    Critic 기반 방식과 달리 별도 학습 없이 바로 가중치를 계산할 수 있습니다.
 
-    Mathematical foundation:
-    1. Token importance: s_t = |CE^ref_t - CE^base_t| (absolute CE excess)
-    2. Head weighting: w_{t,k} = s_t * exp(-decay_rate * k)
-    3. Distance decay: closer heads (k=0) get stronger weights
-    4. Output format: [batch, seq_len, horizon] for MTP compatibility
+    핵심 원리:
+    1. 토큰 중요도 = |CE^ref - CE^base| (참조모델과 기본모델의 CE 차이)
+    2. 큰 차이 = 두 모델 모두 어려워함 = 중요한 토큰
+    3. 헤드별 가중치 = 토큰 중요도 × 거리 감쇠 (exp(-decay_rate × k))
+    4. 최종 출력: [batch, seq_len, horizon] 형태의 헤드별 가중치
+
+    예시:
+    - Base model CE = 2.1, Ref model CE = 3.8 → 중요도 = |3.8-2.1| = 1.7 (높음)
+    - Base model CE = 1.2, Ref model CE = 1.3 → 중요도 = |1.3-1.2| = 0.1 (낮음)
+
+    장점:
+    - Critic 학습 없이 즉시 사용 가능
+    - 코딩 도메인에서 CodeLlama 참조모델로 특화된 토큰 선별
+    - 수치적으로 안정적 (교수님 피드백 반영)
     """
 
     def __init__(self, config: dict[str, Any] | None = None):
         """
-        Initialize Rho-1 head-level scorer.
+        Rho-1 헤드별 스코어러를 초기화합니다.
 
-        Args:
-            config: Scorer configuration including:
-                - score: Scoring method (default: "abs_excess_ce")
-                - percentile_top_p: Top percentile to emphasize (default: 0.2)
-                - refresh_per_epoch: Whether to refresh scores (default: False)
-                - temperature: Softmax temperature (default: 0.7)
-                - head_decay_rate: Head distance decay rate (default: 0.5)
-                - normalize_heads: Whether to normalize head weights (default: True)
-                - head_temperature: Temperature for head softmax (default: 0.7)
-                - epsilon: Minimum weight value (default: 0.05)
-                - max_weight: Maximum weight value (default: 3.0)
+        연구 맥락:
+        이 설정들은 Microsoft Rho-1 연구와 연구개선안의 권장사항을 반영합니다.
+        Critic 방식과 달리 별도 학습이 없으므로 설정값이 최종 성능에 직접 영향합니다.
+
+        매개변수:
+            config: 스코어러 설정 딕셔너리
+                - score: 스코어링 방법 ("abs_excess_ce" - 절댓값 차이 추천)
+                - percentile_top_p: 강조할 상위 백분율 (0.2 = 상위 20%)
+                - refresh_per_epoch: 에포크마다 점수 갱신 여부 (False - 계산 비용 절약)
+                - temperature: Softmax 온도 (0.7 - 적당히 sharp한 분포)
+                - head_decay_rate: 헤드 거리 감쇠율 (0.5 - 가까운 헤드 우선)
+                - normalize_heads: 헤드 가중치 정규화 여부 (True 추천)
+                - head_temperature: 헤드별 softmax 온도 (0.7)
+                - epsilon: 최소 가중치 (0.05 - 너무 작으면 학습 효과 없음)
+                - max_weight: 최대 가중치 (3.0 - 너무 크면 불안정)
+
+        권장값 (연구개선안 기준):
+        - percentile_top_p: 0.15 (상위 15% 토큰만 강조)
+        - temperature: 0.5 (sharp한 분포로 중요 토큰 집중)
+        - head_decay_rate: 0.5 (균형잡힌 거리 감쇠)
         """
         super().__init__(config)
         self.score_method = self.config.get("score", "abs_excess_ce")
@@ -178,7 +204,9 @@ class Rho1ExcessScorer(BaseComponent):
 
         return scores * emphasis
 
-    def _compute_head_weights(self, token_weights: np.ndarray, horizon: int = 4) -> np.ndarray:
+    def _compute_head_weights(
+        self, token_weights: np.ndarray, horizon: int = 4
+    ) -> np.ndarray:
         """
         Convert token-level weights to head-level weights using distance-aware decay.
 
@@ -241,7 +269,6 @@ class Rho1ExcessScorer(BaseComponent):
             head_weights = head_weights * scale_factor
 
         return head_weights
-
 
     def run(self, ctx: dict[str, Any]) -> dict[str, Any]:
         """
@@ -422,8 +449,12 @@ class Rho1ExcessScorer(BaseComponent):
             ),
             "nan_count": int(np.sum(~np.isfinite(head_weights))),
             # Head-specific statistics
-            "head_mean_weights": [float(np.mean(head_weights[:, :, k])) for k in range(horizon)],
-            "head_std_weights": [float(np.std(head_weights[:, :, k])) for k in range(horizon)],
+            "head_mean_weights": [
+                float(np.mean(head_weights[:, :, k])) for k in range(horizon)
+            ],
+            "head_std_weights": [
+                float(np.std(head_weights[:, :, k])) for k in range(horizon)
+            ],
         }
 
         # Verify statistical invariants for head-level weights
@@ -444,6 +475,6 @@ class Rho1ExcessScorer(BaseComponent):
 
         return {
             "weights": head_weights_tensor,  # [B,S,H] tensor
-            "scores": scores.tolist(),       # [B,S] raw scores
-            "statistics": statistics,        # Head-level statistics
+            "scores": scores.tolist(),  # [B,S] raw scores
+            "statistics": statistics,  # Head-level statistics
         }

@@ -1,0 +1,62 @@
+# VESSL Environment Configuration for WMTP Fine-Tuning Framework
+# This configuration is for VESSL GPU environments with S3 storage
+
+# Project metadata
+project: "mtp_ft"
+seed: 42
+
+# Storage configuration - Using S3 for VESSL
+storage:
+  mode: "s3"  # S3 mode for VESSL deployment
+  s3:
+    bucket: "wmtp"
+    region: "ap-northeast-2"
+    prefix: "mtpfw/"
+
+# Path configurations for S3
+paths:
+  models:
+    # S3 paths - models will be downloaded from HF or S3
+    base_s3: "models/7b_1t_4"
+    rm_s3: "models/Llama_3_8B_RM"
+    ref_s3: "models/codellama_7b_python"
+    # Local cache for downloaded models
+    base_local: "/tmp/models/7b_1t_4"
+    rm_local: "/tmp/models/Llama_3_8B_RM"
+    ref_local: "/tmp/models/codellama_7b_python"
+  datasets:
+    # S3 paths for datasets
+    mbpp_s3: "datasets/mbpp"
+    contest_s3: "datasets/contest"
+    # Local cache for downloaded datasets
+    mbpp_local: "/tmp/datasets/mbpp"
+    contest_local: "/tmp/datasets/contest"
+  cache: "/tmp/.cache"
+
+# MLflow configuration with S3 backend
+mlflow:
+  experiment: "mtp/wmtp"
+  tracking_uri: "s3://wmtp/mlflow"
+  registry_uri: "s3://wmtp/mlflow"
+  artifact_location: "s3://wmtp/mlflow-artifacts"
+
+# Launcher configuration
+launcher:
+  target: "vessl"
+  resources:
+    gpus: 4
+    gpu_type: "A100"
+    cpus: 32
+    memory_gb: 256
+    disk_gb: 500
+
+# Device and distributed training configuration - VESSL A100 최적화
+devices:
+  compute_backend: "cuda"   # NVIDIA A100 CUDA 가속
+  device_ids: [0, 1]        # 2-GPU 분산 훈련
+  mixed_precision: "bf16"   # A100은 bf16 지원 (최고 성능)
+  fsdp:
+    enabled: true           # 다중 GPU에서 FSDP 활성화
+    auto_wrap: true
+    activation_ckpt: true
+    sharding: "full"        # 전체 샤딩으로 메모리 최적화

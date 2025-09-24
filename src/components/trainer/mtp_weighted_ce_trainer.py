@@ -1,32 +1,54 @@
+"""WMTP 핵심 구현체 - MTP Weighted Cross-Entropy Trainer.
+
+연구 철학의 실현: "Not All Tokens Are What You Need"
+=================================================
+
+이 트레이너는 WMTP 연구의 핵심 아이디어를 실제로 구현합니다:
+기존 MTP의 균등한 토큰 가중치 대신, 토큰별 중요도를 동적으로 계산하여
+가중치를 적용한 새로운 손실 함수를 사용합니다.
+
+🔬 WMTP 손실 공식:
+    L_WMTP = Σ(k=1 to H) w_{t+k} × CE_k
+
+    여기서:
+    - w_{t+k}: k번째 헤드의 토큰별 중요도 가중치
+    - CE_k: k번째 예측 헤드의 Cross-Entropy 손실
+    - H: 예측 헤드 수 (일반적으로 4개: t+1, t+2, t+3, t+4)
+
+알고리즘별 가중치 계산 방식:
+    - mtp-baseline: w_{t+k} = 1.0 (균등 가중치, Scorer=None)
+    - critic-wmtp: w_{t+k} = f(δ_t) where δ_t = V_t - V_{t-1}
+    - rho1-wmtp: w_{t+k} = |CE^ref_t - CE^base_t|
+
+기술적 특징:
+    - Mixed Precision 지원: BF16/FP16/FP32 자동 선택
+    - FSDP (Fully Sharded Data Parallel) 분산 훈련
+    - 그래디언트 클리핑으로 안정성 보장
+    - MLflow 자동 로깅으로 실험 추적
+    - 동적 메모리 최적화 및 배치 처리
 """
-MTP Weighted Cross-Entropy Trainer.
 
-Implements the WMTP training loop where token-level weights produced by a
-Scorer are applied to the average CE over MTP heads. Supports AMP (bf16/fp16),
-grad clipping, FSDP wrapping via utils.dist, and MLflow logging hooks.
-"""
+from __future__ import annotations  # Python 3.10+ 타입 힌트 호환성
 
-from __future__ import annotations
+import math  # 수학 연산 (가중치 정규화 등)
+from typing import Any  # 범용 타입 힌트
 
-import math
-from typing import Any
+import numpy as np  # 수치 연산
+import torch  # PyTorch 딥러닝 프레임워크
+import torch.nn as nn  # 신경망 모듈
+import torch.nn.functional as F  # 함수형 API (cross_entropy 등)
+from rich.console import Console  # 컬러풀한 콘솔 출력
 
-import numpy as np
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from rich.console import Console
+from src.components.base import BaseComponent  # WMTP 컴포넌트 베이스 클래스
+from src.components.registry import trainer_registry  # 트레이너 레지스트리
+from src.utils import get_dist_manager  # 분산 훈련 매니저
 
-from src.components.base import BaseComponent
-from src.components.registry import trainer_registry
-from src.utils import get_dist_manager
-
-console = Console()
+console = Console()  # 전역 콘솔 객체
 
 
 def _compute_weighted_mtp_loss(
-    logits: torch.Tensor,        # [B, S, H, V]
-    target_ids: torch.Tensor,    # [B, S]
+    logits: torch.Tensor,  # [B, S, H, V]
+    target_ids: torch.Tensor,  # [B, S]
     head_weights: torch.Tensor,  # [B, S, H] - 새로운 헤드별 가중치!
     horizon: int,
     ignore_index: int = -100,
@@ -62,17 +84,25 @@ def _compute_weighted_mtp_loss(
         raise ValueError(f"target_ids must be 2D [B,S], got shape {target_ids.shape}")
 
     if head_weights.ndim != 3:
-        raise ValueError(f"head_weights must be 3D [B,S,H], got shape {head_weights.shape}")
+        raise ValueError(
+            f"head_weights must be 3D [B,S,H], got shape {head_weights.shape}"
+        )
 
     bsz, seqlen, H, vocab = logits.shape
     if target_ids.shape != (bsz, seqlen):
-        raise ValueError(f"Shape mismatch: logits {logits.shape} vs target_ids {target_ids.shape}")
+        raise ValueError(
+            f"Shape mismatch: logits {logits.shape} vs target_ids {target_ids.shape}"
+        )
 
     if head_weights.shape != (bsz, seqlen, H):
-        raise ValueError(f"Shape mismatch: head_weights {head_weights.shape} vs expected {(bsz, seqlen, H)}")
+        raise ValueError(
+            f"Shape mismatch: head_weights {head_weights.shape} vs expected {(bsz, seqlen, H)}"
+        )
 
     if horizon != H:
-        raise ValueError(f"Mismatch between logits heads ({H}) and configured horizon ({horizon})")
+        raise ValueError(
+            f"Mismatch between logits heads ({H}) and configured horizon ({horizon})"
+        )
 
     device = logits.device
     dtype = logits.dtype
@@ -90,7 +120,7 @@ def _compute_weighted_mtp_loss(
 
         # 유효 영역 슬라이싱
         logits_k = logits[:, :valid_len, k, :]  # [B, valid_len, V]
-        labels_k = target_ids[:, shift:shift + valid_len]  # [B, valid_len]
+        labels_k = target_ids[:, shift : shift + valid_len]  # [B, valid_len]
         weights_k = head_weights[:, :valid_len, k]  # [B, valid_len]
 
         # 헤드별 CE 계산
@@ -106,7 +136,7 @@ def _compute_weighted_mtp_loss(
 
         # 가중 CE: w_{t+k} × CE_k (연구제안서 공식!)
         weighted_ce_k = weights_k * ce_k * valid_k_mask  # [B, valid_len]
-        effective_weights_k = weights_k * valid_k_mask   # [B, valid_len]
+        effective_weights_k = weights_k * valid_k_mask  # [B, valid_len]
 
         # 전체 시퀀스에 누적 ([B, S] 형태로 맞춤)
         weighted_ce_sum[:, :valid_len] += weighted_ce_k
@@ -121,7 +151,9 @@ def _compute_weighted_mtp_loss(
 
     # 최종 스칼라 손실: 유효 토큰들의 평균
     if valid_mask.any():
-        final_loss = (weighted_loss_per_token * valid_mask.to(dtype)).sum() / valid_mask.sum().to(dtype)
+        final_loss = (
+            weighted_loss_per_token * valid_mask.to(dtype)
+        ).sum() / valid_mask.sum().to(dtype)
     else:
         final_loss = torch.tensor(0.0, device=device, dtype=dtype)
 
@@ -132,70 +164,114 @@ def _compute_weighted_mtp_loss(
     "mtp-weighted-ce-trainer", category="trainer", version="1.0.0"
 )
 class MTPWeightedCETrainer(BaseComponent):
-    """
-    Trainer that applies token weights to MTP CE across heads.
+    """WMTP 통합 트레이너 - 모든 알고리즘의 핵심 실행기.
 
-    Expected config keys:
-      - n_heads: int (MTP heads)
-      - horizon: int (same as n_heads)
-      - loss_config: { weight_norm, lambda, temperature, epsilon, max_weight }
-      - mixed_precision: str ("bf16"|"fp16"|"fp32")
-      - fsdp_config: dict or None (FSDP options)
-      - scorer: Scorer instance (must implement run())
-      - full_finetune / lora_config: routed but not used here directly
+    연구 철학 "Not All Tokens Are What You Need"의 실제 구현:
+        이 클래스는 세 가지 WMTP 알고리즘(mtp-baseline, critic-wmtp, rho1-wmtp)을
+        모두 지원하는 통합 트레이너입니다. 알고리즘 간 차이는 오직 Scorer에 의한
+        토큰 가중치 계산 방식뿐이며, 나머지 훈련 로직은 완전히 공유됩니다.
+
+    🔬 핵심 동작 원리:
+        1. Scorer에서 토큰별 중요도 가중치 w_{t+k} 계산
+        2. 각 MTP 헤드별로 Cross-Entropy 손실 CE_k 계산
+        3. WMTP 공식 적용: L_WMTP = Σ w_{t+k} × CE_k
+        4. 혼합 정밀도와 분산 훈련으로 안정적 최적화
+
+    알고리즘별 동작 차이:
+        - mtp-baseline: scorer=None → 모든 w_{t+k} = 1.0
+        - critic-wmtp: CriticScorer → δ_t = V_t - V_{t-1} 기반 가중치
+        - rho1-wmtp: Rho1Scorer → |CE^ref_t - CE^base_t| 기반 가중치
+
+    필수 설정 키:
+        - n_heads: MTP 헤드 수 (일반적으로 4)
+        - horizon: 예측 범위 (n_heads와 동일)
+        - loss_config: 손실 함수 설정 (정규화, 온도 등)
+        - mixed_precision: 혼합 정밀도 ("bf16"/"fp16"/"fp32")
+        - fsdp_config: FSDP 분산 훈련 설정 (dict 또는 None)
+        - scorer: 토큰 가중치 계산기 (None이면 baseline)
+
+    선택적 설정:
+        - full_finetune: 전체 파인튜닝 여부
+        - lora_config: LoRA 설정 (메모리 효율적 파인튜닝)
     """
 
     def __init__(self, config: dict[str, Any] | None = None):
+        """WMTP 트레이너 초기화.
+
+        Args:
+            config: 트레이너 설정 딕셔너리 (horizon, 손실 설정, Scorer 등)
+        """
         super().__init__(config)
-        self.model: nn.Module | None = None
-        self.optimizer = None
-        self.global_step: int = 0
-        self.horizon: int = int(self.config.get("horizon", 4))
+
+        # 주요 컴포넌트들 (setup에서 초기화됨)
+        self.model: nn.Module | None = None  # Facebook MTP 모델
+        self.optimizer = None  # AdamW 등 최적화기
+
+        # 훈련 상태 추적
+        self.global_step: int = 0  # 전역 훈련 스텝 카운터
+
+        # MTP 설정
+        self.horizon: int = int(self.config.get("horizon", 4))  # 예측 헤드 수
+
+        # Scorer 출력 캐싱 (성능 최적화용)
         self._last_score_out: dict[str, Any] | None = None
 
     def setup(self, ctx: dict[str, Any]) -> None:
+        """트레이너 초기화 - 모델, 분산 훈련, Scorer 등 모든 컴포넌트 설정.
+
+        이 메서드는 파이프라인에서 제공받은 컴포넌트들을 연결하고
+        WMTP 훈련에 필요한 모든 설정을 완료합니다.
+
+        Args:
+            ctx: 컨텍스트 딕셔너리 (model, optimizer, scorers, tokenizers 등)
+        """
         super().setup(ctx)
-        dm = get_dist_manager()
+        dm = get_dist_manager()  # 분산 훈련 매니저
 
-        # Expect model and optimizer to be provided in ctx
-        model: nn.Module | None = ctx.get("model")
-        optimizer = ctx.get("optimizer")
+        # 필수 컴포넌트 검증 및 설정
+        model: nn.Module | None = ctx.get("model")  # Facebook MTP 모델
+        optimizer = ctx.get("optimizer")  # AdamW 등 최적화기
         if model is None:
-            raise ValueError("Trainer requires 'model' in ctx")
+            raise ValueError("트레이너에 'model'이 필요합니다 (ctx에서 누락)")
         if optimizer is None:
-            raise ValueError("Trainer requires 'optimizer' in ctx")
+            raise ValueError("트레이너에 'optimizer'가 필요합니다 (ctx에서 누락)")
 
-        # Optional: wrap with FSDP
+        # 분산 훈련: FSDP 래핑 (선택적)
         fsdp_cfg = self.config.get("fsdp_config")
         if fsdp_cfg:
+            # Fully Sharded Data Parallel로 모델 래핑
             model = dm.setup_fsdp(model, fsdp_cfg)
 
         self.model = model
         self.optimizer = optimizer
 
-        # Mixed precision policy selection
+        # 혼합 정밀도 설정: 메모리와 속도 최적화
         mp = str(self.config.get("mixed_precision", "bf16")).lower()
         if mp not in {"bf16", "fp16", "fp32"}:
-            mp = "bf16"
+            mp = "bf16"  # 기본값: BFloat16 (권장)
+
         self._amp_dtype = (
-            torch.bfloat16
+            torch.bfloat16  # BF16: 안정성과 성능의 균형
             if mp == "bf16"
-            else (torch.float16 if mp == "fp16" else torch.float32)
+            else (torch.float16 if mp == "fp16" else torch.float32)  # FP16 또는 FP32
         )
 
-        # Attach scorer if provided
-        self.scorer = self.config.get("scorer")
+        # 🎯 핵심: 알고리즘별 토큰 가중치 계산 Scorer 연결
+        self.scorer = self.config.get(
+            "scorer"
+        )  # None(baseline), CriticScorer, Rho1Scorer
 
-        # Loss/weight config
+        # WMTP 손실 함수 설정
         self.loss_cfg = self.config.get("loss_config", {})
-        # Optional MLflow manager for logging
+
+        # MLflow 실험 추적 (선택적)
         self.mlflow = ctx.get("mlflow_manager")
 
-        # Optional auxiliary models/tokenizers for scorers
-        self.ref_model: nn.Module | None = ctx.get("ref_model")
-        self.rm_model: nn.Module | None = ctx.get("rm_model")
-        self.base_tokenizer = ctx.get("base_tokenizer")
-        self.ref_tokenizer = ctx.get("ref_tokenizer")
+        # 알고리즘별 보조 모델들 (선택적 - 해당 알고리즘에서만 사용)
+        self.ref_model: nn.Module | None = ctx.get("ref_model")  # Rho-1용 참조 모델
+        self.rm_model: nn.Module | None = ctx.get("rm_model")  # Critic용 보상 모델
+        self.base_tokenizer = ctx.get("base_tokenizer")  # 기본 토크나이저
+        self.ref_tokenizer = ctx.get("ref_tokenizer")  # 참조 모델용 토크나이저
 
     def train_step(self, batch: dict[str, Any]) -> dict[str, Any]:
         if self.model is None:
@@ -313,11 +389,11 @@ class MTPWeightedCETrainer(BaseComponent):
 
                 # 새로운 가중 MTP 손실 계산 (연구제안서 정확 구현)
                 weighted_loss, valid_mask = _compute_weighted_mtp_loss(
-                    logits=logits,           # [B, S, H, V]
-                    target_ids=target_ids,   # [B, S]
-                    head_weights=head_weights, # [B, S, H]
+                    logits=logits,  # [B, S, H, V]
+                    target_ids=target_ids,  # [B, S]
+                    head_weights=head_weights,  # [B, S, H]
                     horizon=self.horizon,
-                    ignore_index=-100
+                    ignore_index=-100,
                 )
 
                 # Lambda scaling
@@ -327,14 +403,16 @@ class MTPWeightedCETrainer(BaseComponent):
             else:
                 # Scorer가 없는 경우: uniform weights 사용
                 B, S, H, V = logits.shape
-                uniform_weights = torch.ones((B, S, H), device=logits.device, dtype=logits.dtype)
+                uniform_weights = torch.ones(
+                    (B, S, H), device=logits.device, dtype=logits.dtype
+                )
 
                 weighted_loss, valid_mask = _compute_weighted_mtp_loss(
                     logits=logits,
                     target_ids=target_ids,
                     head_weights=uniform_weights,
                     horizon=self.horizon,
-                    ignore_index=-100
+                    ignore_index=-100,
                 )
 
                 lambda_w = float(self.loss_cfg.get("lambda", 0.3))
@@ -410,54 +488,96 @@ class MTPWeightedCETrainer(BaseComponent):
 
                         # Weight distribution percentiles (계획서 요구사항)
                         try:
-                            weight_stats.update({
-                                "train/weight_p25": float(torch.quantile(w_eff, 0.25).item()),
-                                "train/weight_p75": float(torch.quantile(w_eff, 0.75).item()),
-                                "train/weight_p95": float(torch.quantile(w_eff, 0.95).item()),
-                            })
+                            weight_stats.update(
+                                {
+                                    "train/weight_p25": float(
+                                        torch.quantile(w_eff, 0.25).item()
+                                    ),
+                                    "train/weight_p75": float(
+                                        torch.quantile(w_eff, 0.75).item()
+                                    ),
+                                    "train/weight_p95": float(
+                                        torch.quantile(w_eff, 0.95).item()
+                                    ),
+                                }
+                            )
                         except Exception:
                             # Fallback if quantile fails (e.g., older PyTorch versions)
                             sorted_w = torch.sort(w_eff)[0]
                             n = sorted_w.numel()
-                            weight_stats.update({
-                                "train/weight_p25": float(sorted_w[int(n * 0.25)].item()),
-                                "train/weight_p75": float(sorted_w[int(n * 0.75)].item()),
-                                "train/weight_p95": float(sorted_w[int(n * 0.95)].item()),
-                            })
+                            weight_stats.update(
+                                {
+                                    "train/weight_p25": float(
+                                        sorted_w[int(n * 0.25)].item()
+                                    ),
+                                    "train/weight_p75": float(
+                                        sorted_w[int(n * 0.75)].item()
+                                    ),
+                                    "train/weight_p95": float(
+                                        sorted_w[int(n * 0.95)].item()
+                                    ),
+                                }
+                            )
 
                         # Failure gates strengthening (계획서 요구사항)
-                        weight_stats.update({
-                            "train/nan_weights": int((~torch.isfinite(weights)).sum().item()),
-                            "train/extreme_weights": int((weights > 5.0).sum().item()),
-                        })
+                        weight_stats.update(
+                            {
+                                "train/nan_weights": int(
+                                    (~torch.isfinite(weights)).sum().item()
+                                ),
+                                "train/extreme_weights": int(
+                                    (weights > 5.0).sum().item()
+                                ),
+                            }
+                        )
 
                         metrics.update(weight_stats)
 
                     # Scorer-specific metrics (계획서 요구사항: 방식별 특화 지표)
-                    if hasattr(self, '_last_score_out') and self._last_score_out:
+                    if hasattr(self, "_last_score_out") and self._last_score_out:
                         # Detect scorer type
-                        scorer_type = self.scorer.__class__.__name__.lower() if self.scorer else "unknown"
+                        scorer_type = (
+                            self.scorer.__class__.__name__.lower()
+                            if self.scorer
+                            else "unknown"
+                        )
 
                         if "rho1" in scorer_type:
                             # Rho-1 specific metrics
                             scores = self._last_score_out.get("scores")
                             if scores:
-                                scores_tensor = torch.tensor(scores) if not isinstance(scores, torch.Tensor) else scores
+                                scores_tensor = (
+                                    torch.tensor(scores)
+                                    if not isinstance(scores, torch.Tensor)
+                                    else scores
+                                )
                                 total_tokens = float(scores_tensor.numel())
                                 # 임계값 이상의 토큰들의 비율 (usage ratio)
                                 threshold = 0.5  # 임계값 설정
-                                high_score_tokens = float((scores_tensor > threshold).sum().item())
+                                high_score_tokens = float(
+                                    (scores_tensor > threshold).sum().item()
+                                )
                                 metrics["train/rho1_usage_ratio"] = (
-                                    high_score_tokens / total_tokens if total_tokens > 0 else 0.0
+                                    high_score_tokens / total_tokens
+                                    if total_tokens > 0
+                                    else 0.0
                                 )
 
                         elif "critic" in scorer_type:
                             # Critic specific metrics
                             deltas = self._last_score_out.get("deltas")
                             if deltas:
-                                deltas_tensor = torch.tensor(deltas) if not isinstance(deltas, torch.Tensor) else deltas
-                                metrics["train/critic_delta_mean"] = float(deltas_tensor.mean().item())
-                                metrics["train/critic_delta_std"] = float(deltas_tensor.std().item())
+                                deltas_tensor = (
+                                    torch.tensor(deltas)
+                                    if not isinstance(deltas, torch.Tensor)
+                                    else deltas
+                                )
+                                metrics["train/critic_delta_mean"] = float(
+                                    deltas_tensor.mean().item()
+                                )
+                                metrics["train/critic_delta_std"] = float(
+                                    deltas_tensor.std().item()
+                                )
                     # Valid token ratio
                     total_tokens = float(valid_mask.numel())
                     valid_tokens = float(valid_mask.sum().item())

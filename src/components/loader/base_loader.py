@@ -1,8 +1,24 @@
 """
-Base loader implementation with local-first S3 mirroring policy.
+WMTP 로더 시스템의 기반: 로컬 우선 S3 미러링 정책
 
-This module provides the foundation for all data and model loaders,
-implementing the local-first policy with automatic S3 fallback.
+WMTP 연구 맥락:
+이 모듈은 WMTP 실험의 핵심 인프라입니다. 연구자들이 세 가지 알고리즘
+(baseline/critic/rho1)을 실험할 때, 동일한 모델과 데이터셋을 안정적으로
+로드할 수 있도록 보장합니다.
+
+핵심 철학:
+"로컬 파일 → 캐시 → S3 다운로드" 순서로 효율적인 데이터 접근
+
+지원하는 실험 환경:
+- 개발자 로컬 환경: 로컬 파일 직접 사용
+- VESSL 클러스터: S3에서 자동 다운로드 및 캐싱
+- 오프라인 환경: 미리 다운로드된 캐시 활용
+
+WMTP에서의 역할:
+1. Facebook Native MTP 모델 안정적 로딩 (consolidated.pth)
+2. 코딩 평가 데이터셋 일관된 전처리 (MBPP/CodeContests/HumanEval)
+3. 실험 재현성 보장 (동일한 캐시 키 → 동일한 데이터)
+4. GPU 클러스터 비용 절약 (중복 다운로드 방지)
 """
 
 import hashlib

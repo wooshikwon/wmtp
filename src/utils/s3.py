@@ -17,6 +17,97 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 console = Console()
 
 
+class S3Utils:
+    """
+    Simplified S3 utility wrapper for loader modules.
+
+    Provides common S3 operations with a simpler interface.
+    """
+
+    def __init__(self, bucket: str = "wmtp-models", region: str = "ap-northeast-2"):
+        """Initialize S3 utilities with default WMTP bucket."""
+        self.manager = S3Manager(bucket=bucket, region=region)
+
+    def download_model(self, s3_path: str, local_dir: Path | None = None) -> Path:
+        """Download model from S3 path like s3://bucket/path/to/model."""
+        if not s3_path.startswith("s3://"):
+            raise ValueError(f"Invalid S3 path: {s3_path}")
+
+        # Parse S3 path
+        parts = s3_path[5:].split("/", 1)
+        bucket = parts[0]
+        key = parts[1] if len(parts) > 1 else ""
+
+        # Update manager if different bucket
+        if bucket != self.manager.bucket:
+            self.manager = S3Manager(bucket=bucket, region=self.manager.region)
+
+        # Determine local path
+        if local_dir is None:
+            local_dir = self.manager.cache_dir / "models"
+        local_path = local_dir / key.split("/")[-1]
+
+        return self.manager.download_if_missing(key, local_path)
+
+    def download_dataset(self, s3_path: str, local_dir: Path | None = None) -> Path:
+        """Download dataset from S3 path."""
+        if not s3_path.startswith("s3://"):
+            raise ValueError(f"Invalid S3 path: {s3_path}")
+
+        # Parse S3 path
+        parts = s3_path[5:].split("/", 1)
+        bucket = parts[0]
+        key = parts[1] if len(parts) > 1 else ""
+
+        # Update manager if different bucket
+        if bucket != self.manager.bucket:
+            self.manager = S3Manager(bucket=bucket, region=self.manager.region)
+
+        # Determine local path
+        if local_dir is None:
+            local_dir = self.manager.cache_dir / "datasets"
+        local_path = local_dir / key.split("/")[-1]
+
+        return self.manager.download_if_missing(key, local_path)
+
+    def download_checkpoint(self, s3_path: str, local_dir: Path | None = None) -> Path:
+        """Download checkpoint from S3 path."""
+        if not s3_path.startswith("s3://"):
+            raise ValueError(f"Invalid S3 path: {s3_path}")
+
+        # Parse S3 path
+        parts = s3_path[5:].split("/", 1)
+        bucket = parts[0]
+        key = parts[1] if len(parts) > 1 else ""
+
+        # Update manager if different bucket
+        if bucket != self.manager.bucket:
+            self.manager = S3Manager(bucket=bucket, region=self.manager.region)
+
+        # Determine local path
+        if local_dir is None:
+            local_dir = self.manager.cache_dir / "checkpoints"
+        local_path = local_dir / key.split("/")[-1]
+
+        return self.manager.download_if_missing(key, local_path)
+
+    def upload_checkpoint(self, local_path: Path, s3_path: str) -> None:
+        """Upload checkpoint to S3."""
+        if not s3_path.startswith("s3://"):
+            raise ValueError(f"Invalid S3 path: {s3_path}")
+
+        # Parse S3 path
+        parts = s3_path[5:].split("/", 1)
+        bucket = parts[0]
+        key = parts[1] if len(parts) > 1 else ""
+
+        # Update manager if different bucket
+        if bucket != self.manager.bucket:
+            self.manager = S3Manager(bucket=bucket, region=self.manager.region)
+
+        self.manager.upload_file(str(local_path), key)
+
+
 class S3Manager:
     """
     Manager for S3 operations with local caching.
