@@ -12,7 +12,7 @@ run:
 
 # Model configuration
 model:
-  base_id: "test-mtp"  # Special ID for test loader
+  base_id: "distilgpt2"  # Use HuggingFace model ID directly
   ref_id: "distilgpt2"  # Reference model for CE comparison
   tokenizer_type: "hf"
   tokenizer_pad_side: "right"

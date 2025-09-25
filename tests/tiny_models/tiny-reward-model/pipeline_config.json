@@ -1,0 +1,8 @@
+{
+  "model_name": "dummy-reward-model",
+  "model_path": "models/tiny-reward-model",
+  "model_type": "sequence_classification",
+  "base_model": "distilbert-base-uncased",
+  "parameters": 66954241,
+  "description": "Dummy DistilBERT-based reward model for testing"
+}

@@ -35,7 +35,7 @@ make push REGISTRY=ghcr.io/wooshikwon IMAGE_TAG=latest
 ```
 
 - 기본 베이스: PyTorch 2.4.0 + CUDA 12.1
-- 패키지 관리: uv (`uv sync --frozen`)
+- 패키지 관리: uv (락파일 기반, `uv sync --frozen`)
 
 ---
 
@@ -92,6 +92,15 @@ command: |
     --config ${CONFIG} \
     --recipe ${RECIPE}
 ```
+
+추가 참고 (uv 환경):
+- Docker 이미지 빌드시 `uv sync --frozen`으로 의존성을 고정 설치합니다.
+- 런타임 실행은 항상 `uv run`으로 동일한 해석기/환경에서 실행합니다.
+- 로컬에서 빠른 확인이 필요한 경우:
+  ```bash
+  uv pip install --system boto3 sentencepiece  # 필요한 추가 패키지
+  uv run python -m tests.script.test_m3_pipeline --algo mtp-baseline --tiny
+  ```
 
 ---
 

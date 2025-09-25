@@ -369,20 +369,25 @@ class DistributedManager:
             if checkpoint_path.startswith("s3://"):
                 # S3에 직접 저장
                 import io
+                import tempfile
+                from pathlib import Path
 
                 buffer = io.BytesIO()
                 torch.save(checkpoint, buffer)
                 buffer.seek(0)
 
                 if mlflow_manager:
-                    # MLflow를 통해 S3에 저장
-                    mlflow_manager.log_model_checkpoint(
-                        buffer,
-                        artifact_path=f"checkpoints/step_{step}",
-                        registered_model_name=kwargs.get("model_name", None),
-                    )
+                    # MLflow를 통해 아티팩트로 업로드 (임시 파일 경유)
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        tmp_path = Path(tmpdir) / f"checkpoint_step_{step}.pt"
+                        with open(tmp_path, "wb") as f:
+                            f.write(buffer.getvalue())
+                        mlflow_manager.log_artifact(
+                            local_path=str(tmp_path),
+                            artifact_path=f"checkpoints/step_{step}"
+                        )
                     console.print(
-                        f"[green]Checkpoint saved to MLflow/S3: step_{step}[/green]"
+                        f"[green]Checkpoint uploaded to MLflow: step_{step}[/green]"
                     )
                 else:
                     # S3Manager를 사용하여 직접 저장

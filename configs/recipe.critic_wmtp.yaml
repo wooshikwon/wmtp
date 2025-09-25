@@ -14,7 +14,13 @@ run:
 
 # Model configuration
 model:
-  base_id: "mtp-7b-1t-4"  # Facebook MTP 7B model
+  # S3 prefixes (UnifiedModelLoader가 S3 디렉토리 동기화 후 from_pretrained 사용)
+  # base: MTP native (consolidated.pth) → mtp_native 경로 처리
+  # rm: SequenceClassification → HF 디렉토리
+  # ref(옵션): CausalLM → HF 디렉토리
+  base_id: "s3://wmtp/models/7b_1t_4/"
+  rm_id: "s3://wmtp/models/Starling-RM-7B-alpha/"
+  ref_id: "s3://wmtp/models/Sheared-LLaMA-2.7B/"
   tokenizer_type: "hf"
   tokenizer_pad_side: "right"
   mtp:

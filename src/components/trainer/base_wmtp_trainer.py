@@ -405,9 +405,16 @@ class BaseWmtpTrainer(BaseComponent):
                         self.saved_checkpoints, checkpoint_path
                     )
                 except Exception as e:
-                    console.print(
-                        f"[yellow]체크포인트 저장 실패 (스텝 {current_step}): {e}[/yellow]"
-                    )
+                    # 실제 파일 저장 여부 확인
+                    checkpoint_path = self.checkpoint_dir / f"checkpoint_step_{current_step}.pt"
+                    if checkpoint_path.exists():
+                        console.print(
+                            f"[yellow]체크포인트 저장 완료, 부가 기능 오류 (스텝 {current_step}): {repr(e)}[/yellow]"
+                        )
+                    else:
+                        console.print(
+                            f"[red]체크포인트 저장 실패 (스텝 {current_step}): {repr(e)}[/red]"
+                        )
 
             # 최대 스텝 도달 시 종료
             if max_steps is not None and current_step >= max_steps:
@@ -420,7 +427,12 @@ class BaseWmtpTrainer(BaseComponent):
                 final_path = self._save_final_checkpoint(epoch, final_step, metrics)
                 console.print(f"[green]최종 모델 저장 완료: {final_path}[/green]")
             except Exception as e:
-                console.print(f"[yellow]최종 모델 저장 실패: {e}[/yellow]")
+                # 실제 파일 저장 여부 확인
+                final_path = self.checkpoint_dir / "final_model.pt"
+                if final_path.exists():
+                    console.print(f"[yellow]최종 모델 저장 완료, 부가 기능 오류: {repr(e)}[/yellow]")
+                else:
+                    console.print(f"[red]최종 모델 저장 실패: {repr(e)}[/red]")
 
         return metrics
 
@@ -451,17 +463,7 @@ class BaseWmtpTrainer(BaseComponent):
             mlflow_run_id=self.mlflow.get_run_id() if self.mlflow else None,
         )
 
-        # MLflow에 아티팩트 업로드 (있는 경우)
-        if self.mlflow is not None:
-            try:
-                self.mlflow.log_artifact(
-                    local_path=checkpoint_path, artifact_path="checkpoints"
-                )
-                console.print(
-                    f"[green]Checkpoint uploaded to MLflow: {checkpoint_path.name}[/green]"
-                )
-            except Exception as e:
-                console.print(f"[yellow]MLflow upload warning: {e}[/yellow]")
+        # MLflow 업로드는 분산 매니저에서 수행함 (중복 제거)
 
         console.print(f"[green]체크포인트 저장 완료: {checkpoint_path}[/green]")
         return checkpoint_path

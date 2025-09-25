@@ -12,12 +12,13 @@ storage:
 # Path configurations
 paths:
   models:
-    base: "princeton-nlp/Sheared-LLaMA-2.7B"  # Will be wrapped with MTP heads
+    base: "tests/tiny_models/distilgpt2"  # Tiny test model
     # No RM needed for baseline
-    ref: "distilgpt2"  # Not used for baseline but keep for consistency
+    ref: "tests/tiny_models/distilgpt2"  # Same for consistency
   datasets:
-    mbpp: "dataset/mbpp"
-    contest: "dataset/contest"
+    mbpp: "tests/test_dataset/mbpp"
+    contest: "tests/test_dataset/contest"
+    humaneval: "tests/test_dataset/humaneval"
 
 # MLflow configuration - local tracking
 mlflow:

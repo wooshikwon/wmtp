@@ -77,8 +77,8 @@ def modify_config_for_tiny_model(config, recipe):
     console.print("\n[yellow]Using tiny model (distilgpt2) for ultra-light testing[/yellow]")
     
     # Change to tiny model
-    config.paths.models.base = "distilgpt2"
-    config.paths.models.ref = "distilgpt2"
+    config.paths.models.base = "tests/tiny_models/distilgpt2"
+    config.paths.models.ref = "tests/tiny_models/distilgpt2"
     
     # Reduce batch size and sequence length even more
     recipe.data.train.max_length = 64
@@ -192,7 +192,7 @@ def main():
         console.print(f"[yellow]Warning: Could not import test loaders: {e}[/yellow]")
     
     # Register test data loader
-    create_test_data_loader()
+    TestDataLoader = create_test_data_loader()
     console.print("✓ Test data loader registered")
     
     # Set random seed
@@ -227,7 +227,7 @@ def main():
         
         # Monkey-patch the create_model_loader to use our test loader
         original_create_model_loader = ComponentFactory.create_model_loader
-        
+
         def test_create_model_loader(config, recipe=None):
             """Override to use test MTP loader."""
             from src.components.loader.test_mtp_loader import TestMTPLoader, TinyMTPLoader
@@ -238,6 +238,117 @@ def main():
                 return TestMTPLoader(config.model_dump())
         
         ComponentFactory.create_model_loader = staticmethod(test_create_model_loader)
+
+        # Monkey-patch the create_tokenizer to use HF AutoTokenizer for distilgpt2
+        original_create_tokenizer = ComponentFactory.create_tokenizer
+
+        def test_create_tokenizer(recipe_arg, config_arg):
+            from transformers import AutoTokenizer
+            class _HfAutoTokenizerAdapter:
+                def __init__(self, model_dir: str):
+                    self._tok = AutoTokenizer.from_pretrained(model_dir, use_fast=True)
+                def setup(self, ctx):
+                    pass
+                def run(self, ctx):
+                    return {"tokenizer": self}
+                def __call__(self, text, truncation=True, max_length=512, padding=False, return_attention_mask=True, **kwargs):
+                    out = self._tok(text, truncation=truncation, max_length=max_length, padding=("max_length" if padding else False), return_attention_mask=return_attention_mask)
+                    return {k: (v if isinstance(v, list) else v) for k, v in out.items()}
+                def tokenize_dataset(self, dataset, max_length, text_column=None, remove_columns=None, **kwargs):
+                    def _fn(ex):
+                        t = ex.get(text_column, ex.get("text", "")) if text_column else (ex.get("full_text") or ex.get("prompt") or ex.get("text") or ex.get("content") or "")
+                        tok = self(t, truncation=True, max_length=max_length, padding=False, return_attention_mask=True)
+                        tok["labels"] = tok["input_ids"].copy() if isinstance(tok["input_ids"], list) else tok["input_ids"]
+                        return tok
+                    if remove_columns is None:
+                        remove_columns = dataset.column_names
+                    return dataset.map(_fn, remove_columns=remove_columns, desc="HF AutoTokenizer tokenization", load_from_cache_file=kwargs.get("load_from_cache_file", True))
+
+            model_dir = str(config_arg.paths.models.base)
+            return _HfAutoTokenizerAdapter(model_dir)
+
+        ComponentFactory.create_tokenizer = staticmethod(test_create_tokenizer)
+
+        # Monkey-patch the create_data_loader to use our simple TestDataLoader
+        original_create_data_loader = ComponentFactory.create_data_loader
+
+        def test_create_data_loader(recipe_arg, config_arg):
+            # Return a loader that yields a HuggingFace-like DatasetDict structure
+            class _Adapter(TestDataLoader):
+                def run(self, inputs):
+                    out = super().run(inputs)
+                    # Adapt list -> datasets.Dataset-like interface
+                    try:
+                        from datasets import Dataset
+                        ds = Dataset.from_list([{"text": s["text"], "labels": s["labels"]} for s in out["dataset"]])
+                        return {"dataset": ds}
+                    except Exception:
+                        return out
+            return _Adapter(config_arg.model_dump())
+
+        ComponentFactory.create_data_loader = staticmethod(test_create_data_loader)
+
+        # Monkey-patch the create_optimizer to a simple AdamW that supports add_param_group
+        original_create_optimizer = ComponentFactory.create_optimizer
+
+        class _SimpleAdamWOptimizer:
+            def __init__(self, cfg):
+                self.cfg = cfg or {}
+                self._opt = None
+                # expose commonly read attributes
+                self.grad_clip = float(self.cfg.get("grad_clip", 1.0))
+                self._last_lr = float(self.cfg.get("lr", 1e-4))
+
+            def setup(self, ctx):
+                import torch
+                params = self.cfg.get("params")
+                lr = float(self.cfg.get("lr", 1e-4))
+                betas = tuple(self.cfg.get("betas", [0.9, 0.999]))
+                weight_decay = float(self.cfg.get("weight_decay", 0.0))
+                self._opt = torch.optim.AdamW(params, lr=lr, betas=betas, weight_decay=weight_decay)
+                self._last_lr = lr
+
+            # delegate common optimizer APIs
+            def step(self):
+                return self._opt.step()
+
+            def zero_grad(self):
+                return self._opt.zero_grad()
+
+            def add_param_group(self, group):
+                return self._opt.add_param_group(group)
+
+        def test_create_optimizer(recipe_arg, model_params):
+            # Build config map similar to factory
+            opt_cfg = {
+                "params": model_params,
+                "lr": recipe_arg.optim.lr,
+                "weight_decay": recipe_arg.optim.weight_decay,
+                "betas": recipe_arg.optim.betas,
+                "grad_clip": recipe_arg.optim.grad_clip,
+                "scheduler": recipe_arg.optim.scheduler,
+                "warmup_ratio": recipe_arg.optim.warmup_ratio,
+            }
+            opt = _SimpleAdamWOptimizer(opt_cfg)
+            opt.setup({})
+            return opt
+
+        ComponentFactory.create_optimizer = staticmethod(test_create_optimizer)
+
+        # Monkey-patch the create_aux_model_loader to bypass RM (use pseudo rewards)
+        original_create_aux_model_loader = ComponentFactory.create_aux_model_loader
+
+        def test_create_aux_model_loader(recipe_arg, config_arg, aux_type):
+            class _NullLoader:
+                def __init__(self, *args, **kwargs):
+                    pass
+                def setup(self, ctx):
+                    pass
+                def run(self, ctx):
+                    return {"model": None}
+            return _NullLoader()
+
+        ComponentFactory.create_aux_model_loader = staticmethod(test_create_aux_model_loader)
         
         # Run the training pipeline
         outputs = run_training_pipeline(
@@ -246,8 +357,12 @@ def main():
             dry_run=args.dry_run
         )
         
-        # Restore original loader
+        # Restore original loaders
         ComponentFactory.create_model_loader = original_create_model_loader
+        ComponentFactory.create_data_loader = original_create_data_loader
+        ComponentFactory.create_aux_model_loader = original_create_aux_model_loader
+        ComponentFactory.create_optimizer = original_create_optimizer
+        ComponentFactory.create_tokenizer = original_create_tokenizer
         
         console.print("\n[bold green]✓ Pipeline test completed successfully![/bold green]")
         

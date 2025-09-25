@@ -1,0 +1,5 @@
+{"task_id": 21, "text": "Write a function to check if a string is a palindrome.", "code": "def is_palindrome(s):\n    return s == s[::-1]", "test_list": ["assert is_palindrome('radar') == True", "assert is_palindrome('hello') == False"]}
+{"task_id": 22, "text": "Write a function to convert to uppercase.", "code": "def to_upper(s):\n    return s.upper()", "test_list": ["assert to_upper('hello') == 'HELLO'", "assert to_upper('abc') == 'ABC'"]}
+{"task_id": 23, "text": "Write a function to convert to lowercase.", "code": "def to_lower(s):\n    return s.lower()", "test_list": ["assert to_lower('HELLO') == 'hello'", "assert to_lower('ABC') == 'abc'"]}
+{"task_id": 24, "text": "Write a function to check if a string contains a substring.", "code": "def contains(s, sub):\n    return sub in s", "test_list": ["assert contains('hello world', 'world') == True", "assert contains('hello', 'bye') == False"]}
+{"task_id": 25, "text": "Write a function to repeat a string n times.", "code": "def repeat_string(s, n):\n    return s * n", "test_list": ["assert repeat_string('ab', 3) == 'ababab'", "assert repeat_string('x', 5) == 'xxxxx'"]}

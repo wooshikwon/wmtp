@@ -1,0 +1,52 @@
+[
+  {
+    "name": "contest_problem_0",
+    "description": "Placeholder problem 0",
+    "public_tests": [],
+    "private_tests": [],
+    "generated_tests": [],
+    "source": "placeholder",
+    "difficulty": "unknown",
+    "solutions": []
+  },
+  {
+    "name": "contest_problem_1",
+    "description": "Placeholder problem 1",
+    "public_tests": [],
+    "private_tests": [],
+    "generated_tests": [],
+    "source": "placeholder",
+    "difficulty": "unknown",
+    "solutions": []
+  },
+  {
+    "name": "contest_problem_2",
+    "description": "Placeholder problem 2",
+    "public_tests": [],
+    "private_tests": [],
+    "generated_tests": [],
+    "source": "placeholder",
+    "difficulty": "unknown",
+    "solutions": []
+  },
+  {
+    "name": "contest_problem_3",
+    "description": "Placeholder problem 3",
+    "public_tests": [],
+    "private_tests": [],
+    "generated_tests": [],
+    "source": "placeholder",
+    "difficulty": "unknown",
+    "solutions": []
+  },
+  {
+    "name": "contest_problem_4",
+    "description": "Placeholder problem 4",
+    "public_tests": [],
+    "private_tests": [],
+    "generated_tests": [],
+    "source": "placeholder",
+    "difficulty": "unknown",
+    "solutions": []
+  }
+]

@@ -111,6 +111,12 @@ class AdamWBF16FusedOptimizer(BaseComponent):
             raise RuntimeError("Optimizer not initialized. Call setup() first.")
         self.optimizer.zero_grad(set_to_none=True)
 
+    # Added to support adding param groups (e.g., Critic value head)
+    def add_param_group(self, group: dict[str, Any]) -> None:
+        if self.optimizer is None:
+            raise RuntimeError("Optimizer not initialized. Call setup() first.")
+        self.optimizer.add_param_group(group)
+
     def run(self, ctx: dict[str, Any]) -> dict[str, Any]:
         """
         Report current optimizer state (e.g., learning rate).
