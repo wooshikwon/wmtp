@@ -109,7 +109,7 @@ L_Rho1 = Σ(k=0 to H-1) w_{t+k} × CE_k(y_{t+k}, ŷ_{t+k})
 ```
 
 여기서:
-- `CE^{ref}`: 참조 모델(CodeLlama-7B)의 교차 엔트로피
+- `CE^{ref}`: 참조 모델(Sheared-LLaMA-2.7B)의 교차 엔트로피
 - `CE^{base}`: 기본 MTP 모델의 교차 엔트로피
 - `percentile_p`: 강조할 상위 백분위수 (기본값=0.15)
 - `α`: 제로 가중치 방지를 위한 기본 가중치
@@ -162,7 +162,7 @@ resources:
 #### 단계 2: 학습 방법 선택
 
 레시피 파일 선택:
-- **기준선 MTP**: 표준 설정으로 레시피 생성
+- **기준선 MTP**: `configs/recipe.mtp_baseline.yaml` 사용
 - **Critic 가중**: `configs/recipe.critic.yaml` 사용
 - **Rho-1 (권장)**: `configs/recipe.rho1.yaml` 사용
 
@@ -174,6 +174,11 @@ vessl run create -f docker/vessl.yaml
 
 # 또는 vessl.yaml의 command 수정:
 command: |
+  # MTP 기준선 학습
+  uv run python -m src.cli.train \
+    --config configs/config.vessl.yaml \
+    --recipe configs/recipe.mtp_baseline.yaml
+
   # Critic 가중 학습
   uv run python -m src.cli.train \
     --config configs/config.vessl.yaml \
@@ -216,6 +221,7 @@ storage:
   s3:
     bucket: "wmtp"
     region: "eu-north-1"
+    prefix: ""
 
 mlflow:
   tracking_uri: "s3://wmtp/mlflow"
@@ -235,7 +241,7 @@ train:
 
 model:
   base_id: "facebook/multi-token-prediction"
-  ref_id: "codellama/CodeLlama-7b-Python-hf"
+  ref_id: "Sheared-LLaMA-2.7B"
 
 loss:
   lambda: 0.5       # 가중치 강도
@@ -250,8 +256,12 @@ rho1:
 MLflow에서 실험 추적:
 ```python
 # 실험은 다음 체계를 따름
-experiment_name = "mtp/{algo}/{dataset}"
-# 예: "mtp/rho1-wmtp/mbpp"
+experiment_name = "mtp/wmtp"
+run_names = [
+  "mtp_baseline-wmtp_mbpp_exp1",
+  "critic-wmtp_mbpp_exp1",
+  "rho1-wmtp_contest_exp1"
+]
 
 # 기록되는 주요 메트릭
 - train/loss
@@ -311,11 +321,11 @@ vessl run create -f docker/vessl.yaml
 
 ## 모델 다운로드
 
-필요한 모델은 자동으로 다운로드됩니다:
-- **기본 MTP**: `facebook/multi-token-prediction` (7B, 4 헤드)
-- **참조 모델**: `codellama/CodeLlama-7b-Python-hf` (Rho-1용)
-- **보상 모델**: `sfair/Llama-3-8B-RM-Reward-Model` (Critic용)
+필요한 모델은 S3에서 자동으로 다운로드됩니다:
+- **기본 MTP**: `facebook/multi-token-prediction` (7B, 4 헤드) - S3: `models/7b_1t_4`
+- **참조 모델**: `Sheared-LLaMA-2.7B` (Rho-1용) - S3: `models/Sheared-LLaMA-2.7B`
+- **보상 모델**: `Starling-RM-7B-alpha` (Critic용) - S3: `models/Starling-RM-7B-alpha`
 
-## 라이선스
-
-MIT 라이선스 - 자세한 내용은 LICENSE 파일 참조
+### 데이터셋 경로
+- **MBPP**: S3: `datasets/mbpp/` (train.json, validation.json, test.json)
+- **Contest**: S3: `datasets/contest/` (train.json, validation.json, test.json)

@@ -384,6 +384,20 @@ class ComponentFactory:
                     # HuggingFace로 변환된 MTP 모델의 경우
                     loader_key = "hf-model"
 
+            # Starling-RM Reward Model
+            elif (
+                "starling-rm" in base_id.lower()
+                or "starling-rm-7b" in base_path.lower()
+            ):
+                loader_key = "starling-rm"  # 📌 Critic-WMTP용 RM 모델
+
+            # Sheared-LLaMA 경량 모델
+            elif (
+                "sheared-llama" in base_id.lower()
+                or "sheared-llama-2.7b" in base_path.lower()
+            ):
+                loader_key = "sheared-llama"  # 📌 Rho1-WMTP용 참조 모델
+
             # 체크포인트 파일 확인 (.pt/.pth 확장자)
             elif base_path.endswith(".pt") or base_path.endswith(".pth"):
                 loader_key = "checkpoint"  # 훈련 재개용

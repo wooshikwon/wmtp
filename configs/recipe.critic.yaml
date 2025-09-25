@@ -13,8 +13,8 @@ run:
 # Model configuration
 model:
   base_id: "facebook/multi-token-prediction"
-  rm_id: "sfair/Llama-3-8B-RM-Reward-Model"
-  ref_id: "codellama/CodeLlama-7b-Python-hf"  # CodeLlama for better CE distribution matching
+  rm_id: "Starling-RM-7B-alpha"  # Using uploaded RM model from S3
+  ref_id: "Sheared-LLaMA-2.7B"  # Using uploaded reference model from S3
   tokenizer_pad_side: "right"
   mtp:
     n_heads: 4

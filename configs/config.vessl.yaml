@@ -10,20 +10,20 @@ storage:
   mode: "s3"  # S3 mode for VESSL deployment
   s3:
     bucket: "wmtp"
-    region: "ap-northeast-2"
-    prefix: "mtpfw/"
+    region: "eu-north-1"
+    prefix: ""
 
 # Path configurations for S3
 paths:
   models:
     # S3 paths - models will be downloaded from HF or S3
     base_s3: "models/7b_1t_4"
-    rm_s3: "models/Llama_3_8B_RM"
-    ref_s3: "models/codellama_7b_python"
+    rm_s3: "models/Starling-RM-7B-alpha"  # Reward model (uploaded)
+    ref_s3: "models/Sheared-LLaMA-2.7B"  # Reference model (uploaded)
     # Local cache for downloaded models
     base_local: "/tmp/models/7b_1t_4"
-    rm_local: "/tmp/models/Llama_3_8B_RM"
-    ref_local: "/tmp/models/codellama_7b_python"
+    rm_local: "/tmp/models/Starling-RM-7B-alpha"
+    ref_local: "/tmp/models/Sheared-LLaMA-2.7B"
   datasets:
     # S3 paths for datasets
     mbpp_s3: "datasets/mbpp"

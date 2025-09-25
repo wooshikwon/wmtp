@@ -20,7 +20,10 @@ from .dataset import (
 from .model import (
     CheckpointLoader,
     HFModelLoader,
+    MTPNativeCPULoader,
     MTPNativeLoader,
+    ShearedLLaMALoader,
+    StarlingRMLoader,
 )
 
 # Export all loaders
@@ -32,6 +35,9 @@ __all__ = [
     # Model loaders
     "HFModelLoader",
     "MTPNativeLoader",
+    "MTPNativeCPULoader",
+    "StarlingRMLoader",
+    "ShearedLLaMALoader",
     "CheckpointLoader",
     # Dataset loaders
     "MBPPDatasetLoader",

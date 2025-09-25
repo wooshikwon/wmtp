@@ -3,17 +3,17 @@
 
 # Run metadata
 run:
-  name: "rho1-wmtp_codecontests_exp1"
+  name: "rho1-wmtp_contest_exp1"
   tags:
     - "rho1"
     - "wmtp"
-    - "codecontests"
-    - "experiment"
+    - "contest"
+    - "baseline"
 
 # Model configuration
 model:
   base_id: "facebook/multi-token-prediction"
-  ref_id: "codellama/CodeLlama-7b-Python-hf"  # CodeLlama for better CE distribution matching
+  ref_id: "Sheared-LLaMA-2.7B"  # Using uploaded reference model from S3
   tokenizer_pad_side: "right"
   mtp:
     n_heads: 4

@@ -47,7 +47,7 @@ class ModelDatasetSetup:
         self.models_dir = self.project_root / "models"
         self.dataset_dir = self.project_root / "dataset"
 
-        # Model specifications from BLUEPRINT.md
+        # Model specifications - Updated for unified tokenizer
         self.model_specs = {
             "7b_1t_4": {
                 "hub_id": "facebook/multi-token-prediction",  # Actual MTP model!
@@ -56,15 +56,15 @@ class ModelDatasetSetup:
                 "subfolder": "7B_1T_4",  # Specific model variant
                 "required": True,
             },
-            "Llama_3_8B_RM": {
-                "hub_id": "sfairXC/FsfairX-LLaMA3-RM-v0.1",  # Correct model ID
-                "description": "Reward Model for Critic-Weighted MTP",
+            "Starling-RM-7B-alpha": {
+                "hub_id": "berkeley-nest/Starling-RM-7B-alpha",
+                "description": "Reward Model for Critic-WMTP (Llama-2 based)",
                 "download_weights": True,  # Full download
                 "required": True,
             },
-            "codellama_7b_python": {
-                "hub_id": "codellama/CodeLlama-7b-Python-hf",
-                "description": "Reference Model for Rho-1 and tokenizer compatibility",
+            "Sheared-LLaMA-2.7B": {
+                "hub_id": "princeton-nlp/Sheared-LLaMA-2.7B",
+                "description": "2.7B Reference Model for Rho1-WMTP (efficient)",
                 "download_weights": True,  # Full download
                 "required": True,
             },
@@ -85,16 +85,21 @@ class ModelDatasetSetup:
         }
 
     def clean_up_old_models(self):
-        """Remove models not in BLUEPRINT.md"""
+        """Remove models not in current specs"""
         logger.info("\n" + "=" * 60)
         logger.info("CLEANUP: Removing unnecessary models")
         logger.info("=" * 60)
 
-        # Remove opt-1.3b if it exists (not in BLUEPRINT.md)
-        opt_path = self.models_dir / "opt-1.3b"
-        if opt_path.exists():
-            logger.info(f"🗑️  Removing {opt_path} (not in BLUEPRINT.md)")
-            shutil.rmtree(opt_path)
+        # List of old models to remove (no longer needed with unified tokenizer)
+        old_models = ["opt-1.3b", "Llama_3_8B_RM", "codellama_7b_python"]
+
+        for model_name in old_models:
+            model_path = self.models_dir / model_name
+            if model_path.exists():
+                logger.info(
+                    f"🗑️  Removing {model_path} (replaced with unified tokenizer models)"
+                )
+                shutil.rmtree(model_path)
 
         # Check for any other unexpected models
         if self.models_dir.exists():
@@ -318,7 +323,39 @@ class ModelDatasetSetup:
 
         return all_good
 
-    def run(self, force_redownload: bool = False):
+    def upload_to_s3(self) -> None:
+        """Upload models to S3"""
+        logger.info("\n" + "=" * 60)
+        logger.info("S3: Uploading models to S3")
+        logger.info("=" * 60)
+
+        # Import S3 utilities
+        try:
+            from src.utils.s3 import create_s3_manager
+
+            s3_manager = create_s3_manager({"storage": {"s3": {"enabled": True}}})
+
+            if not s3_manager or not s3_manager.connected:
+                logger.error("❌ S3 connection failed. Check AWS credentials.")
+                return
+
+            # Upload each model
+            for name in self.model_specs.keys():
+                model_path = self.models_dir / name
+                if model_path.exists():
+                    s3_key = f"models/{name}"
+                    logger.info(f"📤 Uploading {name} to s3://wmtp/{s3_key}")
+                    s3_manager.sync_directory(
+                        local_dir=model_path, s3_prefix=s3_key, direction="upload"
+                    )
+                    logger.info(f"✅ {name} uploaded successfully")
+                else:
+                    logger.warning(f"⚠️  {name} not found locally, skipping upload")
+
+        except Exception as e:
+            logger.error(f"❌ S3 upload failed: {e}")
+
+    def run(self, force_redownload: bool = False, upload_s3: bool = False):
         """Main execution flow"""
         logger.info("\n" + "=" * 60)
         logger.info("WMTP Model & Dataset Setup")
@@ -364,7 +401,11 @@ class ModelDatasetSetup:
 
             self.download_dataset(name, spec)
 
-        # Step 5: Verify setup
+        # Step 5: Upload to S3 if requested
+        if upload_s3:
+            self.upload_to_s3()
+
+        # Step 6: Verify setup
         if self.verify_setup():
             logger.info("\n✨ Setup completed successfully!")
             logger.info("\nYou can now run training with:")
@@ -384,10 +425,13 @@ def main():
     parser.add_argument(
         "--force", action="store_true", help="Force re-download even if files exist"
     )
+    parser.add_argument(
+        "--upload-s3", action="store_true", help="Upload models to S3 after download"
+    )
     args = parser.parse_args()
 
     setup = ModelDatasetSetup()
-    setup.run(force_redownload=args.force)
+    setup.run(force_redownload=args.force, upload_s3=args.upload_s3)
 
 
 if __name__ == "__main__":
