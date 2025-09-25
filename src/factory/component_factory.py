@@ -38,6 +38,7 @@ from src.components.registry import (
     evaluator_registry,  # 평가기 구현체들 (meta-mtp, mbpp-v1 등)
     loader_registry,  # 로더 구현체들 (hf-model, mtp-native 등)
     optimizer_registry,  # 옵티마이저 구현체들 (adamw-bf16-fused 등)
+    registry,  # 통합 레지스트리 (직접 접근용)
     scorer_registry,  # 스코어러 구현체들 (critic-delta-v1, rho1-excess-v1 등)
     tokenizer_registry,  # 토크나이저 구현체들 (unified-sentencepiece 등)
     trainer_registry,  # 트레이너 구현체들 (mtp-weighted-ce-trainer 등)
@@ -171,11 +172,7 @@ class ComponentFactory:
                 "max_weight": recipe.loss.max_weight,  # 최대 가중치 제한
             },
             # 훈련 방식 설정
-            "full_finetune": recipe.train.full_finetune,  # 전체 파인튜닝 vs LoRA
-            # LoRA 설정 (메모리 효율적 파인튜닝)
-            "lora_config": recipe.train.lora.model_dump()
-            if recipe.train.lora.enabled
-            else None,
+            "full_finetune": recipe.train.full_finetune,  # 전체 파인튜닝 전용
             # 분산 훈련 및 메모리 최적화
             "mixed_precision": config.devices.mixed_precision,  # BF16/FP16 혼합 정밀도
             # FSDP (Fully Sharded Data Parallel) 설정
@@ -294,6 +291,46 @@ class ComponentFactory:
         return loader_registry.create("unified-model-loader", loader_config)
 
     @staticmethod
+    def create_checkpoint_loader(config: Config) -> Loader:
+        """체크포인트 전용 로더 생성 - 훈련 재개를 위한 특화된 인터페이스.
+
+        훈련 재개 시나리오를 위한 전용 로더:
+            - 메타데이터 자동 추출 (epoch, step, mlflow_run_id)
+            - S3/로컬 통합 지원
+            - Rich Console 기반 진행상황 표시
+            - 견고한 오류 처리
+
+        UnifiedModelLoader와의 차이점:
+            - 체크포인트 전용 최적화
+            - 훈련 메타데이터 자동 파싱
+            - 재개 전용 인터페이스
+
+        Args:
+            config: 환경 설정 (S3, 경로, GPU 설정)
+
+        Returns:
+            CheckpointLoader 인스턴스
+
+        Usage:
+            ```python
+            checkpoint_loader = ComponentFactory.create_checkpoint_loader(config)
+            checkpoint_loader.setup({})
+            result = checkpoint_loader.run({
+                "model_path": "s3://wmtp/checkpoints/model.pt",
+                "load_metadata": True
+            })
+            epoch = result["epoch"]
+            step = result["step"]
+            mlflow_run_id = result["mlflow_run_id"]
+            ```
+        """
+        # 체크포인트 로더 설정 구성
+        loader_config = config.model_dump()
+
+        # CheckpointLoader 생성 - 체크포인트 전용 특화 기능
+        return loader_registry.create("checkpoint-loader", loader_config)
+
+    @staticmethod
     def create_evaluator(recipe: Recipe, config: Config) -> Evaluator:
         """평가 프로토콜별 특화된 평가기 생성.
 
@@ -381,6 +418,95 @@ class ComponentFactory:
                 f"Algorithm '{algo}' does not support multi-stage training. "
                 f"Only 'critic-wmtp' currently requires pretrainer."
             )
+
+    @staticmethod
+    def create_aux_model_loader(recipe: Recipe, config: Config, aux_type: str) -> Loader:
+        """알고리즘별 보조 모델 로더 생성 - ref/rm 모델 전용.
+
+        WMTP 알고리즘별 보조 모델 처리를 위한 특화된 로더:
+            - rho1-wmtp: Reference Model 로딩 (CE 차이 계산용)
+            - critic-wmtp: Reward Model 로딩 (Value Head 훈련용)
+            - mtp-baseline: 보조 모델 불필요 (에러 발생)
+
+        create_model_loader와의 차이점:
+            1. 알고리즘별 특화: recipe.train.algo에 따른 검증
+            2. 보조 모델 전용: base 모델과 구분된 처리
+            3. 경로 자동 매핑: aux_type에 따른 config 경로 자동 선택
+            4. 타입 안전성: 잘못된 알고리즘-모델 조합 차단
+
+        Args:
+            recipe: 훈련 레시피 (알고리즘 타입 확인용)
+            config: 환경 설정 (모델 경로들 포함)
+            aux_type: 보조 모델 타입 ("ref" | "rm")
+
+        Returns:
+            알고리즘에 맞는 UnifiedModelLoader 인스턴스
+
+        Raises:
+            ValueError: 잘못된 알고리즘-보조모델 조합
+
+        Usage:
+            ```python
+            # Rho1 알고리즘의 참조 모델
+            ref_loader = ComponentFactory.create_aux_model_loader(
+                recipe, config, "ref"
+            )
+
+            # Critic 알고리즘의 보상 모델
+            rm_loader = ComponentFactory.create_aux_model_loader(
+                recipe, config, "rm"
+            )
+            ```
+        """
+        algo = recipe.train.algo
+
+        # 알고리즘별 보조 모델 필요성 검증
+        if algo == "mtp-baseline":
+            raise ValueError(
+                f"Algorithm '{algo}' does not require auxiliary models. "
+                f"Use create_model_loader() for base model only."
+            )
+        elif algo == "rho1-wmtp" and aux_type != "ref":
+            raise ValueError(
+                f"Algorithm '{algo}' only supports aux_type='ref' for reference model. "
+                f"Got aux_type='{aux_type}'"
+            )
+        elif algo == "critic-wmtp" and aux_type != "rm":
+            raise ValueError(
+                f"Algorithm '{algo}' only supports aux_type='rm' for reward model. "
+                f"Got aux_type='{aux_type}'"
+            )
+        elif algo not in ["rho1-wmtp", "critic-wmtp"]:
+            raise ValueError(
+                f"Algorithm '{algo}' is not supported for auxiliary model loading. "
+                f"Supported algorithms: 'rho1-wmtp', 'critic-wmtp'"
+            )
+
+        # aux_type에 따른 모델 경로 자동 매핑
+        aux_model_paths = {
+            "ref": config.paths.models.ref,
+            "rm": config.paths.models.rm,
+        }
+
+        if aux_type not in aux_model_paths:
+            raise ValueError(
+                f"Invalid aux_type '{aux_type}'. "
+                f"Supported types: {list(aux_model_paths.keys())}"
+            )
+
+        # UnifiedModelLoader 설정 - base loader와 동일하나 경로 및 메타데이터 차별화
+        loader_config = config.model_dump()
+
+        # 보조 모델 메타데이터 추가
+        loader_config["_aux_model_info"] = {
+            "algorithm": algo,
+            "aux_type": aux_type,
+            "model_path": str(aux_model_paths[aux_type]),
+            "description": f"{algo} auxiliary {aux_type} model loader",
+        }
+
+        # UnifiedModelLoader 생성 - 동일한 로더 클래스 사용
+        return loader_registry.create("unified-model-loader", loader_config)
 
     @staticmethod
     def create_tokenizer(recipe: Recipe, config: Config) -> Any:

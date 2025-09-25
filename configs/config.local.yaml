@@ -8,32 +8,22 @@ seed: 42
 # Storage configuration
 storage:
   mode: "local"  # Options: local, s3
-  # Uncomment and configure for S3 storage
-  # s3:
-  #   bucket: "wmtp-artifacts"
-  #   region: "ap-northeast-2"
-  #   prefix: "mtpfw/"
 
 # Path configurations
 paths:
   models:
-    base_local: "models/7b_1t_4"
-    rm_local: "models/Llama_3_8B_RM"
-    ref_local: "models/codellama_7b_python"
+    base: "models/7b_1t_4"
+    rm: "models/Llama_3_8B_RM"
+    ref: "models/codellama_7b_python"
   datasets:
-    mbpp_local: "dataset/mbpp"
-    contest_local: "dataset/contest"
-  cache: ".cache"
+    mbpp: "dataset/mbpp"
+    contest: "dataset/contest"
 
 # MLflow configuration
 mlflow:
   experiment: "mtp/wmtp"
-  # For local development
   tracking_uri: "file:///tmp/mlflow"
   registry_uri: "file:///tmp/mlflow"
-  # For production with S3
-  # tracking_uri: "s3://wmtp-artifacts/mlflow"
-  # registry_uri: "s3://wmtp-artifacts/mlflow"
 
 # Launcher configuration
 launcher:
@@ -47,6 +37,7 @@ launcher:
 
 # Device and distributed training configuration
 devices:
+  compute_backend: "auto"  # auto, cuda, mps, cpu
   mixed_precision: "bf16"  # Options: bf16, fp16, fp32
   fsdp:
     enabled: true

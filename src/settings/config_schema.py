@@ -314,13 +314,11 @@ class Paths(BaseModel):
         datasets: 데이터셋 경로들 (로컬 또는 S3)
 
     Note:
-        cache 필드는 제거되었습니다. S3 스트리밍을 통해
-        직접 메모리에 로드하므로 로컬 캐시가 불필요합니다.
+        S3 체크포인트 전략 사용 - 모든 중간 결과는 S3에 직접 저장됩니다.
     """
 
     models: ModelPaths = Field(default_factory=ModelPaths)
     datasets: DatasetPaths = Field(default_factory=DatasetPaths)
-    # cache 필드 제거 - S3 스트리밍으로 대체
 
 
 class MLflow(BaseModel):
@@ -345,6 +343,12 @@ class MLflow(BaseModel):
             - 보통 tracking_uri와 동일하게 설정
             - 프로덕션 모델 배포 시 사용
 
+        artifact_location: 아티팩트 저장 위치 (선택)
+            - MLflow 아티팩트 (모델, 플롯, 파일) 저장 위치
+            - S3: "s3://bucket/mlflow-artifacts"
+            - 로컬: "./mlflow-artifacts"
+            - None이면 tracking_uri 기본 위치 사용
+
     Example:
         # 로컬 개발
         mlflow:
@@ -352,11 +356,12 @@ class MLflow(BaseModel):
           tracking_uri: ./mlflow_runs
           registry_uri: ./mlflow_runs
 
-        # 프로덕션
+        # 프로덕션 (아티팩트 별도 저장)
         mlflow:
           experiment: prod/wmtp
           tracking_uri: s3://ml-artifacts/mlflow
           registry_uri: s3://ml-artifacts/mlflow
+          artifact_location: s3://ml-artifacts/mlflow-artifacts
 
     Note:
         환경 변수 사용 가능: ${MLFLOW_TRACKING_URI}
@@ -373,6 +378,10 @@ class MLflow(BaseModel):
     registry_uri: str = Field(
         ...,
         description="MLflow 모델 레지스트리 URI (원격의 경우 S3 필수)",
+    )
+    artifact_location: str | None = Field(
+        default=None,
+        description="MLflow 아티팩트 저장 위치 (None이면 tracking_uri 기본 위치 사용)",
     )
 
     @field_validator("tracking_uri", "registry_uri")

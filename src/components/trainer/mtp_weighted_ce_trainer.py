@@ -191,8 +191,7 @@ class MTPWeightedCETrainer(BaseComponent):
         - scorer: 토큰 가중치 계산기 (None이면 baseline)
 
     선택적 설정:
-        - full_finetune: 전체 파인튜닝 여부
-        - lora_config: LoRA 설정 (메모리 효율적 파인튜닝)
+        - full_finetune: 전체 파인튜닝 여부 (현재 전용 모드)
     """
 
     def __init__(self, config: dict[str, Any] | None = None):

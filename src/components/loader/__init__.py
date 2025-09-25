@@ -12,6 +12,9 @@ from .unified_data_loader import UnifiedDataLoader
 # Import unified loaders (Phase 2)
 from .unified_model_loader import UnifiedModelLoader
 
+# Import specialized loaders
+from .checkpoint_loader import CheckpointLoader
+
 # Export loaders
 __all__ = [
     # Base classes
@@ -21,11 +24,14 @@ __all__ = [
     # Unified loaders (Phase 2)
     "UnifiedModelLoader",
     "UnifiedDataLoader",
+    # Specialized loaders
+    "CheckpointLoader",
 ]
 
 # Registry keys for unified loaders
 MODEL_LOADER_KEYS = {
     "unified": "unified-model-loader",
+    "checkpoint": "checkpoint-loader",
 }
 
 DATASET_LOADER_KEYS = {

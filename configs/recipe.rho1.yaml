@@ -23,26 +23,17 @@ model:
 # Training configuration for Rho-1
 train:
   algo: "rho1-wmtp"  # Using Rho-1 algorithm
-  full_finetune: false
+  full_finetune: true  # Changed from LoRA to full fine-tuning since LoRA not implemented
+  max_steps: 1500  # Maximum training steps
   checkpointing:
     save_interval: 100      # N스텝마다 저장
     keep_last: 3           # 최근 N개 체크포인트 유지
     save_final: true       # 최종 모델 저장 여부
-  lora:
-    enabled: true  # Using LoRA for efficiency
-    r: 32
-    alpha: 64
-    dropout: 0.1
-    target_modules:
-      - "q_proj"
-      - "v_proj"
-      - "o_proj"
-      - "k_proj"
 
 # Optimizer configuration
 optim:
   optimizer: "adamw"
-  lr: 2e-5  # Slightly higher for LoRA
+  lr: 1.5e-5  # Adjusted for full fine-tuning
   weight_decay: 0.01
   betas: [0.9, 0.999]
   grad_clip: 1.0
@@ -61,12 +52,6 @@ data:
     max_length: 1024
     batch_size: 16
     pack_sequences: false
-
-# Batching configuration
-batching:
-  global_batch_tokens: 2000000  # 2M tokens for LoRA
-  micro_batch_size: 2
-  grad_accum_steps: 32
 
 # Loss configuration
 loss:

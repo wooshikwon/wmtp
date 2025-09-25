@@ -231,25 +231,12 @@ class Model(BaseModel):
         return v
 
 
-class LoRAConfig(BaseModel):
-    """LoRA (Low-Rank Adaptation) configuration."""
+class Checkpointing(BaseModel):
+    """체크포인트 저장 설정."""
 
-    enabled: bool = Field(default=False, description="Enable LoRA fine-tuning")
-    r: int = Field(default=16, ge=1, description="LoRA rank")
-    alpha: int = Field(default=32, ge=1, description="LoRA alpha")
-    dropout: float = Field(default=0.05, ge=0.0, le=1.0, description="LoRA dropout")
-    target_modules: list[str] = Field(
-        default=[
-            "q_proj",
-            "v_proj",
-            "o_proj",
-            "k_proj",
-            "gate_proj",
-            "up_proj",
-            "down_proj",
-        ],
-        description="Target modules for LoRA",
-    )
+    save_interval: int = Field(default=100, ge=1, description="N스텝마다 체크포인트 저장")
+    keep_last: int = Field(default=3, ge=1, description="최근 N개 체크포인트 유지")
+    save_final: bool = Field(default=True, description="최종 모델 저장 여부")
 
 
 class Train(BaseModel):
@@ -259,17 +246,12 @@ class Train(BaseModel):
         ..., description="Training algorithm"
     )
     full_finetune: bool = Field(default=True, description="Full fine-tuning mode")
-    lora: LoRAConfig = Field(default_factory=LoRAConfig)
-
-    @model_validator(mode="after")
-    def validate_finetune_mode(self):
-        """Ensure either full fine-tune or LoRA is enabled."""
-        if not self.full_finetune and not self.lora.enabled:
-            raise ValueError("Either full_finetune or lora.enabled must be True")
-        if self.full_finetune and self.lora.enabled:
-            raise ValueError("Cannot enable both full_finetune and LoRA simultaneously")
-        return self
-
+    max_steps: int | None = Field(
+        default=None, ge=1, description="Maximum training steps (None for unlimited)"
+    )
+    checkpointing: Checkpointing | None = Field(
+        default=None, description="체크포인트 저장 설정 (선택사항)"
+    )
 
 class Optim(BaseModel):
     """Optimizer configuration."""
@@ -325,20 +307,6 @@ class Data(BaseModel):
 
     train: DataConfig = Field(..., description="Training data configuration")
     eval: DataConfig = Field(..., description="Evaluation data configuration")
-
-
-class Batching(BaseModel):
-    """Batching configuration."""
-
-    global_batch_tokens: int = Field(
-        default=4_000_000, gt=0, description="Global batch size in tokens"
-    )
-    micro_batch_size: int = Field(
-        default=1, ge=1, description="Micro batch size per device"
-    )
-    grad_accum_steps: int = Field(
-        default=64, ge=1, description="Gradient accumulation steps"
-    )
 
 
 class Loss(BaseModel):
@@ -441,7 +409,6 @@ class Recipe(BaseModel):
     train: Train = Field(..., description="Training configuration")
     optim: Optim = Field(..., description="Optimizer configuration")
     data: Data = Field(..., description="Data configuration")
-    batching: Batching = Field(..., description="Batching configuration")
     loss: Loss = Field(..., description="Loss configuration")
     critic: Critic | None = Field(
         default=None, description="Critic configuration (required for critic-wmtp)"

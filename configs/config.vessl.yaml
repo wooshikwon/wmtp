@@ -13,25 +13,15 @@ storage:
     region: "eu-north-1"
     prefix: ""
 
-# Path configurations for S3
+# Path configurations for S3 (PathResolver auto-detects s3:// prefix)
 paths:
   models:
-    # S3 paths - models will be downloaded from HF or S3
-    base_s3: "models/7b_1t_4"
-    rm_s3: "models/Starling-RM-7B-alpha"  # Reward model (uploaded)
-    ref_s3: "models/Sheared-LLaMA-2.7B"  # Reference model (uploaded)
-    # Local cache for downloaded models
-    base_local: "/tmp/models/7b_1t_4"
-    rm_local: "/tmp/models/Starling-RM-7B-alpha"
-    ref_local: "/tmp/models/Sheared-LLaMA-2.7B"
+    base: "s3://wmtp/models/7b_1t_4"
+    rm: "s3://wmtp/models/Starling-RM-7B-alpha"  # Reward model (uploaded)
+    ref: "s3://wmtp/models/Sheared-LLaMA-2.7B"  # Reference model (uploaded)
   datasets:
-    # S3 paths for datasets
-    mbpp_s3: "datasets/mbpp"
-    contest_s3: "datasets/contest"
-    # Local cache for downloaded datasets
-    mbpp_local: "/tmp/datasets/mbpp"
-    contest_local: "/tmp/datasets/contest"
-  cache: "/tmp/.cache"
+    mbpp: "s3://wmtp/datasets/mbpp"
+    contest: "s3://wmtp/datasets/contest"
 
 # MLflow configuration with S3 backend
 mlflow:
