@@ -11,7 +11,7 @@ WMTP 연구에서 핵심 아이디어:
 수학적 원리 (연구제안서 공식):
 1. 시퀀스 보상 R → GAE로 토큰별 가치 목표값 V̂_t 생성
 2. 가치함수 학습: min Σ_t (V_θ(h_t) - V̂_t)²
-3. Delta 계산: δ_t = V_t - V_{t-1} (여기서 V_{-1} = 0)
+3. Delta 계산: δ_t = V_t - λV_{t-1} (TD error 관점, 여기서 V_{-1} = 0)
 4. 헤드별 가중치: w_{t+k} = softmax([δ_{t+1}, δ_{t+2}, δ_{t+3}, δ_{t+4}])
 
 최종 출력: [batch, seq_len, horizon] 형태의 헤드별 가중치
@@ -45,7 +45,7 @@ class CriticDeltaScorer(BaseComponent):
 
     Stage 2: Delta 기반 가중치 생성
     - 학습된 가치함수로 각 토큰의 가치 V_t 계산
-    - Delta 계산: δ_t = V_t - V_{t-1} (가치 증가량)
+    - Delta 계산: δ_t = V_t - λV_{t-1} (TD error 관점의 가치 증가량)
     - 헤드별 가중치: softmax([δ_{t+1}, δ_{t+2}, δ_{t+3}, δ_{t+4}])
 
     장점: 이론적으로 탄탄한 강화학습 기반
@@ -69,10 +69,12 @@ class CriticDeltaScorer(BaseComponent):
                 - temperature: Softmax 온도 (0.7 - 적당히 sharp한 분포)
                 - gamma: GAE 할인계수 (0.99 - 미래 보상 중시)
                 - gae_lambda: GAE 람다값 (0.95 - bias-variance 균형)
+                - discount_lambda: TD error 계산 시 V_{t-1}에 적용할 할인율 (0.95)
 
         주의사항:
         - gamma는 너무 낮으면 단기적 보상만 고려, 너무 높으면 분산 증가
         - temperature는 낮을수록 sharp, 높을수록 uniform한 분포
+        - discount_lambda는 시간 차이를 보정하여 공정한 delta 계산
         """
         super().__init__(config)
         self.target = self.config.get("target", "rm_sequence")
@@ -82,6 +84,9 @@ class CriticDeltaScorer(BaseComponent):
         self.temperature = self.config.get("temperature", 0.7)
         self.gamma = self.config.get("gamma", 0.99)
         self.gae_lambda = self.config.get("gae_lambda", 0.95)
+        self.discount_lambda = self.config.get(
+            "discount_lambda", 0.95
+        )  # TD error discount factor
 
         # 가치헤드는 필요할 때 초기화됩니다 (Stage 1에서 학습, Stage 2에서 사용)
         self.value_head: nn.Module | None = None
@@ -208,11 +213,11 @@ class CriticDeltaScorer(BaseComponent):
         """
         연구제안서 정확 구현: 각 위치에서 헤드별 가중치 계산
 
-        Position t에서 4개 헤드에 대응하는 가중치:
-        - Head 0 (예측 t+1): δ_{t+1} = V_{t+1} - V_t
-        - Head 1 (예측 t+2): δ_{t+2} = V_{t+2} - V_{t+1}
-        - Head 2 (예측 t+3): δ_{t+3} = V_{t+3} - V_{t+2}
-        - Head 3 (예측 t+4): δ_{t+4} = V_{t+4} - V_{t+3}
+        Position t에서 4개 헤드에 대응하는 가중치 (TD error 적용):
+        - Head 0 (예측 t+1): δ_{t+1} = V_{t+1} - λV_t
+        - Head 1 (예측 t+2): δ_{t+2} = V_{t+2} - λV_{t+1}
+        - Head 2 (예측 t+3): δ_{t+3} = V_{t+3} - λV_{t+2}
+        - Head 3 (예측 t+4): δ_{t+4} = V_{t+4} - λV_{t+3}
 
         그 다음 softmax([δ_{t+1}, δ_{t+2}, δ_{t+3}, δ_{t+4}])를 적용
 
@@ -234,9 +239,11 @@ class CriticDeltaScorer(BaseComponent):
                 future_pos = t + k + 1  # k번째 헤드는 t+(k+1) 예측
 
                 if future_pos < seq_len:
-                    # δ_{t+k+1} = V_{t+k+1} - V_{t+k}
+                    # TD error: δ_{t+k+1} = V_{t+k+1} - λV_{t+k}
                     if t + k >= 0:
-                        delta_k = values[future_pos] - values[t + k]
+                        delta_k = (
+                            values[future_pos] - self.discount_lambda * values[t + k]
+                        )
                     else:
                         # 경계 처리: V_{-1} = 0으로 가정
                         delta_k = values[future_pos] - 0.0
@@ -278,7 +285,7 @@ class CriticDeltaScorer(BaseComponent):
         """
         Compute temporal difference deltas.
 
-        Following BLUEPRINT: δ_t = V_t - V_{t-1} where V_{-1} = 0
+        Following TD error approach: δ_t = V_t - λV_{t-1} where V_{-1} = 0
 
         Args:
             values: Value function predictions
@@ -287,9 +294,10 @@ class CriticDeltaScorer(BaseComponent):
             Delta values for each token
         """
         if self.delta_mode == "td":
-            # Temporal difference: δ_t = V_t - V_{t-1}
+            # Temporal difference with discount: δ_t = V_t - λV_{t-1}
             # For first token: δ_0 = V_0 - 0 = V_0
-            deltas = np.diff(values, prepend=0)
+            prev_values = np.concatenate(([0], values[:-1]))  # V_{-1} = 0
+            deltas = values - self.discount_lambda * prev_values
         else:  # diff mode
             # Alternative: difference from mean
             deltas = values - np.mean(values)
@@ -419,7 +427,7 @@ class CriticDeltaScorer(BaseComponent):
                 # Here we use the targets as our value predictions
                 values = value_targets
 
-                # Step 4: Compute deltas δ_t = V_t - V_{t-1}
+                # Step 4: Compute deltas δ_t = V_t - λV_{t-1} (TD error)
                 deltas = self.compute_deltas(values)
 
                 # Step 5: 새로운 헤드별 가중치 계산 (연구제안서 구현)

@@ -38,6 +38,9 @@ WMTP 실험 시나리오:
 """
 
 import hashlib
+import io
+import json
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -274,6 +277,59 @@ class S3Manager:
             else:
                 raise
 
+    def upload_from_bytes(
+        self,
+        data: bytes,
+        s3_key: str,
+        metadata: dict[str, str] | None = None,
+    ) -> str:
+        """
+        Upload bytes data directly to S3.
+
+        Args:
+            data: Bytes data to upload
+            s3_key: S3 object key
+            metadata: Optional metadata
+
+        Returns:
+            S3 URI
+        """
+        if not self.connected:
+            raise RuntimeError("S3 not connected. Cannot upload.")
+
+        full_key = f"{self.prefix}/{s3_key}" if self.prefix else s3_key
+
+        try:
+            extra_args = {}
+            if metadata:
+                extra_args["Metadata"] = metadata
+
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console,
+            ) as progress:
+                task = progress.add_task(
+                    f"Uploading to S3: {s3_key}...",
+                    total=None,
+                )
+
+                self.s3_client.put_object(
+                    Bucket=self.bucket,
+                    Key=full_key,
+                    Body=data,
+                    **extra_args,
+                )
+
+                progress.update(task, completed=True)
+
+            s3_uri = f"s3://{self.bucket}/{full_key}"
+            console.print(f"[green]Uploaded to: {s3_uri}[/green]")
+            return s3_uri
+
+        except ClientError as e:
+            raise RuntimeError(f"Failed to upload to S3: {e}")
+
     def upload_artifact(
         self,
         local_path: str | Path,
@@ -330,6 +386,100 @@ class S3Manager:
 
         except ClientError as e:
             raise RuntimeError(f"Failed to upload to S3: {e}")
+
+    def download_to_bytes(self, s3_key: str) -> bytes:
+        """
+        Download S3 object directly to bytes in memory.
+
+        Args:
+            s3_key: S3 object key
+
+        Returns:
+            File content as bytes
+
+        Raises:
+            RuntimeError: If S3 not connected
+            FileNotFoundError: If object not found
+        """
+        if not self.connected:
+            raise RuntimeError("S3 not connected. Cannot download.")
+
+        full_key = f"{self.prefix}/{s3_key}" if self.prefix else s3_key
+
+        try:
+            response = self.s3_client.get_object(Bucket=self.bucket, Key=full_key)
+            return response["Body"].read()
+
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "")
+            if error_code == "NoSuchKey":
+                raise FileNotFoundError(
+                    f"S3 object not found: s3://{self.bucket}/{full_key}"
+                )
+            else:
+                raise RuntimeError(f"Failed to download from S3: {e}")
+
+    def stream_model(self, s3_key: str) -> io.BytesIO:
+        """
+        모델을 메모리로 직접 스트리밍 (캐시 없음).
+
+        WMTP 실험에서 대용량 모델(7B+)을 효율적으로 로드하기 위한 메서드.
+        디스크 I/O를 피하고 메모리에 직접 로드하여 속도를 향상시킵니다.
+
+        Args:
+            s3_key: S3 object key
+
+        Returns:
+            모델 데이터를 담은 BytesIO 객체
+
+        Raises:
+            RuntimeError: S3 연결 실패
+            FileNotFoundError: 모델 파일이 S3에 없음
+
+        Example:
+            >>> stream = s3_manager.stream_model("models/7b_mtp.pth")
+            >>> model = torch.load(stream)
+        """
+        console.print(f"[cyan]Streaming model from S3: {s3_key}[/cyan]")
+        model_bytes = self.download_to_bytes(s3_key)
+        return io.BytesIO(model_bytes)
+
+    def stream_dataset(self, s3_key: str) -> Iterator[dict]:
+        """
+        데이터셋을 스트리밍으로 읽기 (캐시 없음).
+
+        JSONL 형식의 데이터셋을 한 줄씩 파싱하여 반환합니다.
+        대용량 데이터셋도 메모리 효율적으로 처리 가능합니다.
+
+        Args:
+            s3_key: S3 object key
+
+        Returns:
+            JSON 객체들의 이터레이터
+
+        Raises:
+            RuntimeError: S3 연결 실패
+            FileNotFoundError: 데이터셋 파일이 S3에 없음
+            json.JSONDecodeError: JSON 파싱 실패
+
+        Example:
+            >>> for sample in s3_manager.stream_dataset("datasets/mbpp/test.jsonl"):
+            >>>     print(sample['text'])
+        """
+        console.print(f"[cyan]Streaming dataset from S3: {s3_key}[/cyan]")
+        content = self.download_to_bytes(s3_key)
+
+        # JSONL 형식 처리 (한 줄에 하나의 JSON 객체)
+        for line in content.decode("utf-8").splitlines():
+            line = line.strip()
+            if line:  # 빈 줄 무시
+                try:
+                    yield json.loads(line)
+                except json.JSONDecodeError as e:
+                    console.print(
+                        f"[yellow]Warning: Failed to parse JSON line: {e}[/yellow]"
+                    )
+                    continue
 
     def exists(self, s3_key: str) -> bool:
         """
@@ -498,7 +648,8 @@ def create_s3_manager(config: dict[str, Any]) -> S3Manager | None:
     """
     storage_mode = config.get("storage", {}).get("mode")
 
-    if storage_mode != "s3":
+    # auto 모드일 때도 S3Manager 생성 (PathResolver가 경로를 판별)
+    if storage_mode not in ["s3", "auto"]:
         return None
 
     s3_config = config.get("storage", {}).get("s3", {})
@@ -508,11 +659,13 @@ def create_s3_manager(config: dict[str, Any]) -> S3Manager | None:
         )
         return None
 
+    # cache_dir은 더 이상 사용하지 않지만, 하위 호환성을 위해 임시로 유지
+    # 추후 S3Manager 클래스 자체에서 cache_dir 파라미터 제거 예정
     return S3Manager(
         bucket=s3_config.get("bucket"),
         region=s3_config.get("region", "ap-northeast-2"),
         prefix=s3_config.get("prefix", ""),
-        cache_dir=config.get("paths", {}).get("cache", ".cache"),
+        cache_dir="/tmp/.s3_cache",  # 임시 경로, 실제로 사용 안 함
     )
 
 

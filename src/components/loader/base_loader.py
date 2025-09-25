@@ -394,36 +394,38 @@ class ModelLoader(BaseLoader):
 
     def load_tokenizer(self, path: str, **kwargs) -> Any:
         """
-        통합 SentencePiece 토크나이저 로드 (기본 구현)
+        통합 SentencePiece 토크나이저 로드 (S3 기반)
 
         모든 WMTP 모델이 동일한 SentencePiece tokenizer.model 사용:
-        - Facebook MTP: models/7b_1t_4/tokenizer.model
-        - Starling-RM: 동일한 Llama-2 tokenizer.model
-        - Sheared-LLaMA: 동일한 Llama-2 tokenizer.model
+        - S3 우선: models/shared/tokenizer.model
+        - 로컬 폴백: TOKENIZER_MODEL_PATH 환경변수
+        - 하위 호환: 기존 파일시스템 경로
 
         Args:
-            path: 모델 디렉토리 또는 tokenizer.model 파일 경로
-            **kwargs: 추가 파라미터 (현재 미사용)
+            path: 모델 디렉토리 또는 tokenizer.model 파일 경로 (선택적)
+            **kwargs: 추가 파라미터
 
         Returns:
             SentencePieceProcessor 인스턴스
 
         Note:
-            서브클래스에서 다른 토크나이저가 필요한 경우 오버라이드 가능
+            S3에서 메모리로 직접 로드하여 VESSL 호환성 확보
         """
-        from pathlib import Path
+        from src.components.tokenizer.sentence_piece import SentencePieceTokenizer
 
-        from src.components.tokenizer.unified_tokenizer import get_unified_tokenizer
-
-        # 경로 처리: 디렉토리면 tokenizer.model 추가
-        tokenizer_path = Path(path)
-        if tokenizer_path.is_dir():
-            tokenizer_path = tokenizer_path / "tokenizer.model"
-
-        # 통합 토크나이저 반환 (싱글톤)
-        return get_unified_tokenizer(
-            tokenizer_path if tokenizer_path.exists() else None
+        # S3 기반 통합 토크나이저 사용
+        tokenizer_component = SentencePieceTokenizer(
+            {
+                "s3_manager": self.s3_manager,  # 기존 S3 연결 재사용
+            }
         )
+
+        # 토크나이저 초기화
+        tokenizer_component.setup({})
+
+        # 토크나이저 결과 반환
+        result = tokenizer_component.run({})
+        return result["tokenizer"]
 
     def load(self, path: str, **kwargs) -> dict[str, Any]:
         """

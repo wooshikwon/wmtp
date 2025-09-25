@@ -23,6 +23,10 @@ model:
 train:
   algo: "rho1-wmtp"  # Using Rho-1 algorithm
   full_finetune: false
+  checkpointing:
+    save_interval: 100      # N스텝마다 저장
+    keep_last: 3           # 최근 N개 체크포인트 유지
+    save_final: true       # 최종 모델 저장 여부
   lora:
     enabled: true  # Using LoRA for efficiency
     r: 32

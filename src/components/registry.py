@@ -199,6 +199,7 @@ trainer_registry = _category_api(unified_registry, "trainer")
 optimizer_registry = _category_api(unified_registry, "optimizer")
 evaluator_registry = _category_api(unified_registry, "evaluator")
 pretrainer_registry = _category_api(unified_registry, "pretrainer")
+tokenizer_registry = _category_api(unified_registry, "tokenizer")
 
 
 def list_all() -> dict[str, Any]:

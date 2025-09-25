@@ -26,7 +26,6 @@ from __future__ import annotations  # Python 3.10+ 타입 힌트 호환성
 from dataclasses import dataclass  # 간단한 데이터 클래스 생성용
 from typing import Any  # 범용 타입 힌트
 
-import torch  # PyTorch 딥러닝 프레임워크
 from torch.utils.data import DataLoader  # 데이터셋을 배치로 로드하는 도구
 from torch.utils.data.distributed import (
     DistributedSampler,  # 분산 훈련을 위한 데이터 분배기
@@ -61,6 +60,7 @@ def run_training_pipeline(
     tags: list[str] | None = None,  # 실험 분류용 태그 (선택적)
     dry_run: bool = False,  # 검증 모드 (실제 훈련 X)
     max_steps: int | None = None,  # 최대 훈련 스텝 (제한용)
+    resume_checkpoint: Path | None = None,  # 재개용 체크포인트 (선택적)
 ) -> RunOutputs:
     """WMTP 통합 훈련 파이프라인 - 모든 알고리즘의 메인 실행 함수.
 
@@ -100,12 +100,35 @@ def run_training_pipeline(
     # Step 1: 실험 추적 및 재현성 설정
     set_seed(config.seed)  # 동일한 시드로 재현 가능한 실험 보장
 
-    # MLflow 실험 추적 매니저 초기화 및 실행 시작
+    # 재개 처리 로직
+    start_epoch = 0
+    start_step = 0
+    resume_run_id = None
+
+    if resume_checkpoint and resume_checkpoint.exists():
+        import torch
+        from rich.console import Console
+
+        console = Console()
+        checkpoint_data = torch.load(resume_checkpoint, map_location="cpu")
+        start_epoch = checkpoint_data.get("epoch", 0)
+        start_step = checkpoint_data.get("step", 0)
+        resume_run_id = checkpoint_data.get("mlflow_run_id")
+
+        console.print(
+            f"[green]Resuming from epoch {start_epoch}, step {start_step}[/green]"
+        )
+
+    # MLflow 실험 추적 매니저 초기화 및 실행 시작/재개
     mlflow = create_mlflow_manager(config.model_dump())
     tag_map = {
         str(i): t for i, t in enumerate(tags or [])
     }  # 태그를 MLflow 형식으로 변환
-    mlflow.start_run(run_name=run_name or recipe.run.name, tags=tag_map)
+
+    if resume_run_id:
+        mlflow.start_run(run_id=resume_run_id, resume=True)
+    else:
+        mlflow.start_run(run_name=run_name or recipe.run.name, tags=tag_map)
 
     # Step 2: 기본 모델 로딩 (모든 알고리즘에서 공통으로 필요)
     # Facebook의 native MTP 모델 - 4개 head가 내장된 아키텍처 사용
@@ -331,6 +354,8 @@ def run_training_pipeline(
             "ref_model": ref_model,  # Rho-1용 참조 모델 (해당시)
             "base_tokenizer": tokenizer,  # 토크나이저
             "rm_model": rm_model,  # Critic용 보상 모델 (해당시)
+            "recipe": recipe,  # 체크포인트 설정을 위한 Recipe 전달
+            "resume_checkpoint": resume_checkpoint,  # 재개용 체크포인트
         }
     )
 

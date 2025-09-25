@@ -273,6 +273,64 @@ class MTPWeightedCETrainer(BaseComponent):
         self.base_tokenizer = ctx.get("base_tokenizer")  # 기본 토크나이저
         self.ref_tokenizer = ctx.get("ref_tokenizer")  # 참조 모델용 토크나이저
 
+        # 체크포인트 관리 설정
+        self.dist_manager = dm  # 분산 훈련 매니저 (체크포인트 저장/로드용)
+
+        # Recipe에서 체크포인트 설정 파싱
+        recipe = ctx.get("recipe")  # Recipe 객체 가져오기 (없으면 None)
+        if (
+            recipe
+            and hasattr(recipe, "train")
+            and hasattr(recipe.train, "checkpointing")
+        ):
+            checkpointing = recipe.train.checkpointing
+            self.save_interval = getattr(checkpointing, "save_interval", 100)
+            self.keep_last = getattr(checkpointing, "keep_last", 3)
+            self.save_final = getattr(checkpointing, "save_final", True)
+        else:
+            # 기본값 설정
+            self.save_interval = 100
+            self.keep_last = 3
+            self.save_final = True
+
+        # 알고리즘 정보 저장 (recipe에서 추출)
+        self.algorithm = (
+            getattr(recipe.train, "algo", "wmtp")
+            if recipe and hasattr(recipe, "train")
+            else "wmtp"
+        )
+
+        # 체크포인트 디렉토리 설정
+        from pathlib import Path
+
+        run_name = (
+            getattr(recipe, "run", {}).get("name", "default") if recipe else "default"
+        )
+        self.checkpoint_dir = Path("./checkpoints") / run_name
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+        # 저장된 체크포인트 목록 관리
+        self.saved_checkpoints = []
+
+        # 재개 처리 로직
+        self.start_step = 0
+        self.resume_metrics = {}
+
+        resume_checkpoint = ctx.get("resume_checkpoint")
+        if resume_checkpoint:
+            checkpoint_data = self.dist_manager.load_checkpoint(
+                model=self.model,
+                optimizer=self.optimizer,
+                checkpoint_path=str(resume_checkpoint),
+            )
+
+            self.start_step = checkpoint_data.get("step", 0)
+            self.resume_metrics = checkpoint_data.get("metrics", {})
+
+            console.print(
+                f"[green]Model and optimizer states restored from step {self.start_step}[/green]"
+            )
+
     def train_step(self, batch: dict[str, Any]) -> dict[str, Any]:
         if self.model is None:
             raise RuntimeError("Trainer not initialized. Call setup() first.")
@@ -613,8 +671,14 @@ class MTPWeightedCETrainer(BaseComponent):
 
     def run(self, ctx: dict[str, Any]) -> dict[str, Any]:
         """
-        Minimal training loop over a provided dataloader in ctx.
-        Expects ctx to provide 'train_dataloader' and optional 'max_steps'.
+        체크포인트 저장 기능이 포함된 확장된 훈련 루프.
+        주기적 체크포인트 저장과 최종 모델 저장을 지원합니다.
+
+        Args:
+            ctx: 'train_dataloader'와 'max_steps' 포함
+
+        Returns:
+            훈련 메트릭 딕셔너리
         """
         if self.model is None:
             raise RuntimeError("Trainer not initialized. Call setup() first.")
@@ -624,10 +688,175 @@ class MTPWeightedCETrainer(BaseComponent):
             raise ValueError("Trainer.run expects 'train_dataloader' in ctx")
         max_steps: int | None = ctx.get("max_steps")
 
+        epoch = 0  # 단순화를 위해 epoch=0으로 설정
         metrics = {}
+
+        console.print(
+            f"[green]체크포인트 저장 활성화: 매 {self.save_interval}스텝마다 저장[/green]"
+        )
+        console.print(f"[green]체크포인트 디렉토리: {self.checkpoint_dir}[/green]")
+
         for step, batch in enumerate(dataloader):
+            current_step = step + 1
+
+            # 재개시 이미 완료된 스텝 건너뛰기
+            if current_step <= self.start_step:
+                continue
+
+            # 기존 훈련 스텝 실행 (변경 없음)
             out = self.train_step(batch)
             metrics = out
-            if max_steps is not None and step + 1 >= max_steps:
+
+            # 주기적 체크포인트 저장
+            if current_step % self.save_interval == 0:
+                try:
+                    checkpoint_path = self._save_checkpoint(
+                        epoch, current_step, metrics
+                    )
+                    self.saved_checkpoints = self._manage_checkpoints(
+                        self.saved_checkpoints, checkpoint_path
+                    )
+                except Exception as e:
+                    console.print(
+                        f"[yellow]체크포인트 저장 실패 (스텝 {current_step}): {e}[/yellow]"
+                    )
+
+            # 최대 스텝 도달 시 종료
+            if max_steps is not None and current_step >= max_steps:
                 break
+
+        # 최종 체크포인트 저장
+        if self.save_final:
+            try:
+                final_step = step + 1 if "step" in locals() else 1
+                final_path = self._save_final_checkpoint(epoch, final_step, metrics)
+                console.print(f"[green]최종 모델 저장 완료: {final_path}[/green]")
+            except Exception as e:
+                console.print(f"[yellow]최종 모델 저장 실패: {e}[/yellow]")
+
         return metrics
+
+    def _save_checkpoint(self, epoch: int, step: int, metrics: dict) -> Path:
+        """
+        단일 체크포인트 저장.
+
+        Args:
+            epoch: 현재 에폭
+            step: 현재 스텝
+            metrics: 훈련 메트릭
+
+        Returns:
+            저장된 체크포인트 경로
+        """
+
+        checkpoint_path = self.checkpoint_dir / f"checkpoint_step_{step}.pt"
+
+        # FSDP 호환 체크포인트 저장
+        self.dist_manager.save_checkpoint(
+            model=self.model,
+            optimizer=self.optimizer,
+            checkpoint_path=str(checkpoint_path),
+            epoch=epoch,
+            step=step,
+            metrics=metrics,
+            algorithm=getattr(self, "algorithm", "wmtp"),
+            mlflow_run_id=self.mlflow.get_run_id() if self.mlflow else None,
+        )
+
+        # MLflow에 아티팩트 업로드 (있는 경우)
+        if self.mlflow is not None:
+            try:
+                self.mlflow.log_artifact(
+                    local_path=checkpoint_path, artifact_path="checkpoints"
+                )
+                console.print(
+                    f"[green]Checkpoint uploaded to MLflow: {checkpoint_path.name}[/green]"
+                )
+            except Exception as e:
+                console.print(f"[yellow]MLflow upload warning: {e}[/yellow]")
+
+        console.print(f"[green]체크포인트 저장 완료: {checkpoint_path}[/green]")
+        return checkpoint_path
+
+    def _manage_checkpoints(
+        self, saved_checkpoints: list, new_checkpoint: Path
+    ) -> list:
+        """
+        체크포인트 파일 개수 관리 (keep_last 개만 유지).
+
+        Args:
+            saved_checkpoints: 기존 체크포인트 목록
+            new_checkpoint: 새로 저장된 체크포인트
+
+        Returns:
+            업데이트된 체크포인트 목록
+        """
+        saved_checkpoints.append(new_checkpoint)
+
+        # keep_last 개수 초과 시 오래된 파일 삭제
+        while len(saved_checkpoints) > self.keep_last:
+            old_checkpoint = saved_checkpoints.pop(0)
+            try:
+                if old_checkpoint.exists():
+                    old_checkpoint.unlink()
+                    console.print(
+                        f"[blue]이전 체크포인트 삭제: {old_checkpoint.name}[/blue]"
+                    )
+            except Exception as e:
+                console.print(f"[yellow]체크포인트 삭제 실패: {e}[/yellow]")
+
+        return saved_checkpoints
+
+    def _save_final_checkpoint(self, epoch: int, step: int, metrics: dict) -> Path:
+        """
+        최종 모델 저장.
+
+        Args:
+            epoch: 최종 에폭
+            step: 최종 스텝
+            metrics: 최종 메트릭
+
+        Returns:
+            저장된 최종 모델 경로
+        """
+
+        final_path = self.checkpoint_dir / "final_model.pt"
+
+        # 최종 체크포인트 저장
+        self.dist_manager.save_checkpoint(
+            model=self.model,
+            optimizer=self.optimizer,
+            checkpoint_path=str(final_path),
+            epoch=epoch,
+            step=step,
+            metrics=metrics,
+            algorithm=getattr(self, "algorithm", "wmtp"),
+            final_model=True,
+            mlflow_run_id=self.mlflow.get_run_id() if self.mlflow else None,
+        )
+
+        # MLflow 모델 레지스트리 등록 및 아티팩트 업로드
+        if self.mlflow is not None:
+            try:
+                # 모델 이름 생성 (recipe에서 알고리즘 정보 사용)
+                model_name = f"wmtp-{self.algorithm}"
+
+                # 모델 레지스트리 등록
+                self.mlflow.log_model(
+                    model=self.model,
+                    artifact_path="final_model",
+                    registered_model_name=model_name,
+                )
+
+                # 체크포인트 파일 업로드
+                self.mlflow.log_artifact(
+                    local_path=final_path, artifact_path="final_checkpoint"
+                )
+
+                console.print(f"[green]MLflow 모델 등록 완료: {model_name}[/green]")
+            except Exception as e:
+                console.print(
+                    f"[yellow]MLflow model registration warning: {e}[/yellow]"
+                )
+
+        return final_path

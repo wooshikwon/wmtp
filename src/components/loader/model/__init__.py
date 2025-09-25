@@ -1,18 +1,6 @@
-"""Model loaders for WMTP framework."""
+"""Model loaders for WMTP framework - Phase 2 unified."""
 
-# Import all model loaders to ensure registry registration
-from .checkpoint_loader import CheckpointLoader
-from .hf_model_loader import HFModelLoader
-from .mtp_native_cpu_loader import MTPNativeCPULoader
-from .mtp_native_loader import MTPNativeLoader
-from .sheared_llama_loader import ShearedLLaMALoader
-from .starling_rm_loader import StarlingRMLoader
+# Phase 2: UnifiedModelLoader로 통합됨
+# 기존 개별 로더들은 삭제되었습니다.
 
-__all__ = [
-    "HFModelLoader",
-    "MTPNativeLoader",
-    "MTPNativeCPULoader",
-    "CheckpointLoader",
-    "StarlingRMLoader",
-    "ShearedLLaMALoader",
-]
+__all__ = []

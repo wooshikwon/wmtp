@@ -320,26 +320,30 @@ class DistributedManager:
         checkpoint_path: str,
         epoch: int,
         step: int,
+        mlflow_manager=None,
         **kwargs,
     ) -> None:
         """
-        FSDP 체크포인트 저장.
+        FSDP 체크포인트 저장 (MLflow 통합).
 
         WMTP 맥락:
         학습 중간 상태를 저장하여 재개 가능하게 합니다.
         특히 장시간 학습이 필요한 대규모 모델에서 중요합니다.
+        S3 경로 지원 및 MLflow 자동 업로드 기능이 추가되었습니다.
 
         매개변수:
             model: FSDP 래핑된 모델
             optimizer: 옵티마이저
-            checkpoint_path: 저장 경로
+            checkpoint_path: 저장 경로 (로컬 또는 s3://)
             epoch: 현재 에폭
             step: 현재 스텝
+            mlflow_manager: MLflow 매니저 (선택적)
             **kwargs: 추가 저장 데이터 (loss, metrics 등)
 
         주의사항:
             - rank0_only=True로 메인 프로세스만 저장
             - offload_to_cpu=True로 GPU 메모리 절약
+            - S3 경로시 직접 업로드, 로컬 경로시 파일 저장 후 MLflow 업로드
         """
         if self.is_main_process():
             # Configure state dict
@@ -361,8 +365,47 @@ class DistributedManager:
                     **kwargs,
                 }
 
-                torch.save(checkpoint, checkpoint_path)
-                console.print(f"[green]Checkpoint saved to {checkpoint_path}[/green]")
+                # S3 또는 로컬 저장 처리
+                if checkpoint_path.startswith("s3://"):
+                    # S3에 직접 저장
+                    import io
+
+                    buffer = io.BytesIO()
+                    torch.save(checkpoint, buffer)
+                    buffer.seek(0)
+
+                    if mlflow_manager:
+                        # MLflow를 통해 S3에 저장
+                        mlflow_manager.log_model_checkpoint(
+                            buffer,
+                            artifact_path=f"checkpoints/step_{step}",
+                            registered_model_name=kwargs.get("model_name", None),
+                        )
+                        console.print(
+                            f"[green]Checkpoint saved to MLflow/S3: step_{step}[/green]"
+                        )
+                    else:
+                        # S3Manager를 사용하여 직접 저장
+                        from src.utils.s3 import S3Manager
+
+                        s3_manager = S3Manager()
+                        s3_key = checkpoint_path.replace("s3://wmtp/", "")
+                        s3_manager.upload_from_bytes(buffer.getvalue(), s3_key)
+                        console.print(
+                            f"[green]Checkpoint saved to S3: {checkpoint_path}[/green]"
+                        )
+                else:
+                    # 로컬 저장
+                    torch.save(checkpoint, checkpoint_path)
+                    console.print(
+                        f"[green]Checkpoint saved locally: {checkpoint_path}[/green]"
+                    )
+
+                    # MLflow에도 기록 (있는 경우)
+                    if mlflow_manager:
+                        mlflow_manager.log_artifact(
+                            local_path=checkpoint_path, artifact_path="checkpoints"
+                        )
 
         self.barrier()
 
@@ -373,20 +416,34 @@ class DistributedManager:
         checkpoint_path: str,
     ) -> dict[str, Any]:
         """
-        FSDP 체크포인트 로드.
+        FSDP 체크포인트 로드 (S3 지원).
 
         매개변수:
             model: FSDP 래핑된 모델
             optimizer: 옵티마이저
-            checkpoint_path: 체크포인트 경로
+            checkpoint_path: 체크포인트 경로 (로컬 또는 s3://)
 
         반환값:
             체크포인트 딕셔너리 (epoch, step 등 포함)
         """
-        checkpoint = torch.load(
-            checkpoint_path,
-            map_location=self.device,
-        )
+        # S3 또는 로컬 로드 처리
+        if checkpoint_path.startswith("s3://"):
+            # S3에서 직접 로드
+            from src.utils.s3 import S3Manager
+
+            s3_manager = S3Manager()
+            s3_key = checkpoint_path.replace("s3://wmtp/", "")
+            checkpoint_bytes = s3_manager.stream_model(s3_key)
+            checkpoint = torch.load(
+                checkpoint_bytes,
+                map_location=self.device,
+            )
+        else:
+            # 로컬 파일 로드
+            checkpoint = torch.load(
+                checkpoint_path,
+                map_location=self.device,
+            )
 
         # Configure state dict
         load_policy = FullStateDictConfig(

@@ -21,6 +21,7 @@
 이를 통해 연구자는 알고리즘 간 공정한 성능 비교가 가능합니다.
 """
 
+from pathlib import Path  # 경로 조작용
 from typing import Any  # 범용 타입 힌트
 
 # WMTP 컴포넌트 베이스 클래스들 - 모든 구현체가 상속받는 추상 인터페이스
@@ -38,6 +39,7 @@ from src.components.registry import (
     loader_registry,  # 로더 구현체들 (hf-model, mtp-native 등)
     optimizer_registry,  # 옵티마이저 구현체들 (adamw-bf16-fused 등)
     scorer_registry,  # 스코어러 구현체들 (critic-delta-v1, rho1-excess-v1 등)
+    tokenizer_registry,  # 토크나이저 구현체들 (unified-sentencepiece 등)
     trainer_registry,  # 트레이너 구현체들 (mtp-weighted-ce-trainer 등)
 )
 from src.settings import Config, Recipe  # Pydantic 설정 모델들
@@ -92,6 +94,14 @@ class ComponentFactory:
         "meta-mtp": "meta-mtp-evaluator",  # Meta MTP 논문 평가 방식
         "mbpp": "mbpp-v1",  # MBPP 코드 생성 평가
         "codecontests": "codecontests-v1",  # CodeContests 경진 평가
+    }
+
+    # 토크나이저 타입 → Tokenizer Registry 키 매핑
+    # 현재는 unified-sentencepiece만 지원 (모든 WMTP 모델 호환)
+    TOKENIZER_MAP = {
+        "unified": "unified-sentencepiece",  # 기본 통합 SentencePiece 토크나이저
+        "sentencepiece": "unified-sentencepiece",  # 명시적 SentencePiece
+        "default": "unified-sentencepiece",  # 기본값
     }
 
     @classmethod
@@ -280,7 +290,7 @@ class ComponentFactory:
 
     @classmethod
     def create_data_loader(cls, source: str, config: Config) -> Loader:
-        """데이터셋 소스별 특화된 로더 생성.
+        """통합 데이터 로더만 반환 - Phase 2 리팩토링 적용.
 
         WMTP는 다양한 코드 생성 벤치마크를 지원합니다:
             - MBPP: Python 기본 프로그래밍 문제
@@ -290,158 +300,56 @@ class ComponentFactory:
 
         Args:
             source: 데이터 소스명 (mbpp/codecontests/humaneval/custom)
-            config: 환경 설정 (캐시 디렉토리, 로컬 경로 등)
+            config: 환경 설정
 
         Returns:
-            해당 데이터셋에 특화된 Loader 인스턴스
+            UnifiedDataLoader 인스턴스
         """
-        # 데이터 소스명 → Registry 키 매핑
-        dataset_key_map = {
-            "mbpp": "mbpp-dataset",  # MBPP Python 기본 문제
-            "contest": "codecontests-dataset",  # 알고리즘 경진 문제
-            "codecontests": "codecontests-dataset",
-            "humaneval": "humaneval-dataset",  # OpenAI 함수 평가
-            "custom": "custom-dataset",  # 사용자 정의 데이터셋
-        }
-
-        # 소스명으로 Registry 키 조회 (기본값: custom-dataset)
-        dataset_key = dataset_key_map.get(source, "custom-dataset")
-
-        # 소스별 로컬 캐시 경로 설정
-        local_path = None
+        # 소스별 데이터셋 경로 결정
+        dataset_path = None
         if source == "mbpp":
-            local_path = (
-                str(config.paths.datasets.mbpp_local)
-                if config.paths.datasets.mbpp_local
-                else None
-            )
+            dataset_path = str(config.paths.datasets.mbpp)
         elif source in ["contest", "codecontests"]:
-            local_path = (
-                str(config.paths.datasets.contest_local)
-                if config.paths.datasets.contest_local
-                else None
-            )
-        # Custom 데이터셋은 별도 경로 지정 방식 사용
+            dataset_path = str(config.paths.datasets.contest)
+        else:
+            # Custom 또는 기타는 source를 그대로 경로로 사용
+            dataset_path = source
 
-        # 데이터셋 로더 기본 설정
+        # 통합 데이터 로더 설정
         loader_config = {
-            "split": "train",  # 기본 분할 (train/test/valid)
-            "max_samples": None,  # 샘플 수 제한 (None=전체)
-            "cache_dir": str(config.paths.cache),  # 캐시 디렉토리
+            "storage": config.storage.model_dump(),
+            "paths": config.paths.model_dump(),
+            "split": "train",  # 기본 분할
+            "dataset_type": source,  # 명시적 타입 지정
         }
 
-        # 데이터셋별 특화 설정 추가
-        if dataset_key == "codecontests-dataset":
-            loader_config["languages"] = ["Python 3"]  # 언어 제한
-        elif dataset_key == "custom-dataset":
-            loader_config["format_type"] = "auto"  # 자동 포맷 감지
-
-        # Registry에서 특화된 데이터셋 로더 생성
-        return loader_registry.create(dataset_key, loader_config)
+        # UnifiedDataLoader 생성
+        return loader_registry.create("unified-data-loader", loader_config)
 
     @classmethod
     def create_model_loader(cls, config: Config, recipe: Recipe = None) -> Loader:
-        """모델 타입별 특화된 로더 생성.
+        """통합 모델 로더만 반환 - Phase 2 리팩토링 적용.
 
         WMTP는 Facebook의 native MTP 모델을 기본으로 사용하되,
         다양한 모델 소스와 포맷을 지원합니다:
             - mtp-native: Facebook native MTP (consolidated.pth)
             - hf-model: HuggingFace 변환된 모델
             - checkpoint: 훈련 중단점 파일 (.pt/.pth)
+            - sheared-llama: Princeton 경량화 모델
+            - starling-rm: Berkeley 보상 모델
 
         Args:
             config: 환경 설정 (모델 경로, GPU 설정 등)
-            recipe: 훈련 레시피 (None이면 기본 HF 로더)
+            recipe: 훈련 레시피 (선택)
 
         Returns:
-            모델 타입에 적합한 Loader 인스턴스
+            UnifiedModelLoader 인스턴스
         """
-        # 모델 타입과 경로 기반으로 적합한 로더 키 결정
-        loader_key = "hf-model"  # 기본값: HuggingFace 로더
+        # 통합 모델 로더 설정
+        loader_config = config.model_dump()
 
-        if recipe:
-            base_id = recipe.model.base_id
-            base_path = str(config.paths.models.base_local)
-
-            # Facebook MTP native 모델 확인
-            if base_id == "facebook/multi-token-prediction":
-                # Native MTP 포맷 확인 (consolidated.pth 파일 존재)
-                if (
-                    "7b_1t_4" in base_path.lower()
-                    or "consolidated" in base_path.lower()
-                ):
-                    # CPU 환경에서는 메모리 최적화된 로더 사용
-                    compute_backend = (
-                        config.devices.compute_backend
-                        if hasattr(config, "devices")
-                        else "auto"
-                    )
-                    if compute_backend == "cpu":
-                        loader_key = "mtp-native-cpu"  # 📌 CPU 전용 메모리 최적화
-                    else:
-                        loader_key = "mtp-native"  # 📌 GPU/기본 성능
-                else:
-                    # HuggingFace로 변환된 MTP 모델의 경우
-                    loader_key = "hf-model"
-
-            # Starling-RM Reward Model
-            elif (
-                "starling-rm" in base_id.lower()
-                or "starling-rm-7b" in base_path.lower()
-            ):
-                loader_key = "starling-rm"  # 📌 Critic-WMTP용 RM 모델
-
-            # Sheared-LLaMA 경량 모델
-            elif (
-                "sheared-llama" in base_id.lower()
-                or "sheared-llama-2.7b" in base_path.lower()
-            ):
-                loader_key = "sheared-llama"  # 📌 Rho1-WMTP용 참조 모델
-
-            # 체크포인트 파일 확인 (.pt/.pth 확장자)
-            elif base_path.endswith(".pt") or base_path.endswith(".pth"):
-                loader_key = "checkpoint"  # 훈련 재개용
-
-            # 기타 모든 경우: HuggingFace 로더 사용
-            else:
-                loader_key = "hf-model"
-
-        # 로더 타입별 기본 설정 구성 - config.devices 설정 활용
-        loader_config = config.model_dump() if config else {}
-
-        # 로더별 특화 설정 추가
-        if loader_key == "hf-model":
-            # HuggingFace 모델: 양자화 옵션
-            loader_config.update(
-                {
-                    "use_4bit": getattr(config.compute, "use_4bit", False)
-                    if hasattr(config, "compute")
-                    else False,
-                    "use_8bit": getattr(config.compute, "use_8bit", False)
-                    if hasattr(config, "compute")
-                    else False,
-                }
-            )
-        elif loader_key == "mtp-native":
-            # MTP Native: 헤드 개수 설정
-            loader_config.update(
-                {
-                    "num_heads": recipe.model.mtp.n_heads
-                    if recipe
-                    else 4,  # 기본 4헤드
-                }
-            )
-        elif loader_key == "checkpoint":
-            # 체크포인트: 옵티마이저/스케줄러 포함 로드
-            loader_config.update(
-                {
-                    "load_optimizer": True,  # 옵티마이저 상태 복원
-                    "load_scheduler": True,  # 스케줄러 상태 복원
-                }
-            )
-
-        # Registry에서 특화된 모델 로더 생성
-        return loader_registry.create(loader_key, loader_config)
+        # UnifiedModelLoader 생성 - 모든 모델 타입을 하나의 로더로 처리
+        return loader_registry.create("unified-model-loader", loader_config)
 
     @classmethod
     def create_evaluator(cls, recipe: Recipe, config: Config) -> Evaluator:
@@ -480,6 +388,76 @@ class ComponentFactory:
 
         # Registry에서 특화된 평가기 생성
         return evaluator_registry.create(evaluator_key, evaluator_config)
+
+    @classmethod
+    def create_tokenizer(cls, config: Config, tokenizer_type: str = "default") -> Any:
+        """통합 토크나이저 생성 - ComponentFactory 패턴 완성.
+
+        다른 create_* 메서드들과 동일한 Registry 패턴을 사용하여
+        일관된 컴포넌트 생성 인터페이스를 제공합니다.
+
+        현재 모든 WMTP 모델이 동일한 SentencePiece tokenizer.model을 사용하므로
+        tokenizer_type에 관계없이 unified-sentencepiece가 선택됩니다.
+
+        Args:
+            config: 환경 설정 (모델 경로 정보 포함)
+            tokenizer_type: 토크나이저 타입 (기본: "default", 모두 unified로 매핑)
+
+        Returns:
+            SentencePieceProcessor 인스턴스 (싱글톤)
+
+        Raises:
+            ValueError: 지원되지 않는 tokenizer_type
+            FileNotFoundError: tokenizer.model 파일을 찾을 수 없는 경우
+        """
+        # Registry 키 결정 (현재는 모두 unified-sentencepiece로 매핑)
+        tokenizer_key = cls.TOKENIZER_MAP.get(tokenizer_type, "unified-sentencepiece")
+
+        # Config 기반 토크나이저 경로 결정 - 다른 로더들과 동일한 우선순위 로직
+        tokenizer_path = cls._resolve_tokenizer_path(config)
+
+        # Registry 패턴으로 토크나이저 설정 구성
+        tokenizer_config = {
+            "tokenizer_path": tokenizer_path,  # 우선순위 기반 경로
+        }
+
+        # Registry에서 토크나이저 컴포넌트 생성
+        tokenizer_component = tokenizer_registry.create(tokenizer_key, tokenizer_config)
+
+        # 컴포넌트 초기화 및 실행
+        tokenizer_component.setup({"tokenizer_path": tokenizer_path})
+        result = tokenizer_component.run({})
+
+        # 다른 create_* 메서드들과의 일관성을 위해 실제 토크나이저 인스턴스만 반환
+        return result["tokenizer"]
+
+    @classmethod
+    def _resolve_tokenizer_path(cls, config: Config) -> Path | None:
+        """
+        Config 기반 토크나이저 경로 해결.
+
+        다른 create_model_loader()와 동일한 우선순위 패턴:
+        1. config.paths.models.base_local 우선 확인
+        2. 표준 경로들 순차 확인
+        3. None 반환으로 컴포넌트의 자체 탐색에 위임
+        """
+        # config.paths.models.base_local 우선 확인 (다른 모델 로더와 동일 패턴)
+        base_path = Path(config.paths.models.base_local)
+        if (base_path / "tokenizer.model").exists():
+            return base_path / "tokenizer.model"
+
+        # 표준 경로들 순차 확인 (기존 default_paths 로직 재사용)
+        default_paths = [
+            Path("models/tokenizer.model"),
+            Path("models/7b_1t_4/tokenizer.model"),
+            Path(".cache/tokenizer.model"),
+        ]
+
+        for path in default_paths:
+            if path.exists():
+                return path
+
+        return None  # SentencePieceTokenizer가 S3 또는 환경변수 경로를 자체 탐색
 
     # 📝 설계 변경 기록: build_pipeline_components 메서드 제거
     # 이유: 파이프라인에서 create_* 메서드들을 직접 호출하여 더 명확한 제어 제공

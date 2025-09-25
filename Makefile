@@ -4,7 +4,7 @@
 # Configuration
 IMAGE_NAME := wmtp
 IMAGE_TAG := latest
-REGISTRY := # Add your registry URL here (e.g., ghcr.io/username)
+REGISTRY := ghcr.io/wooshikwon # GitHub Container Registry
 FULL_IMAGE := $(if $(REGISTRY),$(REGISTRY)/$(IMAGE_NAME),$(IMAGE_NAME))
 
 # Colors for output
@@ -27,13 +27,13 @@ help: ## Show this help message
 .PHONY: build
 build: ## Build Docker image
 	@echo "$(GREEN)Building Docker image: $(FULL_IMAGE):$(IMAGE_TAG)$(NC)"
-	docker build -t $(FULL_IMAGE):$(IMAGE_TAG) .
+	docker build -f docker/Dockerfile -t $(FULL_IMAGE):$(IMAGE_TAG) .
 	@echo "$(GREEN)Build complete!$(NC)"
 
 .PHONY: build-nocache
 build-nocache: ## Build Docker image without cache
 	@echo "$(GREEN)Building Docker image without cache: $(FULL_IMAGE):$(IMAGE_TAG)$(NC)"
-	docker build --no-cache -t $(FULL_IMAGE):$(IMAGE_TAG) .
+	docker build --no-cache -f docker/Dockerfile -t $(FULL_IMAGE):$(IMAGE_TAG) .
 	@echo "$(GREEN)Build complete!$(NC)"
 
 .PHONY: push
@@ -56,23 +56,23 @@ run-bash: ## Run interactive bash in container
 		--gpus all \
 		-v $(PWD)/configs:/app/configs \
 		-v $(PWD)/models:/app/models \
-		-v $(PWD)/dataset:/app/dataset \
+		-v $(PWD)/datasets:/app/datasets \
 		$(FULL_IMAGE):$(IMAGE_TAG) \
 		/bin/bash
 
 .PHONY: run-train
-run-train: ## Run training with example config
+run-train: ## Run training with VESSL config
 	@echo "$(GREEN)Starting training...$(NC)"
 	docker run --rm \
 		--gpus all \
 		-v $(PWD)/configs:/app/configs \
 		-v $(PWD)/models:/app/models \
-		-v $(PWD)/dataset:/app/dataset \
+		-v $(PWD)/datasets:/app/datasets \
 		-v $(PWD)/outputs:/app/outputs \
 		$(FULL_IMAGE):$(IMAGE_TAG) \
 		uv run python -m src.cli.train \
-			--config /app/configs/config.example.yaml \
-			--recipe /app/configs/recipe.example.yaml
+			--config /app/configs/config.vessl.yaml \
+			--recipe /app/configs/recipe.rho1.yaml
 
 .PHONY: run-eval
 run-eval: ## Run evaluation
@@ -81,12 +81,12 @@ run-eval: ## Run evaluation
 		--gpus all \
 		-v $(PWD)/configs:/app/configs \
 		-v $(PWD)/models:/app/models \
-		-v $(PWD)/dataset:/app/dataset \
+		-v $(PWD)/datasets:/app/datasets \
 		-v $(PWD)/outputs:/app/outputs \
 		$(FULL_IMAGE):$(IMAGE_TAG) \
 		uv run python -m src.cli.eval \
-			--config /app/configs/config.example.yaml \
-			--recipe /app/configs/recipe.example.yaml \
+			--config /app/configs/config.vessl.yaml \
+			--recipe /app/configs/recipe.rho1.yaml \
 			--checkpoint /app/models/checkpoints/final.pt
 
 ##@ Development Operations
@@ -117,7 +117,7 @@ format: ## Format code using ruff
 .PHONY: vessl-run
 vessl-run: ## Submit job to VESSL
 	@echo "$(GREEN)Submitting job to VESSL...$(NC)"
-	vessl run -f configs/vessl.yaml
+	vessl run -f docker/vessl.yaml
 
 .PHONY: vessl-logs
 vessl-logs: ## Show VESSL run logs (requires RUN_ID)
