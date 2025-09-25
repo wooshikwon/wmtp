@@ -105,21 +105,49 @@ def run_training_pipeline(
     start_step = 0
     resume_run_id = None
 
-    if resume_checkpoint and resume_checkpoint.exists():
+    if resume_checkpoint:
         import torch
         from rich.console import Console
 
         console = Console()
-        checkpoint_data = torch.load(resume_checkpoint, map_location="cpu")
-        start_epoch = checkpoint_data.get("epoch", 0)
-        start_step = checkpoint_data.get("step", 0)
-        resume_run_id = checkpoint_data.get("mlflow_run_id")
+        checkpoint_data = None
 
-        console.print(
-            f"[green]Resuming from epoch {start_epoch}, step {start_step}[/green]"
-        )
+        # S3 또는 로컬 체크포인트 로드 처리
+        if isinstance(resume_checkpoint, str) and resume_checkpoint.startswith("s3://"):
+            # S3에서 직접 로드
+            from src.utils.s3 import S3Manager
+            s3_manager = S3Manager()
+            s3_key = resume_checkpoint.replace("s3://wmtp/", "")
+            try:
+                checkpoint_bytes = s3_manager.stream_model(s3_key)
+                checkpoint_data = torch.load(checkpoint_bytes, map_location="cpu")
+                console.print(f"[green]Loading checkpoint from S3: {resume_checkpoint}[/green]")
+            except Exception as e:
+                console.print(f"[red]Failed to load S3 checkpoint: {e}[/red]")
+        elif hasattr(resume_checkpoint, "exists") and resume_checkpoint.exists():
+            # 로컬 파일 로드 (Path 객체)
+            checkpoint_data = torch.load(resume_checkpoint, map_location="cpu")
+            console.print(f"[green]Loading checkpoint from local: {resume_checkpoint}[/green]")
+        elif isinstance(resume_checkpoint, str):
+            # 로컬 파일 경로 (문자열)
+            from pathlib import Path
+            checkpoint_path = Path(resume_checkpoint)
+            if checkpoint_path.exists():
+                checkpoint_data = torch.load(checkpoint_path, map_location="cpu")
+                console.print(f"[green]Loading checkpoint from local: {checkpoint_path}[/green]")
+            else:
+                console.print(f"[yellow]Checkpoint not found: {resume_checkpoint}[/yellow]")
 
-    # MLflow 실험 추적 매니저 초기화 및 실행 시작/재개
+        if checkpoint_data:
+            start_epoch = checkpoint_data.get("epoch", 0)
+            start_step = checkpoint_data.get("step", 0)
+            resume_run_id = checkpoint_data.get("mlflow_run_id")
+            console.print(
+                f"[green]Resuming from epoch {start_epoch}, step {start_step}[/green]"
+            )
+
+    # Step 1: MLflow 실험 추적 초기화
+    # 실험 메트릭과 아티팩트를 체계적으로 추적하기 위한 MLflow 설정
     mlflow = create_mlflow_manager(config.model_dump())
     tag_map = {
         str(i): t for i, t in enumerate(tags or [])
@@ -130,246 +158,137 @@ def run_training_pipeline(
     else:
         mlflow.start_run(run_name=run_name or recipe.run.name, tags=tag_map)
 
-    # Step 2: 기본 모델 로딩 (모든 알고리즘에서 공통으로 필요)
-    # Facebook의 native MTP 모델 - 4개 head가 내장된 아키텍처 사용
+    # Step 2: Base 모델 로딩
+    # Facebook native MTP 모델 - 4개 head가 내장된 WMTP의 핵심 아키텍처
     base_loader = ComponentFactory.create_model_loader(config, recipe)
-    base_loader.setup({})  # 로더 초기화
+    base_loader.setup({})
+    base_result = base_loader.run({
+        "model_path": str(config.paths.models.base)
+    })
+    base = base_result["model"]
 
-    # Base 모델은 항상 필요 - WMTP의 핵심이 되는 Multi-Token Prediction 모델
-    base_result = base_loader.run(
-        {
-            "model_path": str(config.paths.models.base_local)  # 로컬에 캐시된 모델 경로
-        }
-    )
-    base = base_result["model"]  # Facebook MTP 모델 인스턴스
-    tokenizer = base_result["tokenizer"]  # 모델과 호환되는 토크나이저
+    # Step 3: 토크나이저 생성
+    # HuggingFace 호환 통합 토크나이저 - 모든 WMTP 모델이 공유하는 어휘 체계
+    tokenizer_component = ComponentFactory.create_tokenizer(recipe, config)
+    tokenizer_component.setup({"config": config})
+    tokenizer_result = tokenizer_component.run({})
+    tokenizer = tokenizer_result["tokenizer"]
 
-    # Step 3: 알고리즘별 추가 모델 로딩 (조건부)
+    # Step 4: 알고리즘별 추가 모델 로딩 (조건부)
     # 각 WMTP 알고리즘은 서로 다른 보조 모델을 필요로 함
     ref_model = None  # Rho-1에서 사용할 참조 모델
     rm_model = None  # Critic에서 사용할 보상 모델
 
     if recipe.train.algo == "rho1-wmtp":
-        # Rho-1 알고리즘: Reference Model이 필요
-        # |CE^ref_t - CE^base_t| 계산을 위해 참조 모델의 CE 값 필요
-        ref_loader = ComponentFactory.create_model_loader(
-            config
-        )  # Recipe 없으면 HF 로더
+        # Rho-1: Reference Model 로딩 - |CE^ref_t - CE^base_t| 계산용
+        ref_loader = ComponentFactory.create_model_loader(config)
         ref_loader.setup({})
-        ref_result = ref_loader.run(
-            {
-                "model_path": str(
-                    config.paths.models.ref_local
-                )  # CodeLlama 등 참조 모델
-            }
-        )
+        ref_result = ref_loader.run({
+            "model_path": str(config.paths.models.ref)
+        })
         ref_model = ref_result["model"]
 
     elif recipe.train.algo == "critic-wmtp":
-        # Critic 알고리즘: Reward Model이 필요
-        # Stage1에서 시퀀스 레벨 보상 계산 및 Value Head 훈련에 사용
-        rm_loader = ComponentFactory.create_model_loader(
-            config
-        )  # Recipe 없으면 HF 로더
+        # Critic: Reward Model 로딩 - Stage1 Value Head 훈련용
+        rm_loader = ComponentFactory.create_model_loader(config)
         rm_loader.setup({})
-        rm_result = rm_loader.run(
-            {
-                "model_path": str(config.paths.models.rm_local)  # Llama RM 등 보상 모델
-            }
-        )
+        rm_result = rm_loader.run({
+            "model_path": str(config.paths.models.rm)
+        })
         rm_model = rm_result["model"]
 
     # mtp-baseline은 추가 모델 불필요 - Base 모델만으로 균등 가중치 MTP 수행
 
-    # Step 4: 옵티마이저 설정
-    # 대부분의 경우 AdamW + BF16 + FSDP 조합 사용
+    # Step 5: 옵티마이저 설정 (예외: .run() 없는 패턴)
+    # AdamW + BF16 + FSDP 조합으로 대규모 모델 훈련 최적화
     optimizer = ComponentFactory.create_optimizer(recipe, base.parameters())
-    optimizer.setup(
-        {"num_training_steps": max_steps or 0}
-    )  # 스케줄러를 위한 총 스텝 수
+    optimizer.setup({
+        "num_training_steps": max_steps or 0
+    })
 
-    # 📝 중요: Facebook native MTP 모델은 4개의 horizon head가 내장되어 있음
-    # 별도의 MTPWrapper 불필요 - native implementation 직접 사용
-    # 이는 성능과 메모리 효율성 측면에서 유리
-
-    # Step 5: 데이터셋 로딩 및 전처리
-    # 지원 데이터셋: MBPP, CodeContests, HumanEval, Custom
-    train_source = recipe.data.train.sources[0]  # 첫 번째 훈련 소스 사용
-    train_loader_comp = ComponentFactory.create_data_loader(train_source, config)
+    # Step 6: 데이터셋 로딩
+    # MBPP, CodeContests, HumanEval 등 코드 생성 벤치마크 지원
+    train_loader_comp = ComponentFactory.create_data_loader(recipe, config)
     train_loader_comp.setup({})
+    train_ds = train_loader_comp.run({
+        "split": "train",
+        "max_length": recipe.data.train.max_length,
+        "add_solution": True,
+    })["dataset"]
 
-    # 훈련 데이터셋 로드 - 문제와 솔루션이 포함된 형태
-    train_ds = train_loader_comp.run(
-        {
-            "split": "train",  # 훈련 분할 사용
-            "max_length": recipe.data.train.max_length,  # 최대 시퀀스 길이
-            "add_solution": True,  # 솔루션 포함 (코드 생성 태스크)
-        }
-    )["dataset"]
-
-    # Step 6: 토크나이징 - 텍스트를 모델이 이해할 수 있는 숫자로 변환
-    def _tokenize_function(example: dict[str, Any]) -> dict[str, Any]:
-        """개별 데이터 샘플을 토큰화하는 내부 함수.
-
-        Args:
-            example: 데이터셋의 한 샘플 (딕셔너리 형태)
-
-        Returns:
-            토큰화된 결과 (input_ids, attention_mask, labels 포함)
-        """
-        # 텍스트 추출 - 데이터셋 형식에 따라 다른 키 사용 가능
-        text = example.get("full_text") or example.get("prompt") or ""
-
-        # 토크나이저로 텍스트를 숫자 시퀀스로 변환
-        tok = tokenizer(
-            text,
-            truncation=True,  # 최대 길이 초과시 자르기
-            max_length=recipe.data.train.max_length,  # 최대 시퀀스 길이
-            padding=False,  # 배치에서 패딩 (여기서는 하지 않음)
-        )
-        # 라벨은 input_ids와 동일 (언어모델은 다음 토큰 예측)
-        tok["labels"] = tok["input_ids"].copy()
-        return tok
-
-    # 전체 데이터셋에 토크나이징 적용
-    tokenized = train_ds.map(
-        _tokenize_function,
-        remove_columns=train_ds.column_names,  # 원본 텍스트 컬럼 제거 (메모리 절약)
-        desc="훈련 데이터 토크나이징",  # 진행률 표시용 설명
-        load_from_cache_file=True,  # 캐시 사용으로 재실행시 속도 향상
+    # Step 7: 데이터셋 토크나이징
+    # HuggingFace 호환 토크나이저로 텍스트를 모델 입력 형식으로 변환
+    tokenized = tokenizer.tokenize_dataset(
+        dataset=train_ds,
+        max_length=recipe.data.train.max_length,
+        remove_columns=train_ds.column_names,
+        load_from_cache_file=True,
     )
 
-    # Step 7: 분산 훈련을 위한 데이터 샘플러 설정
-    sampler = None  # 기본값: 샘플러 없음
+    # Step 8: 분산 훈련용 데이터 샘플러 설정
+    # 다중 GPU 환경에서 데이터를 효율적으로 분배하기 위한 샘플러 구성
+    sampler = None  # 분산 훈련용 데이터 샘플러 (단일 GPU에서는 None)
     try:
         import torch.distributed as dist
-
-        # 분산 훈련이 활성화되어 있는지 확인
         if dist.is_available() and dist.is_initialized():
-            # DistributedSampler: 각 GPU가 다른 데이터 부분을 처리하도록 분배
             sampler = DistributedSampler(tokenized, shuffle=True)
     except Exception:
-        # 분산 훈련이 설정되지 않은 경우 None 유지
         sampler = None
 
-    # Step 8: PyTorch DataLoader 생성 - 배치 단위로 데이터 공급
+    # Step 9: PyTorch DataLoader 생성
+    # 토큰화된 데이터를 배치 단위로 모델에 공급하기 위한 데이터 로더 구성
     train_dl = DataLoader(
-        tokenized,  # 토큰화된 데이터셋
-        batch_size=recipe.data.train.batch_size or 1,  # 배치 크기 (메모리에 따라 조정)
-        shuffle=(sampler is None),  # 분산 훈련이 아닐 때만 셔플
-        sampler=sampler,  # 분산 훈련용 샘플러 (있는 경우)
-        collate_fn=default_data_collator,  # HuggingFace의 기본 배치 생성기
-        num_workers=2,  # 데이터 로딩용 워커 프로세스 수
-        pin_memory=torch.cuda.is_available(),  # GPU 사용시 메모리 핀닝으로 속도 향상
+        tokenized,
+        batch_size=recipe.data.train.batch_size or 1,
+        shuffle=(sampler is None),
+        sampler=sampler,
+        collate_fn=default_data_collator,
+        num_workers=2,
+        pin_memory=torch.cuda.is_available(),
     )
 
-    # Step 9: Stage1 사전훈련 (critic-wmtp 전용)
-    # Critic 알고리즘만의 특별한 2단계 학습 과정
+    # Step 10: Stage1 사전훈련 (Critic 전용, 조건부)
+    # Critic 알고리즘의 특별한 2단계 학습 - Value Head 훈련 단계
     if recipe.train.algo == "critic-wmtp" and rm_model is not None and not dry_run:
         from pathlib import Path
 
-        from src.components.registry import trainer_registry
-
-        # Stage1 설정: Value Head 훈련을 위한 파라미터들
-        pre_cfg = {
-            # 보상 타겟: "rm_sequence" (시퀀스 레벨 보상 사용)
-            "target": getattr(recipe.critic, "target", "rm_sequence")
-            if hasattr(recipe, "critic")
-            else "rm_sequence",
-            # 토큰 확산 방식: "gae" (Generalized Advantage Estimation)
-            "token_spread": getattr(recipe.critic, "token_spread", "gae")
-            if hasattr(recipe, "critic")
-            else "gae",
-            # 델타 계산 모드: "td" (Temporal Difference)
-            "delta_mode": getattr(recipe.critic, "delta_mode", "td")
-            if hasattr(recipe, "critic")
-            else "td",
-            # 정규화 방식: "zscore" (표준화)
-            "normalize": getattr(recipe.critic, "normalize", "zscore")
-            if hasattr(recipe, "critic")
-            else "zscore",
-            "temperature": recipe.loss.temperature,  # 소프트맥스 온도
-            "lr": 1e-4,  # Stage1 전용 학습률 (보통 메인보다 낮음)
-        }
-
-        # Stage1 전용 trainer 생성 및 실행
-        pretrainer = trainer_registry.create("critic-stage1-pretrainer-v1", pre_cfg)
-        cache_root = (
-            Path(config.paths.cache) / "critic" / (recipe.run.name or "default")
-        )
+        pretrainer = ComponentFactory.create_pretrainer(recipe)
         pretrainer.setup({})
+        pretrainer.run({
+            "base_model": base,
+            "rm_model": rm_model,
+            "train_dataloader": train_dl,
+            "cache_root": Path(config.paths.cache) / "critic" / (recipe.run.name or "default"),
+        })
 
-        # Stage1 실행: Value Head 훈련
-        # RM 모델로부터 시퀀스 레벨 보상을 받아 Value Function 학습
-        pretrainer.run(
-            {
-                "base_model": base,  # 기본 MTP 모델
-                "rm_model": rm_model,  # 보상 점수 제공 모델
-                "train_dataloader": train_dl,  # 훈련 데이터
-                "cache_root": cache_root,  # Value Head 체크포인트 저장 위치
-            }
-        )
+    # Step 11: 메인 Trainer 생성 및 초기화
+    # 모든 WMTP 알고리즘의 통합 실행 엔진 - scorer에 따라 가중치 방식 결정
+    trainer = ComponentFactory.create_trainer(recipe, config)
+    trainer.setup({
+        "model": base,
+        "optimizer": optimizer,
+        "mlflow_manager": mlflow,
+        "ref_model": ref_model,
+        "base_tokenizer": tokenizer,
+        "rm_model": rm_model,
+        "recipe": recipe,
+        "resume_checkpoint": resume_checkpoint,
+    })
 
-    # Step 10: 메인 Trainer 생성 - 알고리즘별 다른 설정
-    # WMTP의 핵심: 동일한 트레이너 구조에 다른 Scorer 조합
-    if recipe.train.algo == "mtp-baseline":
-        # Baseline: Scorer 없음 - 순수 MTP (균등 가중치)
-        # 모든 토큰에 동일한 가중치 1.0 적용
-        scorer = None
-        trainer = ComponentFactory.create_trainer(recipe, config, scorer)
-    else:
-        # Weighted 방식: Scorer 사용 - 토큰별 중요도 계산
-        # critic-wmtp 또는 rho1-wmtp에서 동적 가중치 적용
-        scorer = ComponentFactory.create_scorer(recipe)
-
-        # Critic의 경우: Stage1에서 훈련된 Value Head 경로 제공
-        try:
-            from pathlib import Path
-
-            # Stage1에서 저장된 value_head.pt 파일 경로
-            vh_path = (
-                Path(config.paths.cache)
-                / "critic"
-                / (recipe.run.name or "default")
-                / "value_head.pt"
-            )
-            if vh_path.exists():
-                # Value Head가 존재하면 Scorer에 경로 제공
-                scorer.setup({"value_head_path": vh_path})
-            else:
-                # Value Head가 없으면 기본 설정으로 진행
-                scorer.setup({})
-        except Exception:
-            # 오류 발생시 기본 설정 사용
-            scorer.setup({})
-
-        # 최종 Trainer 생성 - Scorer가 포함된 가중치 기반 훈련
-        trainer = ComponentFactory.create_trainer(recipe, config, scorer)
-    # Step 11: Trainer 초기화 - 모든 필요한 컴포넌트 연결
-    trainer.setup(
-        {
-            "model": base,  # Facebook native MTP 모델
-            "optimizer": optimizer,  # AdamW 등 최적화기
-            "mlflow_manager": mlflow,  # 실험 추적 매니저
-            "ref_model": ref_model,  # Rho-1용 참조 모델 (해당시)
-            "base_tokenizer": tokenizer,  # 토크나이저
-            "rm_model": rm_model,  # Critic용 보상 모델 (해당시)
-            "recipe": recipe,  # 체크포인트 설정을 위한 Recipe 전달
-            "resume_checkpoint": resume_checkpoint,  # 재개용 체크포인트
-        }
-    )
-
-    # Step 12: 실행 모드에 따른 처리
+    # Step 12: 실행 모드 분기
+    # Dry run 모드에서는 설정 검증만 수행하고 실제 훈련은 건너뛰기
     if dry_run:
-        # 검증 모드: 설정만 확인하고 실제 훈련은 건너뛰기
-        mlflow.end_run("FINISHED")  # MLflow 실행 종료
+        mlflow.end_run("FINISHED")
         return RunOutputs(trainer_metrics={"dry_run": True})
 
-    # Step 13: 메인 훈련 실행
-    # 여기서 실제 WMTP 훈련이 수행됨 - 알고리즘에 따라 다른 가중치 적용
-    # L_WMTP = Σ w_{t+k} × CE_k (k=1,2,3,4)
-    metrics = trainer.run({"train_dataloader": train_dl, "max_steps": max_steps})
+    # Step 13: 메인 WMTP 훈련 실행
+    # L_WMTP = Σ w_{t+k} × CE_k 공식으로 토큰별 중요도 반영 훈련
+    metrics = trainer.run({
+        "train_dataloader": train_dl,
+        "max_steps": max_steps
+    })
 
     # Step 14: 실험 종료 및 결과 반환
-    mlflow.end_run("FINISHED")  # MLflow 추적 종료
-    return RunOutputs(trainer_metrics=metrics)  # 훈련 메트릭 반환
+    # MLflow 추적 종료 및 훈련 메트릭 반환
+    mlflow.end_run("FINISHED")
+    return RunOutputs(trainer_metrics=metrics)

@@ -160,9 +160,9 @@ def _compute_weighted_mtp_loss(
     return final_loss, valid_mask
 
 
-@trainer_registry.register(
-    "mtp-weighted-ce-trainer", category="trainer", version="1.0.0"
-)
+@trainer_registry.register("mtp-baseline", category="trainer", version="1.0.0")
+@trainer_registry.register("critic-wmtp", category="trainer", version="1.0.0")
+@trainer_registry.register("rho1-wmtp", category="trainer", version="1.0.0")
 class MTPWeightedCETrainer(BaseComponent):
     """WMTP 통합 트레이너 - 모든 알고리즘의 핵심 실행기.
 
@@ -751,13 +751,14 @@ class MTPWeightedCETrainer(BaseComponent):
 
         checkpoint_path = self.checkpoint_dir / f"checkpoint_step_{step}.pt"
 
-        # FSDP 호환 체크포인트 저장
+        # FSDP 호환 체크포인트 저장 (MLflow 통합)
         self.dist_manager.save_checkpoint(
             model=self.model,
             optimizer=self.optimizer,
             checkpoint_path=str(checkpoint_path),
             epoch=epoch,
             step=step,
+            mlflow_manager=self.mlflow,  # MLflow 매니저 전달
             metrics=metrics,
             algorithm=getattr(self, "algorithm", "wmtp"),
             mlflow_run_id=self.mlflow.get_run_id() if self.mlflow else None,
@@ -822,13 +823,14 @@ class MTPWeightedCETrainer(BaseComponent):
 
         final_path = self.checkpoint_dir / "final_model.pt"
 
-        # 최종 체크포인트 저장
+        # 최종 체크포인트 저장 (MLflow 통합)
         self.dist_manager.save_checkpoint(
             model=self.model,
             optimizer=self.optimizer,
             checkpoint_path=str(final_path),
             epoch=epoch,
             step=step,
+            mlflow_manager=self.mlflow,  # MLflow 매니저 전달
             metrics=metrics,
             algorithm=getattr(self, "algorithm", "wmtp"),
             final_model=True,

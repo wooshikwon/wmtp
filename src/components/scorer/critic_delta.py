@@ -28,7 +28,7 @@ from src.components.base import BaseComponent
 from src.components.registry import scorer_registry
 
 
-@scorer_registry.register("critic-delta-v1", category="scorer", version="1.0.0")
+@scorer_registry.register("critic-wmtp", category="scorer", version="1.0.0")
 class CriticDeltaScorer(BaseComponent):
     """
     Critic-WMTP 방식: 강화학습 가치함수로 토큰 중요도를 계산하는 스코어러입니다.

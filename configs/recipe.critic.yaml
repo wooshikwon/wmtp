@@ -15,6 +15,7 @@ model:
   base_id: "facebook/multi-token-prediction"
   rm_id: "Starling-RM-7B-alpha"  # Using uploaded RM model from S3
   ref_id: "Sheared-LLaMA-2.7B"  # Using uploaded reference model from S3
+  tokenizer_type: "hf"  # HuggingFace compatible tokenizer interface
   tokenizer_pad_side: "right"
   mtp:
     n_heads: 4

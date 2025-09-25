@@ -35,7 +35,7 @@ from ..registry import evaluator_registry
 console = Console()
 
 
-@evaluator_registry.register("mbpp-v1", category="evaluator", version="1.0.0")
+@evaluator_registry.register("mbpp", category="evaluator", version="1.0.0")
 class MBPPEvaluator(EvaluationProtocol):
     """
     MBPP (Mostly Basic Python Problems) 벤치마크 평가자.

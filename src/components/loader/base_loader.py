@@ -1,5 +1,5 @@
 """
-WMTP 로더 시스템의 기반: 로컬 우선 S3 미러링 정책
+WMTP 로더 시스템의 기반: 로컬 우선 S3 스트리밍 정책
 
 WMTP 연구 맥락:
 이 모듈은 WMTP 실험의 핵심 인프라입니다. 연구자들이 세 가지 알고리즘
@@ -7,22 +7,20 @@ WMTP 연구 맥락:
 로드할 수 있도록 보장합니다.
 
 핵심 철학:
-"로컬 파일 → 캐시 → S3 다운로드" 순서로 효율적인 데이터 접근
+"로컬 파일 → S3 직접 스트리밍" 순서로 효율적인 데이터 접근 (캐시 제거)
 
 지원하는 실험 환경:
 - 개발자 로컬 환경: 로컬 파일 직접 사용
-- VESSL 클러스터: S3에서 자동 다운로드 및 캐싱
-- 오프라인 환경: 미리 다운로드된 캐시 활용
+- VESSL 클러스터: S3에서 메모리로 직접 스트리밍
+- 오프라인 환경: 로컬 파일 사용
 
 WMTP에서의 역할:
 1. Facebook Native MTP 모델 안정적 로딩 (consolidated.pth)
 2. 코딩 평가 데이터셋 일관된 전처리 (MBPP/CodeContests/HumanEval)
-3. 실험 재현성 보장 (동일한 캐시 키 → 동일한 데이터)
-4. GPU 클러스터 비용 절약 (중복 다운로드 방지)
+3. 실험 재현성 보장 (동일한 S3 경로 → 동일한 데이터)
+4. 메모리 효율성 극대화 (디스크 I/O 제거)
 """
 
-import hashlib
-import json
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
@@ -37,22 +35,21 @@ console = Console()
 
 class BaseLoader(BaseComponent, ABC):
     """
-    모든 WMTP 로더의 추상 기본 클래스입니다.
+    모든 WMTP 로더의 추상 기본 클래스입니다 (Cache-Free).
 
     연구 맥락:
     WMTP 실험에서는 다양한 환경(로컬/클러스터)에서 동일한 데이터에 접근해야 합니다.
-    이 클래스는 "로컬 우선" 정책으로 효율적이고 안정적인 데이터 로딩을 보장합니다.
+    이 클래스는 "로컬 우선 → S3 스트리밍" 정책으로 효율적이고 안정적인 데이터 로딩을 보장합니다.
 
-    동작 원리:
+    동작 원리 (캐시 제거):
     1단계: 로컬 경로 확인 (가장 빠름)
-    2단계: 로컬 캐시 확인 (이미 다운로드된 파일)
-    3단계: S3에서 다운로드 후 캐싱 (클러스터 환경)
-    4단계: 오류 발생 (모든 경로 실패시)
+    2단계: S3에서 메모리로 직접 스트리밍 (디스크 캐시 없음)
+    3단계: 오류 발생 (모든 경로 실패시)
 
     WMTP 실험 시나리오:
     - 개발: configs/config.local.yaml + 로컬 파일
-    - 클러스터: configs/config.vessl.yaml + S3 자동 다운로드
-    - CI/CD: 캐시된 파일로 빠른 테스트
+    - 클러스터: configs/config.vessl.yaml + S3 직접 스트리밍
+    - CI/CD: 로컬 파일 사용
 
     상속 구조:
     BaseLoader
@@ -60,27 +57,14 @@ class BaseLoader(BaseComponent, ABC):
     └── ModelLoader (Facebook MTP, HuggingFace)
     """
 
-    def __init__(
-        self,
-        config: dict[str, Any],
-        cache_dir: str | Path = ".cache",
-    ):
+    def __init__(self, config: dict[str, Any]):
         """
-        Initialize base loader.
+        Initialize base loader (cache-free).
 
         Args:
             config: Configuration dictionary
-            cache_dir: Local cache directory for S3 downloads
         """
         super().__init__(config)
-        # Prefer config.paths.cache if provided
-        cfg_cache = (
-            Path(config.get("paths", {}).get("cache"))
-            if config.get("paths", {}).get("cache")
-            else Path(cache_dir)
-        )
-        self.cache_dir = cfg_cache
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
 
         # Initialize S3 manager if configured
         self.s3_manager = create_s3_manager(config)
@@ -89,44 +73,6 @@ class BaseLoader(BaseComponent, ABC):
         # Extract path configurations
         self.paths_config = config.get("paths", {})
 
-    def compute_cache_key(
-        self,
-        data_id: str,
-        version: str = "latest",
-        preprocessing_config: dict[str, Any] | None = None,
-        split_seed: int = 42,
-    ) -> str:
-        """
-        Compute deterministic cache key for data.
-
-        Args:
-            data_id: Dataset or model identifier
-            version: Version string
-            preprocessing_config: Preprocessing parameters
-            split_seed: Random seed for splits
-
-        Returns:
-            Hex digest cache key
-        """
-        # Combine all parameters into a unique string
-        key_parts = [
-            data_id,
-            version,
-            str(split_seed),
-        ]
-
-        if preprocessing_config:
-            # Sort keys for deterministic ordering
-            config_str = json.dumps(preprocessing_config, sort_keys=True)
-            key_parts.append(config_str)
-
-        key_string = "|".join(key_parts)
-
-        # Create MD5 hash for compact cache key
-        hasher = hashlib.md5()
-        hasher.update(key_string.encode("utf-8"))
-
-        return hasher.hexdigest()
 
     def get_local_path(self, path_spec: str) -> Path | None:
         """
@@ -151,45 +97,20 @@ class BaseLoader(BaseComponent, ABC):
 
         return None
 
-    def get_cached_path(
-        self,
-        s3_key: str,
-        cache_key: str,
-    ) -> Path:
-        """
-        Get path in cache directory.
 
-        Args:
-            s3_key: S3 object key
-            cache_key: Computed cache key
-
-        Returns:
-            Path to cached file/directory
-        """
-        # Use cache key as subdirectory to organize cached data
-        cache_subdir = self.cache_dir / cache_key
-        cache_subdir.mkdir(parents=True, exist_ok=True)
-
-        # Extract filename from S3 key
-        filename = Path(s3_key).name
-
-        return cache_subdir / filename
-
-    def load_with_cache(
+    def load_with_streaming(
         self,
         local_path: str | Path | None,
         s3_key: str,
-        cache_key: str,
         loader_fn: Any,
         **kwargs,
     ) -> Any:
         """
-        Load data with local-first S3 fallback policy.
+        Load data with local-first S3 streaming policy (cache-free).
 
         Args:
             local_path: Local path to check first
-            s3_key: S3 key for fallback
-            cache_key: Cache key for organizing cached data
+            s3_key: S3 key for streaming fallback
             loader_fn: Function to load the data
             **kwargs: Additional arguments for loader_fn
 
@@ -203,85 +124,29 @@ class BaseLoader(BaseComponent, ABC):
                 console.print(f"[green]Loading from local: {local_path}[/green]")
                 return loader_fn(local_path, **kwargs)
 
-        # 2. Check cache
-        cached_path = self.get_cached_path(s3_key, cache_key)
-        if cached_path.exists():
-            console.print(f"[cyan]Loading from cache: {cached_path}[/cyan]")
-            return loader_fn(cached_path, **kwargs)
-
-        # 3. Download from S3 if available
+        # 2. Stream from S3 if available
         if self.s3_manager and self.s3_manager.connected:
-            console.print("[yellow]Local not found, downloading from S3...[/yellow]")
+            console.print("[yellow]Local not found, streaming from S3...[/yellow]")
+            try:
+                # Stream directly from S3 to memory
+                if s3_key.endswith(('.pth', '.pt', '.safetensors')):
+                    # Model files - use stream_model
+                    stream = self.s3_manager.stream_model(s3_key)
+                    console.print(f"[green]Streaming model from S3: {s3_key}[/green]")
+                    return loader_fn(stream, **kwargs)
+                else:
+                    # Dataset files - use stream_dataset
+                    stream = self.s3_manager.stream_dataset(s3_key)
+                    console.print(f"[green]Streaming dataset from S3: {s3_key}[/green]")
+                    return loader_fn(stream, **kwargs)
+            except Exception as e:
+                console.print(f"[red]S3 streaming failed: {e}[/red]")
 
-            # Download to cache
-            downloaded_path = self.s3_manager.download_if_missing(
-                s3_key,
-                cached_path,
-                force=False,
-            )
-
-            if downloaded_path and downloaded_path.exists():
-                console.print(
-                    f"[green]Loading from S3 cache: {downloaded_path}[/green]"
-                )
-                return loader_fn(downloaded_path, **kwargs)
-
-        # 4. Raise error if nothing found
+        # 3. Raise error if nothing found
         raise FileNotFoundError(
-            f"Could not find data at local path '{local_path}' " f"or S3 key '{s3_key}'"
+            f"Could not find data at local path '{local_path}' or S3 key '{s3_key}'"
         )
 
-    def sync_directory_with_cache(
-        self,
-        local_dir: str | Path | None,
-        s3_prefix: str,
-        cache_key: str,
-    ) -> Path:
-        """
-        Sync directory with local-first S3 fallback.
-
-        Args:
-            local_dir: Local directory to check first
-            s3_prefix: S3 prefix for directory
-            cache_key: Cache key for organizing cached data
-
-        Returns:
-            Path to directory (local or cached)
-        """
-        # 1. Check local directory first
-        if local_dir:
-            local_dir = Path(local_dir)
-            if local_dir.exists() and local_dir.is_dir():
-                console.print(f"[green]Using local directory: {local_dir}[/green]")
-                return local_dir
-
-        # 2. Check/create cache directory
-        cached_dir = self.cache_dir / cache_key / s3_prefix.replace("/", "_")
-
-        if cached_dir.exists() and any(cached_dir.iterdir()):
-            console.print(f"[cyan]Using cached directory: {cached_dir}[/cyan]")
-            return cached_dir
-
-        # 3. Sync from S3 if available
-        if self.s3_manager and self.s3_manager.connected:
-            console.print("[yellow]Syncing directory from S3...[/yellow]")
-
-            cached_dir.mkdir(parents=True, exist_ok=True)
-            self.s3_manager.sync_directory(
-                cached_dir,
-                s3_prefix,
-                direction="download",
-            )
-
-            if cached_dir.exists():
-                console.print(f"[green]Synced to cache: {cached_dir}[/green]")
-                return cached_dir
-
-        # 4. Raise error if nothing found
-        raise FileNotFoundError(
-            f"Could not find directory at local path '{local_dir}' "
-            f"or S3 prefix '{s3_prefix}'"
-        )
 
     @abstractmethod
     def load(self, path: str, **kwargs) -> Any:
@@ -392,56 +257,24 @@ class ModelLoader(BaseLoader):
         """
         pass
 
-    def load_tokenizer(self, path: str, **kwargs) -> Any:
-        """
-        통합 SentencePiece 토크나이저 로드 (S3 기반)
-
-        모든 WMTP 모델이 동일한 SentencePiece tokenizer.model 사용:
-        - S3 우선: models/shared/tokenizer.model
-        - 로컬 폴백: TOKENIZER_MODEL_PATH 환경변수
-        - 하위 호환: 기존 파일시스템 경로
-
-        Args:
-            path: 모델 디렉토리 또는 tokenizer.model 파일 경로 (선택적)
-            **kwargs: 추가 파라미터
-
-        Returns:
-            SentencePieceProcessor 인스턴스
-
-        Note:
-            S3에서 메모리로 직접 로드하여 VESSL 호환성 확보
-        """
-        from src.components.tokenizer.sentence_piece import SentencePieceTokenizer
-
-        # S3 기반 통합 토크나이저 사용
-        tokenizer_component = SentencePieceTokenizer(
-            {
-                "s3_manager": self.s3_manager,  # 기존 S3 연결 재사용
-            }
-        )
-
-        # 토크나이저 초기화
-        tokenizer_component.setup({})
-
-        # 토크나이저 결과 반환
-        result = tokenizer_component.run({})
-        return result["tokenizer"]
 
     def load(self, path: str, **kwargs) -> dict[str, Any]:
         """
-        Load both model and tokenizer.
+        Load model only - tokenizer 제거됨.
+
+        토크나이저는 ComponentFactory.create_tokenizer()를 통해
+        별도로 생성하도록 변경되었습니다. 이로써 중복이 제거되고
+        토크나이저 생성 경로가 단일화됩니다.
 
         Args:
             path: Model path
             **kwargs: Additional parameters
 
         Returns:
-            Dictionary with model and tokenizer
+            Dictionary with model only
         """
         model = self.load_model(path, **kwargs)
-        tokenizer = self.load_tokenizer(path, **kwargs)
 
         return {
             "model": model,
-            "tokenizer": tokenizer,
         }

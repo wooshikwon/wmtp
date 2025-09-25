@@ -284,8 +284,10 @@ class EvaluationPipeline:
             console.print(f"Loading dataset: {source}")
 
             try:
-                # Create data loader for this source
-                data_loader = ComponentFactory.create_data_loader(source, self.config)
+                # Phase 2 개선: recipe에 source를 동적으로 설정하여 호출
+                current_recipe = self.recipe.model_copy(deep=True)
+                current_recipe.data.train.sources = [source]
+                data_loader = ComponentFactory.create_data_loader(current_recipe, self.config)
                 data_loader.setup({})
 
                 # Load evaluation split

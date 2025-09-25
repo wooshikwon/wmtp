@@ -13,13 +13,13 @@ import numpy as np
 import torch
 
 from src.components.base import BaseComponent
-from src.components.registry import trainer_registry
+from src.components.registry import pretrainer_registry
 from src.components.reward.sequence_reward import compute_sequence_rewards
 from src.components.scorer.critic_delta import CriticDeltaScorer
 
 
-@trainer_registry.register(
-    "critic-stage1-pretrainer-v1", category="trainer", version="1.0.0"
+@pretrainer_registry.register(
+    "critic-stage1-pretrainer-v1", category="pretrainer", version="1.0.0"
 )
 class CriticStage1Pretrainer(BaseComponent):
     """Stage1 trainer to fit a value head for critic-wmtp."""
@@ -30,15 +30,14 @@ class CriticStage1Pretrainer(BaseComponent):
         base_model = ctx["base_model"]
         rm_model = ctx.get("rm_model")
         train_loader = ctx["train_dataloader"]
-        cache_root = ctx["cache_root"]
+        mlflow_manager = ctx.get("mlflow_manager")
 
-        vh_path = cache_root / "value_head.pt"
-        idx_path = cache_root / "index.jsonl"
-        cache_root.mkdir(parents=True, exist_ok=True)
-
-        # Skip if cached
-        if vh_path.exists() and idx_path.exists():
-            return {"skipped": True}
+        # MLflow를 통한 value_head 확인
+        if mlflow_manager:
+            # 이미 저장된 value_head가 있는지 확인
+            existing_artifacts = mlflow_manager.list_artifacts("critic")
+            if "value_head" in existing_artifacts:
+                return {"skipped": True, "message": "Value head already exists in MLflow"}
 
         hidden_size = getattr(
             getattr(base_model, "config", object()), "hidden_size", 4096
@@ -69,8 +68,8 @@ class CriticStage1Pretrainer(BaseComponent):
         )
         loss_fn = torch.nn.MSELoss()
 
-        with open(idx_path, "w") as fidx:
-            for step, batch in enumerate(train_loader):
+        # Training loop
+        for step, batch in enumerate(train_loader):
                 input_ids = batch.get("input_ids")
                 attention_mask = batch.get("attention_mask")
                 if input_ids is None:
@@ -132,11 +131,30 @@ class CriticStage1Pretrainer(BaseComponent):
                 torch.nn.utils.clip_grad_norm_(vh.parameters(), 1.0)
                 optimizer.step()
 
-                fidx.write(f"{step}\n")
+        # MLflow에 Value Head 저장
+        if mlflow_manager:
+            import io
+            buffer = io.BytesIO()
+            torch.save(scorer.value_head.state_dict(), buffer)
+            buffer.seek(0)
 
-        torch.save(scorer.value_head.state_dict(), vh_path)
+            # S3에 직접 저장
+            mlflow_manager.log_model(
+                model=scorer.value_head,
+                artifact_path="critic/value_head",
+                registered_model_name="wmtp_critic_value_head"
+            )
+            save_location = "MLflow/S3"
+        else:
+            # 로컬 폴백 (MLflow 없을 경우)
+            from pathlib import Path
+            fallback_dir = Path("./checkpoints/critic")
+            fallback_dir.mkdir(parents=True, exist_ok=True)
+            vh_path = fallback_dir / "value_head.pt"
+            torch.save(scorer.value_head.state_dict(), vh_path)
+            save_location = str(vh_path)
 
         if hasattr(base_model, "config"):
             base_model.config.output_hidden_states = orig_flag
 
-        return {"saved": str(vh_path)}
+        return {"saved": save_location}

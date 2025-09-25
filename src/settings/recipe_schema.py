@@ -203,6 +203,10 @@ class Model(BaseModel):
     base_id: str = Field(..., description="기본 MTP 모델 식별자")
     rm_id: str | None = Field(None, description="보상 모델 식별자 (critic-wmtp 필수)")
     ref_id: str = Field(..., description="참조 모델 식별자")
+    tokenizer_type: Literal["hf", "raw"] = Field(
+        default="hf",
+        description="Tokenizer interface type: hf=HuggingFace compatible, raw=SentencePiece direct"
+    )
     tokenizer_pad_side: Literal["left", "right"] = Field(
         default="right", description="토크나이저 패딩 방향"
     )

@@ -24,9 +24,9 @@ from ..registry import tokenizer_registry
 logger = logging.getLogger(__name__)
 
 
-@tokenizer_registry.register(
-    "unified-sentencepiece", category="tokenizer", version="2.0.0"
-)
+@tokenizer_registry.register("unified", category="tokenizer", version="2.0.0")
+@tokenizer_registry.register("sentencepiece", category="tokenizer", version="2.0.0")
+@tokenizer_registry.register("default", category="tokenizer", version="2.0.0")
 class SentencePieceTokenizer(BaseComponent):
     """
     S3 기반 통합 SentencePiece 토크나이저.
@@ -79,7 +79,8 @@ class SentencePieceTokenizer(BaseComponent):
         Args:
             ctx: 실행 컨텍스트
         """
-        self.validate_initialized()
+        # BaseComponent의 기본 setup 호출하여 initialized = True 설정
+        super().setup(ctx)
         self._ensure_processor_loaded()
 
     def _load_from_s3(self) -> bytes:
@@ -167,11 +168,10 @@ class SentencePieceTokenizer(BaseComponent):
             except Exception as e:
                 logger.error(f"로컬 로드 실패: {e}")
 
-        # 기본 경로들 탐색 (하위 호환성)
+        # 기본 경로들 탐색 (캐시 제거)
         default_paths = [
             Path("models/7b_1t_4/tokenizer.model"),
             Path("models/tokenizer.model"),
-            Path(".cache/tokenizer.model"),
         ]
 
         for path in default_paths:
