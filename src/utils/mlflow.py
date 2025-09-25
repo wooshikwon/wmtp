@@ -1,9 +1,38 @@
 """
-MLflow utility functions for WMTP framework.
+WMTP MLflow 통합: 실험 추적 및 모델 관리 시스템
 
-This module centralizes all MLflow operations for experiment tracking,
-model registry, and artifact management. No direct mlflow imports
-should exist outside this module.
+WMTP 연구 맥락:
+WMTP의 세 알고리즘(baseline/critic/rho1) 성능을 체계적으로 비교하기 위해
+모든 실험을 MLflow로 추적합니다. 손실 곡선, pass@k 메트릭, 체크포인트 등
+연구 재현성에 필요한 모든 정보를 자동으로 기록합니다.
+
+핵심 기능:
+- 실험 추적: 하이퍼파라미터, 메트릭, 아티팩트 자동 기록
+- 모델 레지스트리: 최고 성능 모델 버전 관리
+- S3 백엔드: 대용량 체크포인트의 효율적 저장
+- 실험 비교: 알고리즘 간 성능 차이 시각화
+
+WMTP 알고리즘과의 연결:
+- Baseline MTP: 기준 성능 메트릭 기록
+- Critic-WMTP: value_loss, delta 분포 등 추가 메트릭
+- Rho1-WMTP: CE 차이 히스토그램, percentile 통계
+
+사용 예시:
+    >>> mlflow_manager = create_mlflow_manager(config)
+    >>> mlflow_manager.start_run("rho1_experiment")
+    >>> mlflow_manager.log_metrics({"train/loss": 2.5, "train/ppl": 12.3})
+    >>> mlflow_manager.log_artifact("checkpoints/best_model.pt")
+    >>> mlflow_manager.end_run()
+
+성능 최적화:
+- 배치 로깅으로 네트워크 호출 최소화
+- S3 멀티파트 업로드로 대용량 파일 처리
+- 비동기 로깅으로 학습 속도 영향 최소화
+
+디버깅 팁:
+- ConnectionError: MLflow 서버 URI 및 네트워크 확인
+- S3 업로드 실패: AWS 자격증명 및 버킷 권한 확인
+- 실험 중복: experiment_name 고유성 보장
 """
 
 from pathlib import Path
@@ -19,10 +48,23 @@ console = Console()
 
 class MLflowManager:
     """
-    Manager for MLflow operations with S3 backend support.
+    MLflow 작업 관리자: S3 백엔드를 지원하는 실험 추적 시스템.
 
-    Handles experiment tracking, metric logging, artifact storage,
-    and model registry operations.
+    WMTP 연구 맥락:
+    각 알고리즘의 학습 과정을 상세히 기록하여 성능 비교와
+    재현성을 보장합니다. 특히 토큰 가중치의 효과를 정량화하기 위해
+    다양한 메트릭을 체계적으로 수집합니다.
+
+    주요 책임:
+    - 실험 생성 및 관리
+    - 메트릭 로깅 (loss, perplexity, pass@k)
+    - 아티팩트 저장 (체크포인트, 생성 샘플)
+    - 모델 레지스트리 관리
+
+    WMTP 특화 기능:
+    - Critic: value_loss, advantage 분포 추적
+    - Rho1: CE excess 통계, percentile 히스토그램
+    - 토큰별 가중치 시각화 데이터 저장
     """
 
     def __init__(
@@ -32,12 +74,31 @@ class MLflowManager:
         experiment_name: str = "default",
     ):
         """
-        Initialize MLflow manager.
+        MLflow 관리자 초기화.
 
-        Args:
-            tracking_uri: MLflow tracking server URI
-            registry_uri: MLflow model registry URI
-            experiment_name: Default experiment name
+        WMTP 맥락:
+        알고리즘별로 다른 experiment를 생성하여 체계적 비교가 가능합니다.
+        예: "wmtp/baseline", "wmtp/critic", "wmtp/rho1"
+
+        매개변수:
+            tracking_uri: MLflow 추적 서버 URI
+                - 로컬: "file://./mlruns"
+                - S3: "s3://bucket/mlflow"
+                - 원격: "http://mlflow-server:5000"
+            registry_uri: 모델 레지스트리 URI (None시 tracking_uri 사용)
+            experiment_name: 실험 이름 (기본값: "default")
+                - 권장 형식: "{project}/{algorithm}/{date}"
+
+        예시:
+            >>> manager = MLflowManager(
+            >>>     tracking_uri="s3://wmtp-artifacts/mlflow",
+            >>>     experiment_name="wmtp/rho1/20241225"
+            >>> )
+
+        디버깅 팁:
+            - file:// URI는 절대 경로 사용 권장
+            - S3 사용시 AWS_PROFILE 환경변수 확인
+            - 원격 서버는 방화벽 설정 확인
         """
         self.tracking_uri = tracking_uri
         self.registry_uri = registry_uri or tracking_uri

@@ -1,8 +1,45 @@
 """
-YAML configuration loader with Pydantic validation.
+WMTP 설정 로더: YAML 파일 검증 및 로딩 시스템
 
-This module provides functions to load and validate configuration files
-with detailed error messages for debugging.
+WMTP 연구 맥락:
+WMTP 실험은 config.yaml(환경)과 recipe.yaml(알고리즘) 두 설정 파일로 제어됩니다.
+이 모듈은 두 파일을 로드하고, Pydantic 스키마로 검증하며,
+환경 변수 치환과 상세한 오류 메시지를 제공합니다.
+
+핵심 기능:
+- YAML 파일 로드 및 파싱
+- 환경 변수 치환 (${VAR_NAME} 패턴 지원)
+- Pydantic 스키마 검증 (타입 체크, 필수 필드 확인)
+- 친화적 오류 메시지 출력 (Rich 라이브러리 활용)
+- 알고리즘별 설정 일관성 검증
+
+WMTP 알고리즘과의 연결:
+- Baseline: 최소 설정으로 실행 가능
+- Critic-WMTP: rm_id, critic 설정 검증 강화
+- Rho1-WMTP: ref_id, rho1 설정 검증 강화
+
+사용 예시:
+    >>> from src.settings.loader import load_config, load_recipe
+    >>>
+    >>> # 설정 파일 로드
+    >>> config = load_config("configs/config.yaml")
+    >>> recipe = load_recipe("configs/recipe_rho1.yaml")
+    >>>
+    >>> # 설정 활용
+    >>> if config.storage.mode == "s3":
+    >>>     print(f"S3 버킷: {config.storage.s3.bucket}")
+    >>> print(f"알고리즘: {recipe.train.algo}")
+
+성능 최적화:
+- 설정 파일은 한 번만 로드되어 메모리에 캐시
+- 환경 변수는 런타임에 동적 치환
+- 검증 실패 시 조기 종료로 불필요한 연산 방지
+
+디버깅 팁:
+- ValidationError: 필수 필드 누락 또는 타입 불일치
+- ConfigurationError: 파일 없음 또는 YAML 문법 오류
+- 환경 변수 오류: ${VAR_NAME:-default} 형식으로 기본값 제공
+- 상세 오류: Rich 패널에서 정확한 위치와 원인 확인
 """
 
 import os
@@ -24,24 +61,60 @@ T = TypeVar("T", bound=BaseModel)
 
 
 class ConfigurationError(Exception):
-    """Custom exception for configuration errors."""
+    """설정 오류 전용 예외 클래스.
+
+    WMTP 설정 파일 로딩/검증 중 발생하는 모든 오류를 처리합니다.
+    상세한 오류 메시지로 디버깅을 용이하게 합니다.
+    """
 
     pass
 
 
 def substitute_env_vars(data: Any) -> Any:
     """
-    Recursively substitute environment variables in configuration data.
+    환경 변수 치환: 설정 데이터에서 환경 변수를 실제 값으로 교체
 
-    Supports patterns like:
-    - ${VAR_NAME}
-    - ${VAR_NAME:-default_value}
+    WMTP 연구 맥락:
+    클러스터 환경(VESSL)과 로컬 개발을 동일한 설정 파일로 지원하기 위해
+    환경 변수를 활용합니다. S3 자격증명, MLflow URI 등이 대표적입니다.
 
-    Args:
-        data: Configuration data (dict, list, string, or other types)
+    지원 패턴:
+    - ${VAR_NAME}: 환경 변수 필수 (없으면 오류)
+    - ${VAR_NAME:-default}: 기본값 제공 (없어도 동작)
 
-    Returns:
-        Data with environment variables substituted
+    구체적 동작:
+    1. 데이터 구조를 재귀적으로 탐색
+    2. 문자열에서 ${} 패턴 검색
+    3. 환경 변수 값으로 치환
+    4. 없으면 기본값 사용 또는 오류 발생
+
+    매개변수:
+        data: 설정 데이터 (dict, list, str 등 모든 타입)
+            - dict: 모든 값에 대해 재귀 적용
+            - list: 모든 요소에 대해 재귀 적용
+            - str: 환경 변수 패턴 치환
+
+    반환값:
+        Any: 환경 변수가 치환된 데이터
+
+    예시:
+        >>> # 설정에서
+        >>> mlflow:
+        >>>   tracking_uri: ${MLFLOW_TRACKING_URI:-./mlruns}
+        >>>
+        >>> # 환경 변수 설정 후
+        >>> os.environ['MLFLOW_TRACKING_URI'] = 's3://bucket/mlflow'
+        >>> # 결과: tracking_uri = 's3://bucket/mlflow'
+
+    WMTP 활용 예:
+        - ${AWS_PROFILE}: S3 접근용 AWS 프로필
+        - ${MLFLOW_TRACKING_URI}: 실험 추적 서버
+        - ${CUDA_VISIBLE_DEVICES}: GPU 선택
+
+    디버깅 팁:
+        - ConfigurationError: 필수 환경 변수 미설정
+        - export VAR_NAME=value 또는 .env 파일 사용
+        - 기본값 제공으로 오류 방지 권장
     """
     if isinstance(data, dict):
         return {key: substitute_env_vars(value) for key, value in data.items()}

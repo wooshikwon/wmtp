@@ -392,19 +392,38 @@ class ModelLoader(BaseLoader):
         """
         pass
 
-    @abstractmethod
     def load_tokenizer(self, path: str, **kwargs) -> Any:
         """
-        Load tokenizer from path (must be implemented by subclasses).
+        통합 SentencePiece 토크나이저 로드 (기본 구현)
+
+        모든 WMTP 모델이 동일한 SentencePiece tokenizer.model 사용:
+        - Facebook MTP: models/7b_1t_4/tokenizer.model
+        - Starling-RM: 동일한 Llama-2 tokenizer.model
+        - Sheared-LLaMA: 동일한 Llama-2 tokenizer.model
 
         Args:
-            path: Tokenizer path
-            **kwargs: Additional parameters
+            path: 모델 디렉토리 또는 tokenizer.model 파일 경로
+            **kwargs: 추가 파라미터 (현재 미사용)
 
         Returns:
-            Loaded tokenizer
+            SentencePieceProcessor 인스턴스
+
+        Note:
+            서브클래스에서 다른 토크나이저가 필요한 경우 오버라이드 가능
         """
-        pass
+        from pathlib import Path
+
+        from src.components.tokenizer.unified_tokenizer import get_unified_tokenizer
+
+        # 경로 처리: 디렉토리면 tokenizer.model 추가
+        tokenizer_path = Path(path)
+        if tokenizer_path.is_dir():
+            tokenizer_path = tokenizer_path / "tokenizer.model"
+
+        # 통합 토크나이저 반환 (싱글톤)
+        return get_unified_tokenizer(
+            tokenizer_path if tokenizer_path.exists() else None
+        )
 
     def load(self, path: str, **kwargs) -> dict[str, Any]:
         """

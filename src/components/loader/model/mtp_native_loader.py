@@ -337,58 +337,8 @@ class MTPNativeLoader(ModelLoader):
 
         return model
 
-    def load_tokenizer(self, path: str, **kwargs) -> Any:
-        """
-        Load tokenizer for MTP model.
-
-        Args:
-            path: Path to tokenizer or model directory
-            **kwargs: Additional arguments
-
-        Returns:
-            Tokenizer (usually tiktoken for Llama 3)
-        """
-        local_path = Path(path)
-
-        # Check if it's an S3 path
-        if path.startswith("s3://"):
-            local_path = self.s3_utils.download_model(path)
-
-        # Look for tokenizer.model file
-        tokenizer_path = (
-            local_path / "tokenizer.model" if local_path.is_dir() else local_path
-        )
-
-        if tokenizer_path.exists():
-            # Load SentencePiece tokenizer
-            try:
-                from sentencepiece import SentencePieceProcessor
-
-                tokenizer = SentencePieceProcessor(model_file=str(tokenizer_path))
-                return tokenizer
-            except ImportError:
-                pass
-
-        # Try tiktoken for Llama 3
-        try:
-            import tiktoken
-
-            # Use the appropriate tiktoken encoding for Llama 3
-            tokenizer = tiktoken.get_encoding("cl100k_base")
-            return tokenizer
-        except ImportError:
-            pass
-
-        # Fallback to HuggingFace tokenizer
-        try:
-            from transformers import AutoTokenizer
-
-            tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf")
-            return tokenizer
-        except Exception:
-            pass
-
-        raise RuntimeError(f"Could not load tokenizer from {path}")
+    # load_tokenizer 메서드 제거 - 부모 클래스의 통합 SentencePiece 사용
+    # Facebook MTP와 새로운 모델들 모두 동일한 tokenizer.model 공유
 
     def run(self, ctx: dict[str, Any]) -> dict[str, Any]:
         """

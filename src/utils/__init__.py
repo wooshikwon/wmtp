@@ -11,11 +11,10 @@ from .dist import (
 )
 from .eval import EvaluationProtocol, aggregate_metrics
 from .hf import (
-    HFModelLoader,
-    create_model_loader,
     get_dtype,
     get_model_size,
     resize_token_embeddings,
+    safe_from_pretrained,
 )
 from .io import (
     ensure_path_exists,
@@ -43,11 +42,10 @@ __all__ = [
     "compute_file_hash",
     "ensure_s3_uri",
     # HuggingFace
-    "HFModelLoader",
-    "create_model_loader",
     "resize_token_embeddings",
     "get_model_size",
     "get_dtype",
+    "safe_from_pretrained",
     # MLflow
     "MLflowManager",
     "create_mlflow_manager",

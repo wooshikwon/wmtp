@@ -1,8 +1,41 @@
 """
-Evaluation pipeline for WMTP framework.
+WMTP 평가 파이프라인: 학습된 모델의 성능 검증 시스템
 
-Orchestrates the complete evaluation process including checkpoint loading,
-dataset preparation, model evaluation, and results logging to MLflow.
+WMTP 연구 맥락:
+WMTP의 핵심 가설 "Not All Tokens Are What You Need"가 실제로
+성능 향상을 가져오는지 검증하는 중요한 모듈입니다.
+MBPP와 CodeContests 벤치마크에서 pass@k 메트릭을 측정하여
+토큰 가중치의 효과를 정량적으로 평가합니다.
+
+핵심 기능:
+- 체크포인트 로딩: 학습된 WMTP 모델 복원
+- 벤치마크 평가: MBPP, CodeContests에서 코드 생성 능력 측정
+- pass@k 계산: Chen et al. (2021)의 unbiased estimator 적용
+- MLflow 통합: 평가 결과 자동 기록 및 비교 분석
+
+WMTP 알고리즘과의 연결:
+- Baseline MTP: 균등 가중치의 기준 성능 제공
+- Critic-WMTP: Value 기반 가중치의 효과 측정
+- Rho1-WMTP: CE 차이 기반 가중치의 성능 검증
+
+사용 예시:
+    >>> pipeline = EvaluationPipeline(config, recipe)
+    >>> results = pipeline.run(
+    >>>     checkpoint=Path("checkpoints/rho1_epoch_10.pt"),
+    >>>     datasets=["mbpp", "codecontests"],
+    >>>     save_predictions=True
+    >>> )
+    >>> print(f"MBPP pass@1: {results['mbpp']['pass@1']}")
+
+성능 최적화:
+- 배치 추론으로 GPU 활용도 극대화
+- 토큰 생성 시 KV 캐시 활용
+- 병렬 코드 실행으로 평가 시간 단축
+
+디버깅 팁:
+- 체크포인트 로드 실패: 모델 구조와 체크포인트 호환성 확인
+- OOM 오류: sampling.batch_size 감소
+- 평가 속도 느림: sampling.num_samples 조정
 """
 
 from __future__ import annotations
@@ -22,21 +55,35 @@ console = Console()
 
 class EvaluationPipeline:
     """
-    Pipeline for evaluating trained models on coding benchmarks.
+    코딩 벤치마크에서 학습된 WMTP 모델을 평가하는 파이프라인.
 
-    Follows the same pattern as training_pipeline.py for consistency:
-    - ComponentFactory for component creation
-    - setup() → run() pattern for components
-    - MLflow integration for experiment tracking
+    WMTP 연구 맥락:
+    토큰 가중치가 실제로 코드 생성 능력을 향상시키는지 검증합니다.
+    Baseline, Critic, Rho1 세 알고리즘의 성능을 동일한 조건에서
+    공정하게 비교하여 연구 가설을 입증합니다.
+
+    설계 패턴:
+    - ComponentFactory로 평가기 생성 (일관성 유지)
+    - setup() → run() 패턴으로 컴포넌트 실행
+    - MLflow로 실험 결과 자동 추적
+
+    평가 프로토콜:
+    - Meta MTP 논문의 프로토콜 준수
+    - HumanEval/MBPP에서 pass@k 측정
+    - Temperature 0.8, top-p 0.95 샘플링
     """
 
     def __init__(self, config: Config, recipe: Recipe):
         """
-        Initialize evaluation pipeline.
+        평가 파이프라인 초기화.
+
+        WMTP 맥락:
+        알고리즘별로 다른 체크포인트 구조를 처리합니다.
+        Critic-WMTP는 value_head.pt를 추가로 로드해야 합니다.
 
         Args:
-            config: Environment configuration
-            recipe: Recipe configuration
+            config: 환경 설정 (GPU, 저장소, MLflow)
+            recipe: 레시피 설정 (모델, 평가 프로토콜)
         """
         self.config = config
         self.recipe = recipe
@@ -55,18 +102,59 @@ class EvaluationPipeline:
         save_report: bool = False,
     ) -> dict[str, Any]:
         """
-        Run complete evaluation pipeline.
+        완전한 평가 파이프라인 실행.
 
-        Args:
-            checkpoint: Path to model checkpoint to evaluate
-            datasets: List of datasets to evaluate on (None = use recipe default)
-            run_name: MLflow run name (None = use recipe default)
-            tags: Additional tags for MLflow run
-            save_predictions: Whether to save prediction samples as artifacts
-            save_report: Whether to generate and save evaluation report
+        WMTP 연구 맥락:
+        학습된 모델이 실제로 "중요한 토큰"을 잘 학습했는지 검증합니다.
+        코드 생성 태스크는 syntax와 logic이 모두 정확해야 하므로
+        토큰 가중치의 효과를 명확히 보여줄 수 있습니다.
 
-        Returns:
-            Dictionary containing evaluation results and metrics
+        구체적 동작:
+        1. 체크포인트에서 모델 복원
+        2. 벤치마크 데이터셋 로드 (MBPP/CodeContests)
+        3. 코드 생성 및 실행
+        4. pass@k 메트릭 계산
+        5. MLflow에 결과 기록
+
+        매개변수:
+            checkpoint: 평가할 모델 체크포인트 경로
+                - 예: "checkpoints/rho1_epoch_10.pt"
+            datasets: 평가 데이터셋 리스트 (None = recipe 기본값)
+                - ["mbpp", "codecontests", "humaneval"]
+            run_name: MLflow 실행 이름 (None = "eval_{recipe.run.name}")
+            tags: MLflow 태그 추가
+            save_predictions: 생성된 코드 샘플 저장 여부
+            save_report: 상세 평가 보고서 생성 여부
+
+        반환값:
+            dict: 평가 결과와 메트릭
+                - checkpoint: 평가된 체크포인트 경로
+                - datasets: 사용된 데이터셋
+                - results: pass@k 등 성능 지표
+                - config: 평가 설정
+
+        예시:
+            >>> results = pipeline.run(
+            >>>     checkpoint=Path("model.pt"),
+            >>>     datasets=["mbpp"],
+            >>>     save_predictions=True
+            >>> )
+            >>> print(f"pass@1: {results['results']['mbpp']['pass@1']:.2%}")
+
+        주의사항:
+            - 체크포인트와 recipe의 모델 설정이 일치해야 함
+            - GPU 메모리 부족 시 sampling.batch_size 감소
+            - 코드 실행 타임아웃 기본값: 10초
+
+        디버깅 팁:
+            - FileNotFoundError: 체크포인트 경로 확인
+            - CUDA OOM: 배치 크기 감소 또는 fp16 사용
+            - 낮은 pass@k: 샘플링 temperature 조정
+
+        WMTP 알고리즘별 기대 성능:
+            - Baseline: Meta MTP 논문 수준
+            - Critic: Baseline 대비 +2-5%p 개선 기대
+            - Rho1: Baseline 대비 +3-7%p 개선 기대
         """
         console.print("[bold blue]Starting WMTP Evaluation Pipeline[/bold blue]")
         console.print(f"Checkpoint: {checkpoint}")

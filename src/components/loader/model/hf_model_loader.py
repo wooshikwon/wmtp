@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from transformers import AutoModelForCausalLM, BitsAndBytesConfig
 
 from src.components.loader.base_loader import ModelLoader
 from src.components.registry import loader_registry
@@ -110,8 +110,8 @@ class HFModelLoader(ModelLoader):
                 "quantization_config": BitsAndBytesConfig(
                     load_in_4bit=True,
                     bnb_4bit_compute_dtype=torch.bfloat16,  # 계산은 BF16로
-                    bnb_4bit_use_double_quant=True,         # 이중 양자화
-                    bnb_4bit_quant_type="nf4",              # Normal Float 4bit
+                    bnb_4bit_use_double_quant=True,  # 이중 양자화
+                    bnb_4bit_quant_type="nf4",  # Normal Float 4bit
                 )
             }
         elif self.use_8bit:
@@ -164,38 +164,8 @@ class HFModelLoader(ModelLoader):
                 f"Failed to load HuggingFace model from {local_path}: {e}"
             )
 
-    def load_tokenizer(self, path: str, **kwargs) -> Any:
-        """
-        Load a HuggingFace tokenizer from local path or S3.
-
-        Args:
-            path: Local path or S3 URL to tokenizer
-            **kwargs: Additional arguments for tokenizer loading
-
-        Returns:
-            Loaded tokenizer
-        """
-        local_path = Path(path)
-
-        # Check if it's an S3 path
-        if path.startswith("s3://"):
-            # Download from S3 to local cache
-            local_path = self.s3_utils.download_model(path)
-            if not local_path.exists():
-                raise FileNotFoundError(f"Failed to download tokenizer from {path}")
-
-        # Load from local path
-        if not local_path.exists():
-            raise FileNotFoundError(f"Tokenizer not found at {local_path}")
-
-        try:
-            tokenizer = AutoTokenizer.from_pretrained(str(local_path), **kwargs)
-            # Ensure padding token is set
-            if tokenizer.pad_token is None:
-                tokenizer.pad_token = tokenizer.eos_token
-            return tokenizer
-        except Exception as e:
-            raise RuntimeError(f"Failed to load tokenizer from {local_path}: {e}")
+    # load_tokenizer 메서드 제거 - 부모 클래스의 통합 SentencePiece 사용
+    # 모든 WMTP 모델은 동일한 tokenizer.model 파일 공유
 
     def run(self, ctx: dict[str, Any]) -> dict[str, Any]:
         """

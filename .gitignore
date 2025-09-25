@@ -70,6 +70,7 @@ configs/recipe.yaml
 # MLflow
 mlruns/
 mlflow.db
+mlflow_runs/
 
 # Logs
 logs/
@@ -94,3 +95,7 @@ temp/
 
 # Docker
 *.tar
+
+# Agents
+.claude/
+*_cache/

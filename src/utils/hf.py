@@ -1,406 +1,109 @@
 """
-HuggingFace utility functions for WMTP framework.
+WMTP HuggingFace 유틸리티: 모델 관리 및 호환성 보장
 
-This module provides safe model/tokenizer loading with local-first policy,
-S3 fallback, and HuggingFace Hub as last resort. No direct transformers
-imports should exist outside this module.
+WMTP 연구 맥락:
+WMTP는 다양한 모델(Base, RM, Ref)을 조합하여 사용하므로
+모델 간 호환성과 효율적인 메모리 관리가 중요합니다.
+특히 MTP 모델의 특수한 구조를 HuggingFace 생태계와 연결합니다.
+
+핵심 기능:
+- 토큰 임베딩 크기 조정: 모델-토크나이저 vocab 일치
+- 모델 크기 측정: 메모리 요구사항 계산
+- dtype 변환: bf16/fp16 혼합정밀도 지원
+- 안전한 모델 로딩: 오류 처리 및 복구
+
+WMTP 알고리즘과의 연결:
+- Baseline: 표준 HF 모델 로딩
+- Critic-WMTP: RM 모델과 Base 모델 호환성 보장
+- Rho1-WMTP: Ref 모델과 Base 모델 토크나이저 통합
+
+사용 예시:
+    >>> from src.utils.hf import resize_token_embeddings, get_model_size
+    >>>
+    >>> # 토크나이저와 모델 vocab 일치시키기
+    >>> resize_token_embeddings(model, len(tokenizer))
+    >>>
+    >>> # 모델 크기 확인
+    >>> params, size_gb = get_model_size(model)
+    >>> print(f"모델: {params:,} 파라미터, {size_gb:.2f}GB")
+
+성능 최적화:
+- 임베딩을 8의 배수로 패딩하여 GPU 효율 향상
+- bf16 사용으로 메모리 50% 절감
+- 토크나이저 캐싱으로 로딩 시간 단축
+
+디버깅 팁:
+- vocab 크기 불일치: resize_token_embeddings() 호출
+- OOM 오류: get_model_size()로 메모리 요구사항 확인
+- dtype 오류: get_dtype()으로 올바른 형식 변환
+
+Note:
+    모델/토크나이저 로딩은 src/components/loader/model/ 하위의
+    전문 로더들이 담당합니다. 여기서는 유틸리티만 제공합니다.
 """
 
-from pathlib import Path
 from typing import Any
 
 import torch
 from rich.console import Console
-from transformers import (
-    AutoConfig,
-    AutoModel,
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    PreTrainedModel,
-    PreTrainedTokenizer,
-)
-
-from .s3 import S3Manager
+from transformers import PreTrainedModel
 
 console = Console()
 
 
-class HFModelLoader:
-    """
-    Safe model loader with local → S3 → HuggingFace Hub fallback.
-
-    Ensures models are loaded from the most efficient source
-    while maintaining reproducibility.
-    """
-
-    def __init__(
-        self,
-        cache_dir: str | Path = ".cache/models",
-        s3_manager: S3Manager | None = None,
-    ):
-        """
-        Initialize HuggingFace model loader.
-
-        Args:
-            cache_dir: Local cache directory for models
-            s3_manager: Optional S3 manager for remote storage
-        """
-        self.cache_dir = Path(cache_dir)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.s3_manager = s3_manager
-
-    def from_pretrained(
-        self,
-        model_id: str,
-        model_type: str = "auto",
-        local_path: str | Path | None = None,
-        s3_path: str | None = None,
-        device_map: str | dict | None = None,
-        torch_dtype: torch.dtype | None = None,
-        trust_remote_code: bool = False,
-        **kwargs,
-    ) -> PreTrainedModel:
-        """
-        Load model with local-first policy.
-
-        Priority order:
-        1. Local path if exists
-        2. S3 path if configured
-        3. HuggingFace Hub
-
-        Args:
-            model_id: HuggingFace model ID or path
-            model_type: Model type ('auto', 'causal_lm', 'base')
-            local_path: Optional local path override
-            s3_path: Optional S3 path
-            device_map: Device mapping for model
-            torch_dtype: Data type for model weights
-            trust_remote_code: Trust remote code in configs
-            **kwargs: Additional model loading arguments
-
-        Returns:
-            Loaded model
-        """
-        # Try local path first
-        if local_path:
-            local_path = Path(local_path)
-            if local_path.exists():
-                console.print(f"[green]Loading model from local: {local_path}[/green]")
-                return self._load_from_path(
-                    local_path,
-                    model_type,
-                    device_map=device_map,
-                    torch_dtype=torch_dtype,
-                    trust_remote_code=trust_remote_code,
-                    **kwargs,
-                )
-
-        # Try S3 if configured
-        if s3_path and self.s3_manager:
-            cache_path = self.cache_dir / model_id.replace("/", "_")
-
-            try:
-                # Download model files from S3
-                self._download_model_from_s3(s3_path, cache_path)
-
-                if cache_path.exists():
-                    console.print(
-                        f"[green]Loading model from S3 cache: {cache_path}[/green]"
-                    )
-                    return self._load_from_path(
-                        cache_path,
-                        model_type,
-                        device_map=device_map,
-                        torch_dtype=torch_dtype,
-                        trust_remote_code=trust_remote_code,
-                        **kwargs,
-                    )
-            except Exception as e:
-                console.print(
-                    f"[yellow]S3 loading failed: {e}. Falling back to HF Hub[/yellow]"
-                )
-
-        # Fall back to HuggingFace Hub
-        console.print(f"[cyan]Loading model from HuggingFace Hub: {model_id}[/cyan]")
-        return self._load_from_hub(
-            model_id,
-            model_type,
-            device_map=device_map,
-            torch_dtype=torch_dtype,
-            trust_remote_code=trust_remote_code,
-            cache_dir=str(self.cache_dir),
-            **kwargs,
-        )
-
-    def _load_from_path(
-        self,
-        path: Path,
-        model_type: str,
-        **kwargs,
-    ) -> PreTrainedModel:
-        """Load model from local path."""
-        if model_type == "causal_lm":
-            return AutoModelForCausalLM.from_pretrained(str(path), **kwargs)
-        elif model_type == "base":
-            return AutoModel.from_pretrained(str(path), **kwargs)
-        else:  # auto
-            try:
-                return AutoModelForCausalLM.from_pretrained(str(path), **kwargs)
-            except Exception:
-                return AutoModel.from_pretrained(str(path), **kwargs)
-
-    def _load_from_hub(
-        self,
-        model_id: str,
-        model_type: str,
-        **kwargs,
-    ) -> PreTrainedModel:
-        """Load model from HuggingFace Hub."""
-        if model_type == "causal_lm":
-            return AutoModelForCausalLM.from_pretrained(model_id, **kwargs)
-        elif model_type == "base":
-            return AutoModel.from_pretrained(model_id, **kwargs)
-        else:  # auto
-            try:
-                return AutoModelForCausalLM.from_pretrained(model_id, **kwargs)
-            except Exception:
-                return AutoModel.from_pretrained(model_id, **kwargs)
-
-    def _download_model_from_s3(self, s3_path: str, local_path: Path) -> None:
-        """Download model files from S3."""
-        if not self.s3_manager:
-            raise ValueError("S3 manager not configured")
-
-        # Essential model files to download
-        model_files = [
-            "config.json",
-            "pytorch_model.bin",
-            "model.safetensors",
-            "tokenizer_config.json",
-            "tokenizer.json",
-            "special_tokens_map.json",
-            "vocab.json",
-            "merges.txt",
-        ]
-
-        local_path.mkdir(parents=True, exist_ok=True)
-
-        for file_name in model_files:
-            s3_key = f"{s3_path}/{file_name}"
-            local_file = local_path / file_name
-
-            try:
-                self.s3_manager.download_if_missing(s3_key, local_file)
-            except FileNotFoundError:
-                # Some files may not exist for all models
-                continue
-
-    def load_tokenizer(
-        self,
-        model_id: str,
-        local_path: str | Path | None = None,
-        s3_path: str | None = None,
-        padding_side: str = "right",
-        trust_remote_code: bool = False,
-        **kwargs,
-    ) -> PreTrainedTokenizer:
-        """
-        Load tokenizer with local-first policy.
-
-        Args:
-            model_id: HuggingFace model ID or path
-            local_path: Optional local path override
-            s3_path: Optional S3 path
-            padding_side: Padding side ('left' or 'right')
-            trust_remote_code: Trust remote code
-            **kwargs: Additional tokenizer arguments
-
-        Returns:
-            Loaded tokenizer
-        """
-        tokenizer = None
-
-        # Try local path first
-        if local_path:
-            local_path = Path(local_path)
-            if local_path.exists():
-                console.print(
-                    f"[green]Loading tokenizer from local: {local_path}[/green]"
-                )
-                tokenizer = AutoTokenizer.from_pretrained(
-                    str(local_path),
-                    trust_remote_code=trust_remote_code,
-                    **kwargs,
-                )
-
-        # Try S3 if configured
-        if tokenizer is None and s3_path and self.s3_manager:
-            cache_path = self.cache_dir / f"{model_id.replace('/', '_')}_tokenizer"
-
-            try:
-                self._download_model_from_s3(s3_path, cache_path)
-
-                if cache_path.exists():
-                    console.print(
-                        f"[green]Loading tokenizer from S3 cache: {cache_path}[/green]"
-                    )
-                    tokenizer = AutoTokenizer.from_pretrained(
-                        str(cache_path),
-                        trust_remote_code=trust_remote_code,
-                        **kwargs,
-                    )
-            except Exception as e:
-                console.print(f"[yellow]S3 tokenizer loading failed: {e}[/yellow]")
-
-        # Fall back to HuggingFace Hub
-        if tokenizer is None:
-            console.print(
-                f"[cyan]Loading tokenizer from HuggingFace Hub: {model_id}[/cyan]"
-            )
-            tokenizer = AutoTokenizer.from_pretrained(
-                model_id,
-                trust_remote_code=trust_remote_code,
-                cache_dir=str(self.cache_dir),
-                **kwargs,
-            )
-
-        # Configure tokenizer
-        tokenizer.padding_side = padding_side
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-
-        return tokenizer
-
-    def load_config(
-        self,
-        model_id: str,
-        local_path: str | Path | None = None,
-        s3_path: str | None = None,
-        trust_remote_code: bool = False,
-        **kwargs,
-    ) -> AutoConfig:
-        """
-        Load model configuration.
-
-        Args:
-            model_id: HuggingFace model ID
-            local_path: Optional local path
-            s3_path: Optional S3 path
-            trust_remote_code: Trust remote code
-            **kwargs: Additional config arguments
-
-        Returns:
-            Model configuration
-        """
-        # Try local path first
-        if local_path:
-            local_path = Path(local_path)
-            if (local_path / "config.json").exists():
-                return AutoConfig.from_pretrained(
-                    str(local_path),
-                    trust_remote_code=trust_remote_code,
-                    **kwargs,
-                )
-
-        # Try S3 if configured
-        if s3_path and self.s3_manager:
-            cache_path = self.cache_dir / f"{model_id.replace('/', '_')}_config"
-            cache_path.mkdir(parents=True, exist_ok=True)
-
-            config_file = cache_path / "config.json"
-            try:
-                self.s3_manager.download_if_missing(
-                    f"{s3_path}/config.json",
-                    config_file,
-                )
-
-                if config_file.exists():
-                    return AutoConfig.from_pretrained(
-                        str(cache_path),
-                        trust_remote_code=trust_remote_code,
-                        **kwargs,
-                    )
-            except Exception as e:
-                console.print(f"[yellow]S3 config loading failed: {e}[/yellow]")
-
-        # Fall back to HuggingFace Hub
-        return AutoConfig.from_pretrained(
-            model_id,
-            trust_remote_code=trust_remote_code,
-            cache_dir=str(self.cache_dir),
-            **kwargs,
-        )
-
-
-def create_model_loader(
-    config: dict[str, Any],
-    s3_manager: S3Manager | None = None,
-) -> HFModelLoader:
-    """
-    Create HuggingFace model loader from configuration.
-
-    Args:
-        config: Configuration dictionary
-        s3_manager: Optional S3 manager
-
-    Returns:
-        HFModelLoader instance
-    """
-    cache_dir = config.get("paths", {}).get("cache", ".cache")
-    cache_dir = Path(cache_dir) / "models"
-
-    return HFModelLoader(cache_dir=cache_dir, s3_manager=s3_manager)
-
-
 def resize_token_embeddings(
     model: PreTrainedModel,
-    tokenizer: PreTrainedTokenizer,
+    tokenizer_vocab_size: int,
     pad_to_multiple_of: int = 8,
 ) -> None:
     """
-    Resize model token embeddings to match tokenizer.
+    Resize model token embeddings to match tokenizer vocabulary.
 
     Args:
-        model: Model to resize
-        tokenizer: Tokenizer with vocabulary
-        pad_to_multiple_of: Pad vocabulary size to multiple
+        model: The model to resize
+        tokenizer_vocab_size: Target vocabulary size
+        pad_to_multiple_of: Pad to multiple of this for efficiency
     """
-    vocab_size = len(tokenizer)
+    model_vocab_size = model.get_input_embeddings().weight.shape[0]
 
-    # Pad to multiple for efficiency
-    if pad_to_multiple_of > 0:
-        vocab_size = (
-            (vocab_size + pad_to_multiple_of - 1) // pad_to_multiple_of
-        ) * pad_to_multiple_of
+    if model_vocab_size != tokenizer_vocab_size:
+        # Calculate padded size
+        if pad_to_multiple_of > 1:
+            padded_size = (
+                (tokenizer_vocab_size + pad_to_multiple_of - 1)
+                // pad_to_multiple_of
+                * pad_to_multiple_of
+            )
+        else:
+            padded_size = tokenizer_vocab_size
 
-    model.resize_token_embeddings(vocab_size)
-    console.print(f"[green]Resized token embeddings to {vocab_size}[/green]")
+        console.print(
+            f"[yellow]Resizing embeddings from {model_vocab_size} to {padded_size}[/yellow]"
+        )
+        model.resize_token_embeddings(padded_size)
 
 
 def get_model_size(model: PreTrainedModel) -> tuple[int, float]:
     """
-    Get model size in parameters and GB.
+    Get model parameter count and size in GB.
 
     Args:
-        model: Model to measure
+        model: The model to measure
 
     Returns:
-        Tuple of (num_parameters, size_gb)
+        Tuple of (parameter_count, size_in_gb)
     """
-    num_params = sum(p.numel() for p in model.parameters())
+    param_count = sum(p.numel() for p in model.parameters())
+    param_size_gb = param_count * 4 / (1024**3)  # Assuming fp32
 
-    # Estimate size based on parameter dtype
-    param = next(model.parameters())
-    if param.dtype == torch.float16 or param.dtype == torch.bfloat16:
-        bytes_per_param = 2
-    elif param.dtype == torch.float32:
-        bytes_per_param = 4
-    else:
-        bytes_per_param = 4  # Default
+    # Account for actual dtype
+    if hasattr(model, "dtype"):
+        if model.dtype == torch.float16 or model.dtype == torch.bfloat16:
+            param_size_gb /= 2
+        elif model.dtype == torch.int8:
+            param_size_gb /= 4
 
-    size_gb = (num_params * bytes_per_param) / (1024**3)
-
-    return num_params, size_gb
+    return param_count, param_size_gb
 
 
 def get_dtype(dtype_str: str) -> torch.dtype:
@@ -408,68 +111,63 @@ def get_dtype(dtype_str: str) -> torch.dtype:
     Convert string dtype to torch dtype.
 
     Args:
-        dtype_str: String representation ('fp32', 'fp16', 'bf16')
+        dtype_str: String representation of dtype
 
     Returns:
-        torch.dtype
+        Corresponding torch.dtype
+
+    Raises:
+        ValueError: If dtype string is not recognized
     """
     dtype_map = {
-        "fp32": torch.float32,
         "float32": torch.float32,
-        "fp16": torch.float16,
+        "fp32": torch.float32,
         "float16": torch.float16,
-        "bf16": torch.bfloat16,
+        "fp16": torch.float16,
         "bfloat16": torch.bfloat16,
+        "bf16": torch.bfloat16,
+        "int8": torch.int8,
+        "int4": torch.int8,  # Quantized to int8
+        "auto": None,
     }
 
     if dtype_str not in dtype_map:
         raise ValueError(
-            f"Unknown dtype: {dtype_str}. Use one of {list(dtype_map.keys())}"
+            f"Unknown dtype: {dtype_str}. " f"Supported: {list(dtype_map.keys())}"
         )
 
     return dtype_map[dtype_str]
 
 
-# Export main functions and classes
+def safe_from_pretrained(
+    model_class: type,
+    model_id: str,
+    **kwargs: Any,
+) -> Any:
+    """
+    Safely load a model with proper error handling.
+
+    Args:
+        model_class: The model class to use
+        model_id: Model identifier
+        **kwargs: Additional arguments for from_pretrained
+
+    Returns:
+        Loaded model
+
+    Raises:
+        RuntimeError: If model cannot be loaded
+    """
+    try:
+        model = model_class.from_pretrained(model_id, **kwargs)
+        return model
+    except Exception as e:
+        raise RuntimeError(f"Failed to load model {model_id}: {e}")
+
+
 __all__ = [
-    "HFModelLoader",
-    "create_model_loader",
     "resize_token_embeddings",
     "get_model_size",
     "get_dtype",
     "safe_from_pretrained",
 ]
-
-
-def safe_from_pretrained(
-    model_id: str,
-    model_class: type[PreTrainedModel] = AutoModelForCausalLM,
-    device_map: str | dict | None = None,
-    torch_dtype: torch.dtype | None = None,
-    trust_remote_code: bool = False,
-    cache_dir: str | Path | None = None,
-    **kwargs,
-) -> PreTrainedModel:
-    """
-    Safe wrapper for from_pretrained with explicit cache and options.
-
-    This utility centralizes model loading to keep usage consistent and
-    avoid direct transformers imports outside utils.
-    """
-    load_kwargs = dict(
-        device_map=device_map,
-        torch_dtype=torch_dtype,
-        trust_remote_code=trust_remote_code,
-        **kwargs,
-    )
-    if cache_dir is not None:
-        load_kwargs["cache_dir"] = str(cache_dir)
-
-    try:
-        return model_class.from_pretrained(model_id, **load_kwargs)
-    except Exception:
-        # Fallback: if specific class fails, try AutoModelForCausalLM then AutoModel
-        try:
-            return AutoModelForCausalLM.from_pretrained(model_id, **load_kwargs)
-        except Exception:
-            return AutoModel.from_pretrained(model_id, **load_kwargs)
