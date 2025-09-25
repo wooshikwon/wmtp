@@ -365,47 +365,47 @@ class DistributedManager:
                     **kwargs,
                 }
 
-                # S3 또는 로컬 저장 처리
-                if checkpoint_path.startswith("s3://"):
-                    # S3에 직접 저장
-                    import io
+            # S3 또는 로컬 저장 처리
+            if checkpoint_path.startswith("s3://"):
+                # S3에 직접 저장
+                import io
 
-                    buffer = io.BytesIO()
-                    torch.save(checkpoint, buffer)
-                    buffer.seek(0)
+                buffer = io.BytesIO()
+                torch.save(checkpoint, buffer)
+                buffer.seek(0)
 
-                    if mlflow_manager:
-                        # MLflow를 통해 S3에 저장
-                        mlflow_manager.log_model_checkpoint(
-                            buffer,
-                            artifact_path=f"checkpoints/step_{step}",
-                            registered_model_name=kwargs.get("model_name", None),
-                        )
-                        console.print(
-                            f"[green]Checkpoint saved to MLflow/S3: step_{step}[/green]"
-                        )
-                    else:
-                        # S3Manager를 사용하여 직접 저장
-                        from src.utils.s3 import S3Manager
-
-                        s3_manager = S3Manager()
-                        s3_key = checkpoint_path.replace("s3://wmtp/", "")
-                        s3_manager.upload_from_bytes(buffer.getvalue(), s3_key)
-                        console.print(
-                            f"[green]Checkpoint saved to S3: {checkpoint_path}[/green]"
-                        )
-                else:
-                    # 로컬 저장
-                    torch.save(checkpoint, checkpoint_path)
-                    console.print(
-                        f"[green]Checkpoint saved locally: {checkpoint_path}[/green]"
+                if mlflow_manager:
+                    # MLflow를 통해 S3에 저장
+                    mlflow_manager.log_model_checkpoint(
+                        buffer,
+                        artifact_path=f"checkpoints/step_{step}",
+                        registered_model_name=kwargs.get("model_name", None),
                     )
+                    console.print(
+                        f"[green]Checkpoint saved to MLflow/S3: step_{step}[/green]"
+                    )
+                else:
+                    # S3Manager를 사용하여 직접 저장
+                    from src.utils.s3 import S3Manager
 
-                    # MLflow에도 기록 (있는 경우)
-                    if mlflow_manager:
-                        mlflow_manager.log_artifact(
-                            local_path=checkpoint_path, artifact_path="checkpoints"
-                        )
+                    s3_manager = S3Manager()
+                    s3_key = checkpoint_path.replace("s3://wmtp/", "")
+                    s3_manager.upload_from_bytes(buffer.getvalue(), s3_key)
+                    console.print(
+                        f"[green]Checkpoint saved to S3: {checkpoint_path}[/green]"
+                    )
+            else:
+                # 로컬 저장
+                torch.save(checkpoint, checkpoint_path)
+                console.print(
+                    f"[green]Checkpoint saved locally: {checkpoint_path}[/green]"
+                )
+
+                # MLflow에도 기록 (있는 경우)
+                if mlflow_manager:
+                    mlflow_manager.log_artifact(
+                        local_path=checkpoint_path, artifact_path="checkpoints"
+                    )
 
         self.barrier()
 

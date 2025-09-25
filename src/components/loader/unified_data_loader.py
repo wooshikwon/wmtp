@@ -65,6 +65,7 @@ class UnifiedDataLoader(DatasetLoader):
         self.split = config.get("split", "train")
         self.max_samples = config.get("max_samples")
         self.seed = config.get("seed", 42)
+        self.dataset_path = config.get("dataset_path")  # Factory에서 전달된 경로
 
     def run(self, inputs: dict[str, Any]) -> dict[str, Any]:
         """통합 데이터셋 로드 실행
@@ -79,7 +80,7 @@ class UnifiedDataLoader(DatasetLoader):
         Returns:
             로드된 데이터셋과 메타데이터를 포함하는 딕셔너리
         """
-        dataset_path = inputs.get("dataset_path")
+        dataset_path = inputs.get("dataset_path", self.dataset_path)
         if not dataset_path:
             raise ValueError("dataset_path is required")
 

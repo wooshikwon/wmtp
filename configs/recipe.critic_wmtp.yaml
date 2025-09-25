@@ -1,15 +1,16 @@
-# Production Recipe - MTP Baseline Algorithm
-# Uniform weighting for Multi-Token Prediction on A100x2
+# Production Recipe - Critic WMTP Algorithm
+# Value-based dynamic weighting with Stage 1 pretraining on A100x2
 
 # Run metadata
 run:
-  name: "prod_mtp_baseline"
+  name: "prod_critic_wmtp"
   tags:
     - "production"
     - "vessl"
-    - "baseline"
-    - "mtp"
+    - "critic"
+    - "wmtp"
     - "a100"
+    - "two-stage"
 
 # Model configuration
 model:
@@ -22,20 +23,26 @@ model:
 
 # Training configuration
 train:
-  algo: "baseline-mtp"  # Uniform weighting
+  algo: "critic-wmtp"  # Value-based dynamic weighting
   full_finetune: true
-  max_steps: 10000
+  max_steps: 12000  # Longer for two-stage training
   eval_interval: 500
   save_interval: 1000
   checkpointing:
     save_interval: 1000
     keep_last: 5
     save_final: true
+  # Stage 1 configuration
+  stage1:
+    enabled: true
+    max_steps: 2000
+    lr: 1.0e-4
+    save_value_head: true
 
 # Optimizer configuration
 optim:
   optimizer: "adamw"
-  lr: 2.0e-5
+  lr: 1.5e-5  # Slightly lower for critic
   weight_decay: 0.01
   betas: [0.9, 0.999]
   grad_clip: 1.0
@@ -57,13 +64,17 @@ data:
     pack_sequences: false
     num_workers: 4
 
-# Loss configuration - baseline (uniform weights)
+# Loss configuration - critic with value loss
 loss:
-  weight_norm: "none"
-  lambda: 0.001
+  weight_norm: "softmax"
+  lambda: 0.01
   temperature: 1.0
   epsilon: 1.0e-8
-  max_weight: 1.01
+  max_weight: 10.0
+  # Value loss configuration
+  value_coef: 0.1  # V_loss weight
+  gamma: 0.99      # GAE discount
+  gae_lambda: 0.95 # GAE lambda
 
 # Evaluation configuration
 eval:

@@ -120,5 +120,42 @@ class AdamWBF16FusedOptimizer(BaseComponent):
             "has_scheduler": self.scheduler is not None,
             "fused": bool(getattr(self, "fused", False)),
         }
+    
+    def state_dict(self) -> dict[str, Any]:
+        """Return the state dictionary for checkpointing.
+        
+        Returns:
+            Dictionary containing optimizer and scheduler states
+        """
+        if self.optimizer is None:
+            raise RuntimeError("Optimizer not initialized. Call setup() first.")
+            
+        state = {
+            "optimizer": self.optimizer.state_dict(),
+            "last_lr": self._last_lr,
+        }
+        
+        if self.scheduler is not None:
+            state["scheduler"] = self.scheduler.state_dict()
+            
+        return state
+    
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        """Load state from checkpoint.
+        
+        Args:
+            state_dict: State dictionary from checkpointing
+        """
+        if self.optimizer is None:
+            raise RuntimeError("Optimizer not initialized. Call setup() first.")
+            
+        if "optimizer" in state_dict:
+            self.optimizer.load_state_dict(state_dict["optimizer"])
+            
+        if "last_lr" in state_dict:
+            self._last_lr = float(state_dict["last_lr"])
+            
+        if "scheduler" in state_dict and self.scheduler is not None:
+            self.scheduler.load_state_dict(state_dict["scheduler"])
 
 

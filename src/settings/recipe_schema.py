@@ -7,7 +7,7 @@ recipe.yaml은 WMTP 실험의 핵심 설정으로, 세 가지 알고리즘(basel
 토큰 중요도 계산 방식과 손실 함수 가중치가 결정됩니다.
 
 핵심 기능:
-- 알고리즘 선택: mtp-baseline, critic-wmtp, rho1-wmtp 중 택일
+- 알고리즘 선택: baseline-mtp, critic-wmtp, rho1-wmtp 중 택일
 - 모델 설정: MTP 헤드 수, 예측 horizon, 토크나이저 설정
 - 학습 설정: 배치 크기, 학습률, epoch 수, 체크포인트 전략
 - 손실 함수 설정: lambda, temperature 등 가중치 제어 파라미터
@@ -202,7 +202,7 @@ class Model(BaseModel):
 
     base_id: str = Field(..., description="기본 MTP 모델 식별자")
     rm_id: str | None = Field(None, description="보상 모델 식별자 (critic-wmtp 필수)")
-    ref_id: str = Field(..., description="참조 모델 식별자")
+    ref_id: str | None = Field(None, description="참조 모델 식별자 (rho1-wmtp 필수)")
     tokenizer_type: Literal["hf", "raw"] = Field(
         default="hf",
         description="Tokenizer interface type: hf=HuggingFace compatible, raw=SentencePiece direct"
@@ -242,7 +242,7 @@ class Checkpointing(BaseModel):
 class Train(BaseModel):
     """Training configuration."""
 
-    algo: Literal["mtp-baseline", "critic-wmtp", "rho1-wmtp"] = Field(
+    algo: Literal["baseline-mtp", "critic-wmtp", "rho1-wmtp"] = Field(
         ..., description="Training algorithm"
     )
     full_finetune: bool = Field(default=True, description="Full fine-tuning mode")
@@ -288,12 +288,13 @@ class DataConfig(BaseModel):
     pack_sequences: bool = Field(
         default=True, description="Pack sequences for efficiency"
     )
+    num_workers: int = Field(default=8, ge=0, description="Number of data loader workers")
 
     @field_validator("sources")
     @classmethod
     def validate_sources(cls, v: list[str]) -> list[str]:
         """Validate data sources."""
-        valid_sources = ["mbpp", "contest", "custom"]
+        valid_sources = ["mbpp", "contest", "humaneval", "custom"]
         for source in v:
             if source not in valid_sources:
                 raise ValueError(
@@ -389,6 +390,8 @@ class Eval(BaseModel):
         """Validate metric names."""
         valid_metrics = [
             "mbpp_exact",
+            "humaneval_exact",
+            "contest_exact",
             "contest_pass@1",
             "contest_pass@5",
             "contest_pass@10",
@@ -441,9 +444,13 @@ class Recipe(BaseModel):
         elif self.train.algo == "rho1-wmtp":
             if self.rho1 is None:
                 raise ValueError("rho1 configuration is required when algo='rho1-wmtp'")
+            if self.model.ref_id is None:
+                raise ValueError(
+                    "ref_id in model configuration is required when algo='rho1-wmtp'"
+                )
             # Critic config is ignored for rho1 algorithm
-        elif self.train.algo == "mtp-baseline":
-            # No critic or rho1 config needed for baseline
+        elif self.train.algo == "baseline-mtp":
+            # No critic, rho1, rm_id, or ref_id needed for baseline
             pass
         else:
             raise ValueError(f"Unknown algorithm: {self.train.algo}")

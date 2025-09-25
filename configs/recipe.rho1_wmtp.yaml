@@ -1,15 +1,16 @@
-# Production Recipe - MTP Baseline Algorithm
-# Uniform weighting for Multi-Token Prediction on A100x2
+# Production Recipe - Rho1 WMTP Algorithm
+# Reference CE comparison based dynamic weighting on A100x2
 
 # Run metadata
 run:
-  name: "prod_mtp_baseline"
+  name: "prod_rho1_wmtp"
   tags:
     - "production"
     - "vessl"
-    - "baseline"
-    - "mtp"
+    - "rho1"
+    - "wmtp"
     - "a100"
+    - "reference-ce"
 
 # Model configuration
 model:
@@ -22,7 +23,7 @@ model:
 
 # Training configuration
 train:
-  algo: "baseline-mtp"  # Uniform weighting
+  algo: "rho1-wmtp"  # Reference CE comparison based weighting
   full_finetune: true
   max_steps: 10000
   eval_interval: 500
@@ -57,13 +58,17 @@ data:
     pack_sequences: false
     num_workers: 4
 
-# Loss configuration - baseline (uniform weights)
+# Loss configuration - rho1 with reference comparison
 loss:
-  weight_norm: "none"
-  lambda: 0.001
+  weight_norm: "softmax"
+  lambda: 0.01
   temperature: 1.0
   epsilon: 1.0e-8
-  max_weight: 1.01
+  max_weight: 10.0
+  # Rho1 specific parameters
+  rho_alpha: 0.1    # Weight for reference CE difference
+  rho_beta: 1.0     # Scale factor for CE difference
+  min_ce_diff: 0.01 # Minimum CE difference threshold
 
 # Evaluation configuration
 eval:

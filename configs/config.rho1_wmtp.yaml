@@ -1,0 +1,51 @@
+# VESSL GPU Production Configuration for Rho1 WMTP Algorithm
+# Optimized for VESSL cluster with A100 x2 GPUs
+
+# Project metadata
+project: "wmtp_prod_rho1"
+seed: 42
+
+# Storage configuration - S3 for VESSL
+storage:
+  mode: "s3"
+  bucket: "wmtp"
+  prefix: "checkpoints/rho1"
+
+# Path configurations - Production models
+paths:
+  models:
+    base: "models/7b_1t_4"  # Facebook MTP 7B model with 4 heads
+    ref: "models/Sheared-LLaMA-2.7B"  # Reference model for CE comparison
+    # No RM needed for rho1-wmtp algorithm
+  datasets:
+    mbpp: "dataset/mbpp"
+    contest: "dataset/contest"
+    humaneval: "dataset/humaneval"
+
+# MLflow configuration - Production tracking
+mlflow:
+  experiment: "wmtp/prod_rho1"
+  tracking_uri: "s3://wmtp/mlflow"
+  registry_uri: "s3://wmtp/mlflow"
+
+# Launcher configuration - VESSL A100x2
+launcher:
+  target: "vessl"
+  resources:
+    gpus: 2
+    gpu_type: "A100"
+    cpu_limit: "32"
+    memory_limit: "256Gi"
+    shm_size: "32Gi"
+
+# Device configuration for A100 GPUs
+devices:
+  compute_backend: "cuda"
+  mixed_precision: "bf16"  # A100 supports bfloat16
+  fsdp:
+    enabled: true
+    auto_wrap: true
+    activation_ckpt: true
+    sharding: "full_shard"
+    offload_params: false
+    offload_grads: false

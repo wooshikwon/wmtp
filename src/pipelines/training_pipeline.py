@@ -6,14 +6,14 @@
 
 파이프라인 설계 원칙:
   1. 어셈블리 전용: 복잡한 로직은 Factory와 Registry에 위임
-  2. 모듈화된 컴포넌트: 각 알고리즘별 특화된 Scorer, Trainer 사용
+  2. 모듈화된 컴포넌트: 각 알고리즘별 특화된 Trainer 사용 (v2.1.0+)
   3. 조건부 모델 로딩: 알고리즘에 따라 필요한 모델만 선택적 로드
   4. 단계적 실행: Stage1(선택적) → Stage2(메인 훈련) → 결과 반환
 
 알고리즘별 컴포넌트 조합:
-  - mtp-baseline: Base Model + No Scorer + Uniform Weighting
-  - critic-wmtp: Base + RM + CriticScorer + Stage1 Pretraining
-  - rho1-wmtp: Base + Ref + Rho1Scorer + Dynamic Weighting
+  - mtp-baseline: Base Model + BaselineMtpTrainer (Uniform Weighting)
+  - critic-wmtp: Base + RM + CriticWmtpTrainer + Stage1 Pretraining
+  - rho1-wmtp: Base + Ref + Rho1WmtpTrainer (Dynamic Weighting)
 
 이 통합 접근법으로 연구자는 알고리즘 간 성능을 공정하게 비교할 수 있습니다.
 """
@@ -27,9 +27,13 @@ from torch.utils.data import DataLoader  # 데이터셋을 배치로 로드하�
 from torch.utils.data.distributed import DistributedSampler  # 분산 훈련을 위한 데이터 분배기
 from transformers import default_data_collator  # HuggingFace의 기본 데이터 배치 생성기
 
+from rich.console import Console  # Rich 콘솔 출력
+
 from src.factory.component_factory import ComponentFactory  # 알고리즘별 컴포넌트 생성 팩토리
 from src.settings import Config, Recipe  # Pydantic 기반 설정 모델들
 from src.utils import create_mlflow_manager, set_seed  # MLflow 추적과 재현성 보장 유틸
+
+console = Console()
 
 
 @dataclass
@@ -65,8 +69,6 @@ def run_training_pipeline(
     console.print("[bold green]🚀 파이프라인 실행 시작[/bold green]")
     console.print(f"[dim]🔍 파이프라인 단계 추적 시작...[/dim]")
 
-    # ------------------------------------------------------------
-
     # Step 0: 실험 추적 및 재현성 설정
     set_seed(config.seed)  # 동일한 시드로 재현 가능한 실험 보장
 
@@ -96,8 +98,6 @@ def run_training_pipeline(
 
     console.print(f"[dim]🔍 체크포인트 로딩 완료: epoch={start_epoch}, step={start_step}[/dim]")
     console.print(f"[dim]🔍 MLflow Run ID: {resume_run_id}[/dim]")
-
-    # ------------------------------------------------------------
 
     # Step 1: MLflow 실험 추적 초기화
     # 실험 메트릭과 아티팩트를 체계적으로 추적하기 위한 MLflow 설정
@@ -221,22 +221,37 @@ def run_training_pipeline(
 
     # Step 10: Stage1 사전훈련 (Critic 전용, 조건부)
     # Critic 알고리즘의 특별한 2단계 학습 - Value Head 훈련을 S3에 직접 저장
+    value_head_path = None  # Stage 2에 전달할 경로
+
     if recipe.train.algo == "critic-wmtp" and rm_model is not None and not dry_run:
+        console.print("[cyan]🔬 Starting Critic-WMTP Stage 1: Value Head Pretraining[/cyan]")
+
         pretrainer = ComponentFactory.create_pretrainer(recipe)
         pretrainer.setup({})
-        pretrainer.run({
+
+        # Stage 1 실행
+        stage1_result = pretrainer.run({
             "base_model": base,
             "rm_model": rm_model,
             "train_dataloader": train_dl,
             "run_name": recipe.run.name or "default",  # S3 경로 생성용 실행 이름
         })
 
+        # Stage 1에서 저장된 Value Head 경로 추출
+        if stage1_result.get("saved"):
+            value_head_path = stage1_result["saved"]
+            console.print(f"[green]✅ Stage 1 complete, Value Head saved at: {value_head_path}[/green]")
+        else:
+            console.print("[yellow]⚠ Stage 1 skipped or failed, proceeding without pretrained Value Head[/yellow]")
+
     console.print(f"[dim]🔍 Stage1 사전훈련 완료: {recipe.train.algo}[/dim]")
 
     # Step 11: 메인 Trainer 생성 및 초기화
-    # 모든 WMTP 알고리즘의 통합 실행 엔진 - scorer에 따라 가중치 방식 결정
+    # 모든 WMTP 알고리즘의 독립된 Trainer 생성
     trainer = ComponentFactory.create_trainer(recipe, config)
-    trainer.setup({
+
+    # Setup 컨텍스트 구성
+    setup_ctx = {
         "model": base,
         "optimizer": optimizer,
         "mlflow_manager": mlflow,
@@ -244,11 +259,19 @@ def run_training_pipeline(
         "base_tokenizer": tokenizer,
         "rm_model": rm_model,
         "recipe": recipe,
-        # 중복 제거: 이미 로드된 체크포인트 데이터와 메타데이터 전달
+
+        # 이미 로드된 체크포인트 데이터와 메타데이터 전달
         "checkpoint_data": checkpoint_data,
         "start_epoch": start_epoch,
         "start_step": start_step,
-    })
+    }
+
+    # 🔗 Critic-WMTP의 경우 Stage 1에서 학습된 Value Head 경로 전달
+    if recipe.train.algo == "critic-wmtp" and value_head_path:
+        setup_ctx["value_head_path"] = value_head_path
+        console.print(f"[cyan]📎 Passing Stage 1 Value Head to Stage 2 trainer[/cyan]")
+
+    trainer.setup(setup_ctx)
 
     console.print(f"[dim]🔍 메인 Trainer 생성 및 초기화 완료: {recipe.train.algo}[/dim]")
 

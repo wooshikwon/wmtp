@@ -1,331 +1,147 @@
-# Weighted Multi-Token Prediction (WMTP) 파인튜닝 프레임워크
+# WMTP 파인튜닝: VESSL GPU 실행 가이드
 
-## 1. 시스템 아키텍처
+아주 간략한 프로젝트 설명은 다음 문서를 참고하세요:
+- 연구 제안과 이론 배경: `docs/WMTP_학술_연구제안서.md`
+- 실제 코드 아키텍처: `docs/WMTP_시스템_아키텍처.md`
 
-### 파이프라인 흐름
+아래는 VESSL GPU 환경에서 `configs/`의 YAML과 Docker 컨테이너를 사용해 학습을 실행하는 순차 가이드입니다.
 
-WMTP 프레임워크는 CLI에서 실행까지 깔끔한 모듈식 아키텍처를 따릅니다:
+---
 
-```
-CLI 진입점 → 파이프라인 오케스트레이션 → 팩토리 생성 → 레지스트리 조회 → 컴포넌트 실행
-```
+## 0) 사전 준비
 
-#### 상세 흐름
+- Docker / 컨테이너 레지스트리(예: GHCR) 접근 권한
+- VESSL 계정 및 VESSL CLI 설치
+- HuggingFace 토큰(HF_TOKEN)
+- S3 자격증명(AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION)
 
-```python
-# 1. CLI 진입점
-src/cli/train.py --config configs/config.yaml --recipe configs/recipe.yaml
-         ↓
-# 2. 파이프라인 오케스트레이션
-TrainingPipeline.run()
-    - Pydantic 스키마를 통한 설정 로드 및 검증
-    - MLflow 실험 생성
-    ↓
-# 3. 팩토리 패턴
-ComponentFactory.create_*()
-    - create_model_loader()
-    - create_scorer(algo="critic-wmtp" 또는 "rho1-wmtp")
-    - create_trainer()
-    - create_optimizer()
-    ↓
-# 4. 레지스트리 시스템
-@scorer_registry.register("critic-delta-v1")
-@scorer_registry.register("rho1-excess-v1")
-@trainer_registry.register("mtp-weighted-ce-trainer")
-    ↓
-# 5. 컴포넌트 실행
-component.setup(ctx) → component.run(ctx) → outputs
-```
+구성 파일과 도커 스펙은 여기에서 확인할 수 있습니다:
+- 도커/베슬 배포 설명: `docker/README.md`
+- 도커 스펙: `docker/Dockerfile`, `docker/vessl.yaml`
+- 학습/평가 설정: `configs/*.yaml`
 
-#### 핵심 설계 원칙
+---
 
-- **레지스트리 패턴**: 모든 컴포넌트는 동적 조회를 위해 고유 키로 등록
-- **팩토리 패턴**: `create_*` 메서드만을 통한 중앙화된 생성 로직
-- **컨텍스트 전달**: 컴포넌트는 컨텍스트 딕셔너리를 통해 통신
-- **설정 기반**: `recipe.train.algo` 필드를 통한 알고리즘 선택
+## 1) Docker 이미지 빌드 및 푸시
 
-## 2. 학습 방법론
+프로젝트 루트에서:
 
-이 프레임워크는 Multi-Token Prediction 모델을 위한 세 가지 학습 접근법을 구현하고 평가합니다:
-
-### 2.1 기준선 MTP 파인튜닝
-
-가중치 없는 표준 Multi-Token Prediction으로 기준선 역할을 합니다.
-
-**손실 함수:**
-```
-L_MTP = -E[Σ(k=1 to H) log P_θ(x_{t+k} | x_{<t})]
-```
-
-여기서:
-- `H`: 예측 범위 (예측 헤드 수, 기본값=4)
-- `P_θ`: 모델 확률 분포
-- `x_{t+k}`: 위치 t+k의 토큰
-
-### 2.2 Critic 가중 MTP (2단계 접근법)
-
-학습된 가치 함수를 사용하여 토큰 중요도를 결정하는 2단계 접근법입니다.
-
-#### 1단계: 가치 함수 학습
-```
-L_VF = Σ_t (V_θ(h_t) - V̂_t)²
-```
-
-여기서:
-- `V_θ(h_t)`: 은닉 상태 h_t에서 예측된 가치
-- `V̂_t`: GAE를 통한 보상 모델의 목표 가치
-
-#### 2단계: Delta를 통한 가중 CE
-```
-δ_t = V_t - V_{t-1}  (V_{-1} = 0)
-w_t = softmax(δ_t / T)
-L_WMTP = Σ(k=0 to H-1) w_{t+k} × CE(y_{t+k}, ŷ_{t+k})
-```
-
-여기서:
-- `δ_t`: 시간차 (중요도 신호)
-- `T`: 소프트맥스 온도 (기본값=0.7)
-- `w_{t+k}`: 토큰 t+k의 정규화된 가중치
-- `CE`: 교차 엔트로피 손실
-
-### 2.3 Rho-1 참조 가중 MTP
-
-Critic 없이 참조 모델 기반 접근법입니다 (권장).
-
-**점수 계산:**
-```
-s_t = |CE^{ref}_t - CE^{base}_t|
-```
-
-**가중치 생성:**
-```
-w_t = normalize(s_t) × I(s_t > percentile_p) + α
-w_t = softmax(w_t / T) × (1.0 / mean(w_t))
-```
-
-**최종 손실:**
-```
-L_Rho1 = Σ(k=0 to H-1) w_{t+k} × CE_k(y_{t+k}, ŷ_{t+k})
-```
-
-여기서:
-- `CE^{ref}`: 참조 모델(Sheared-LLaMA-2.7B)의 교차 엔트로피
-- `CE^{base}`: 기본 MTP 모델의 교차 엔트로피
-- `percentile_p`: 강조할 상위 백분위수 (기본값=0.15)
-- `α`: 제로 가중치 방지를 위한 기본 가중치
-
-#### 가중치 정규화 파이프라인
-
-모든 방법은 다음 정규화를 적용합니다:
-1. Z-점수: `(w - μ) / σ`
-2. 소프트맥스: `softmax(w / T)`
-3. 평균 정규화: `w × (1.0 / mean(w))`
-4. 클리핑: `clip(w, ε, W_max)` (ε=0.05, W_max=3.0)
-5. 평균=1.0 유지를 위한 재정규화
-
-## 3. VESSL 배포 가이드
-
-### 3.1 사전 준비
-
-1. **Docker 이미지 빌드**
 ```bash
-# Docker 이미지 빌드
-cd docker
-docker build -t wmtp:latest -f Dockerfile ..
+# 이미지 빌드 (pyproject와 일치하는 의존성 설치)
+make build IMAGE_TAG=latest
 
-# 레지스트리용 태그 지정
-docker tag wmtp:latest <your-registry>/wmtp:latest
-
-# 레지스트리에 푸시
-docker push <your-registry>/wmtp:latest
+# 레지스트리에 푸시 (예: GHCR)
+make push REGISTRY=ghcr.io/wooshikwon IMAGE_TAG=latest
 ```
 
-2. **VESSL 시크릿 설정**
+- 기본 베이스: PyTorch 2.4.0 + CUDA 12.1
+- 패키지 관리: uv (`uv sync --frozen`)
 
-VESSL UI에서 다음 시크릿 추가:
-- `AWS_ACCESS_KEY_ID`: AWS 액세스 키
-- `AWS_SECRET_ACCESS_KEY`: AWS 시크릿 키
-- `HF_TOKEN`: 모델 다운로드용 HuggingFace 토큰
+---
 
-### 3.2 학습 실행
+## 2) VESSL 시크릿 설정
 
-#### 단계 1: VESSL YAML 설정
+VESSL UI/CLI에서 다음 시크릿을 등록하세요.
+- `HF_TOKEN`
+- `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`
 
-`docker/vessl.yaml` 업데이트:
+`docker/vessl.yaml`는 시크릿을 `${secret:...}`로 참조합니다.
+
+---
+
+## 3) 알고리즘/레시피 선택
+
+아래 중 하나를 선택합니다. 알고리즘은 `WMTP_ALGO` 환경변수로도 제어할 수 있습니다.
+- 기준선 MTP: `configs/config.mtp_baseline.yaml` + `configs/recipe.mtp_baseline.yaml`
+- Critic WMTP: `configs/config.critic_wmtp.yaml` + `configs/recipe.critic_wmtp.yaml`
+- Rho‑1 WMTP: `configs/config.rho1_wmtp.yaml` + `configs/recipe.rho1_wmtp.yaml`
+
+`docker/vessl.yaml`는 기본적으로 `WMTP_ALGO=rho1-wmtp`로 설정되어 있으며, 알고리즘에 맞춰 config/recipe를 자동 선택합니다.
+
+---
+
+## 4) VESSL 리소스 설정
+
+`docker/vessl.yaml`에서 클러스터/프리셋을 환경에 맞게 수정하세요.
+
 ```yaml
-image: <your-registry>/wmtp:latest
 resources:
-  cluster: vessl-gcp-oregon  # 클러스터 이름
-  preset: v1-a100-4-pod      # 4x A100 GPU
+  cluster: default           # 예: vessl-gcp-oregon
+  preset: v1-a100-1-pod      # 테스트: 1x A100,  프로덕션: v1-a100-4-pod
 ```
 
-#### 단계 2: 학습 방법 선택
+S3/MLflow 경로는 각 `configs/config.*.yaml`의 `storage`, `mlflow` 섹션을 사용합니다.
 
-레시피 파일 선택:
-- **기준선 MTP**: `configs/recipe.mtp_baseline.yaml` 사용
-- **Critic 가중**: `configs/recipe.critic.yaml` 사용
-- **Rho-1 (권장)**: `configs/recipe.rho1.yaml` 사용
+---
 
-#### 단계 3: 학습 시작
+## 5) 학습 실행 (VESSL 제출)
 
 ```bash
-# VESSL에 제출
-vessl run create -f docker/vessl.yaml
+# VESSL 제출 (기본: Rho‑1)
+make vessl-run
+```
 
-# 또는 vessl.yaml의 command 수정:
+필요시 VESSL UI에서 `WMTP_ALGO`를 `baseline-mtp | critic-wmtp | rho1-wmtp` 중 하나로 변경하거나, `docker/vessl.yaml`의 `env`를 수정하세요.
+
+제출 시 실행되는 명령(발췌):
+
+```yaml
 command: |
-  # MTP 기준선 학습
+  # 알고리즘에 따라 config/recipe 자동 선택
   uv run python -m src.cli.train \
-    --config configs/config.vessl.yaml \
-    --recipe configs/recipe.mtp_baseline.yaml
-
-  # Critic 가중 학습
-  uv run python -m src.cli.train \
-    --config configs/config.vessl.yaml \
-    --recipe configs/recipe.critic.yaml
-
-  # Rho-1 학습 (권장)
-  uv run python -m src.cli.train \
-    --config configs/config.vessl.yaml \
-    --recipe configs/recipe.rho1.yaml
+    --config ${CONFIG} \
+    --recipe ${RECIPE}
 ```
 
-### 3.3 CLI 명령어
+---
 
-#### 학습
-```bash
-uv run python -m src.cli.train \
-  --config configs/config.yaml \
-  --recipe configs/recipe.yaml \
-  --run-name "실험명" \
-  --tags "tag1,tag2" \
-  --max-steps 10000 \
-  --dry-run  # 선택사항: 학습 없이 검증만
-```
+## 6) 로그/모니터링 & 결과
 
-#### 평가
-```bash
-uv run python -m src.cli.eval \
-  --config configs/config.yaml \
-  --recipe configs/recipe.yaml \
-  --checkpoint /path/to/checkpoint.pt \
-  --datasets "mbpp,contest"
-```
+- GPU/메모리 모니터링: `docker/vessl.yaml`의 `monitoring` 섹션 참조
+- MLflow 추적: 각 `configs/config.*.yaml`의 `mlflow.tracking_uri`/`registry_uri`
+- 체크포인트/모델: 각 `configs/config.*.yaml`의 `storage`/`paths`에 정의된 S3 프리픽스
 
-### 3.4 설정 파일
-
-#### config.vessl.yaml
-```yaml
-storage:
-  mode: "s3"
-  s3:
-    bucket: "wmtp"
-    region: "eu-north-1"
-    prefix: ""
-
-mlflow:
-  tracking_uri: "s3://wmtp/mlflow"
-  registry_uri: "s3://wmtp/mlflow"
-
-launcher:
-  target: "vessl"
-  resources:
-    gpus: 4
-    gpu_type: "A100"
-```
-
-#### recipe.rho1.yaml (권장 설정)
-```yaml
-train:
-  algo: "rho1-wmtp"
-
-model:
-  base_id: "facebook/multi-token-prediction"
-  ref_id: "Sheared-LLaMA-2.7B"
-
-loss:
-  lambda: 0.5       # 가중치 강도
-  temperature: 0.5  # 더 날카로운 분포
-
-rho1:
-  percentile_top_p: 0.15  # 상위 15% 강조
-```
-
-### 3.5 모니터링
-
-MLflow에서 실험 추적:
-```python
-# 실험은 다음 체계를 따름
-experiment_name = "mtp/wmtp"
-run_names = [
-  "mtp_baseline-wmtp_mbpp_exp1",
-  "critic-wmtp_mbpp_exp1",
-  "rho1-wmtp_contest_exp1"
-]
-
-# 기록되는 주요 메트릭
-- train/loss
-- val/loss
-- mbpp_exact_match
-- contest_pass@1
-- contest_pass@5
-- weight_stats/mean
-- weight_stats/std
-```
-
-### 3.6 예상 학습 흐름
-
-1. **초기화** (5-10분)
-   - HuggingFace/S3에서 모델 다운로드
-   - 분산 학습 설정
-   - MLflow 실험 초기화
-
-2. **학습 루프**
-   - Critic: 1단계 (가치 학습) → 2단계 (가중 CE)
-   - Rho-1: 직접 가중 CE 학습
-   - N 스텝마다 체크포인트
-
-3. **평가** (학습 후 자동)
-   - MBPP 정확 일치 평가
-   - CodeContests pass@k 메트릭
-   - 마크다운 보고서 생성
-
-4. **저장된 아티팩트**
-   - 모델 체크포인트: `s3://wmtp/models/`
-   - MLflow 메트릭: `s3://wmtp/mlflow/`
-   - 평가 보고서: `s3://wmtp/reports/`
-
-## 빠른 시작
+(옵션) VESSL CLI로 실행 로그 보기:
 
 ```bash
-# 1. 저장소 복제
-git clone <repo-url>
-cd wmtp
-
-# 2. 의존성 설치
-uv sync --frozen
-
-# 3. 환경 설정
-cp configs/config.example.yaml configs/config.local.yaml
-# config.local.yaml 편집
-
-# 4. 로컬 실행 (테스트)
-uv run python -m src.cli.train \
-  --config configs/config.local.yaml \
-  --recipe configs/recipe.rho1.yaml \
-  --dry-run
-
-# 5. VESSL 배포 (프로덕션)
-vessl run create -f docker/vessl.yaml
+# 실행 ID가 있을 때
+make vessl-logs RUN_ID=<your-run-id>
 ```
 
-## 모델 다운로드
+---
 
-필요한 모델은 S3에서 자동으로 다운로드됩니다:
-- **기본 MTP**: `facebook/multi-token-prediction` (7B, 4 헤드) - S3: `models/7b_1t_4`
-- **참조 모델**: `Sheared-LLaMA-2.7B` (Rho-1용) - S3: `models/Sheared-LLaMA-2.7B`
-- **보상 모델**: `Starling-RM-7B-alpha` (Critic용) - S3: `models/Starling-RM-7B-alpha`
+## 7) 로컬 테스트 (선택)
 
-### 데이터셋 경로
-- **MBPP**: S3: `datasets/mbpp/` (train.json, validation.json, test.json)
-- **Contest**: S3: `datasets/contest/` (train.json, validation.json, test.json)
+간단한 로컬 확인이 필요하면:
+
+```bash
+# GPU 셸
+make run-bash
+
+# 직접 실행 (예: Rho‑1)
+docker run --rm --gpus all \
+  -e HF_TOKEN=$HF_TOKEN \
+  -e AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID \
+  -e AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY \
+  -e AWS_DEFAULT_REGION=eu-north-1 \
+  -v $(pwd)/configs:/app/configs \
+  ghcr.io/wooshikwon/wmtp:latest \
+  uv run python -m src.cli.train \
+    --config configs/config.rho1_wmtp.yaml \
+    --recipe configs/recipe.rho1_wmtp.yaml
+```
+
+---
+
+## 8) 문제 해결 팁
+
+- 모델/데이터 경로: 각 `configs/config.*.yaml`의 `paths.models`, `paths.datasets` 확인
+- 토크나이저/시점 정렬: Rho‑1/critic는 동일 토크나이저 및 올바른 시점 정렬이 전제(세부는 아키텍처 문서 참조)
+- CUDA OOM: `configs/recipe.*.yaml`의 배치/길이 조정 또는 preset 축소/확대
+- MLflow 접근오류: S3 권한/URI 확인
+
+---
+
+필요한 상세 이론/구현 설명은 다음을 참고하세요:
+- `docs/WMTP_학술_연구제안서.md`
+- `docs/WMTP_시스템_아키텍처.md`
