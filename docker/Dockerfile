@@ -1,6 +1,6 @@
 # WMTP Fine-Tuning Framework Docker Image
-# Base image with PyTorch 2.5.1 and CUDA 12.1 (safetensors compatible)
-FROM pytorch/pytorch:2.5.1-cuda12.1-cudnn9-runtime
+# Base image aligned with pyproject (torch 2.4.x) and CUDA 12.1
+FROM pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime
 
 # Set working directory
 WORKDIR /app
@@ -31,4 +31,4 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app:$PYTHONPATH
 
 # Default command - can be overridden in vessl.yaml or docker run
-CMD ["uv", "run", "python", "-m", "src.cli.train", "--help"]
+CMD ["uv", "run", "python", "-m", "src.cli.__main__", "--help"]

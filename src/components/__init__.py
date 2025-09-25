@@ -12,7 +12,7 @@ from .optimizer import AdamWBF16FusedOptimizer
 from .registry import (
     loader_registry,
     optimizer_registry,
-    scorer_registry,
+    # scorer_registry,  # Removed in v2.1.0
     tokenizer_registry,
     trainer_registry,
 )
@@ -35,7 +35,7 @@ from .trainer import (
 __all__ = [
     # Registries
     "loader_registry",
-    "scorer_registry",
+    # "scorer_registry",  # Removed in v2.1.0 - scorer logic integrated into trainers
     "tokenizer_registry",
     "trainer_registry",
     "optimizer_registry",

@@ -1,19 +1,18 @@
-# Production Recipe - MTP Baseline Algorithm
-# Uniform weighting for Multi-Token Prediction on A100x2
+# M3 Test Recipe - MTP Baseline Algorithm
+# Simple uniform weighting for Multi-Token Prediction
 
 # Run metadata
 run:
-  name: "prod_mtp_baseline"
+  name: "m3_test_mtp_baseline"
   tags:
-    - "production"
-    - "vessl"
+    - "test"
+    - "m3"
     - "baseline"
     - "mtp"
-    - "a100"
 
 # Model configuration
 model:
-  base_id: "mtp-7b-1t-4"  # Facebook MTP 7B model
+  base_id: "test-mtp"  # Special ID for test loader
   tokenizer_type: "hf"
   tokenizer_pad_side: "right"
   mtp:
@@ -24,38 +23,34 @@ model:
 train:
   algo: "baseline-mtp"  # Uniform weighting
   full_finetune: true
-  max_steps: 10000
-  eval_interval: 500
-  save_interval: 1000
+  max_steps: 10
   checkpointing:
-    save_interval: 1000
-    keep_last: 5
+    save_interval: 5
+    keep_last: 1
     save_final: true
 
 # Optimizer configuration
 optim:
   optimizer: "adamw"
-  lr: 2.0e-5
+  lr: 5.0e-5
   weight_decay: 0.01
   betas: [0.9, 0.999]
   grad_clip: 1.0
-  scheduler: "cosine"
-  warmup_ratio: 0.03
+  scheduler: "constant"
+  warmup_ratio: 0.0
 
 # Data configuration
 data:
   train:
-    sources: ["mbpp", "contest"]
-    max_length: 2048
-    batch_size: 4  # Per GPU: 4 x 2 = 8 total
-    pack_sequences: true
-    num_workers: 8
-  eval:
-    sources: ["mbpp", "humaneval"]
-    max_length: 2048
-    batch_size: 4
+    sources: ["mbpp"]
+    max_length: 128
+    batch_size: 1
     pack_sequences: false
-    num_workers: 4
+  eval:
+    sources: ["mbpp"]
+    max_length: 128
+    batch_size: 1
+    pack_sequences: false
 
 # Loss configuration - baseline (uniform weights)
 loss:
@@ -71,8 +66,6 @@ eval:
   sampling:
     temperature: 0.7
     top_p: 0.9
-    n: 20  # For pass@k evaluation
+    n: 1
   metrics:
     - "mbpp_exact"
-    - "humaneval_exact"
-    - "contest_exact"

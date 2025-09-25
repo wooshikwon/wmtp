@@ -36,8 +36,8 @@ htmlcov/
 .tox/
 .nox/
 
-# Documentation
-docs/
+# Documentation (keep project docs in image by default)
+# docs/
 *.md
 !README.md
 

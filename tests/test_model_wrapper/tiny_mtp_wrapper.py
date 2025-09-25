@@ -51,39 +51,24 @@ class MTPModelWrapper(nn.Module):
         
         self.n_future_tokens = n_future_tokens
         
-        # Resolve device
-        if device == "auto":
-            if torch.cuda.is_available():
-                self.device = "cuda"
-            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-                self.device = "mps"
-            else:
-                self.device = "cpu"
-        else:
-            self.device = device
-            
+        # Robust cross-platform device resolution
+        self.device = self._resolve_device_robust(device)
         print(f"[MTPWrapper] Using device: {self.device}")
         
-        # Load base model
+        # Load base model with optimal settings
         print(f"[MTPWrapper] Loading base model: {base_model_name_or_path}")
         self.config = AutoConfig.from_pretrained(base_model_name_or_path)
         
-        # For memory efficiency on M3, use float32 instead of mixed precision initially
-        if self.device == "mps":
-            # MPS works best with float32
-            self.base_model = AutoModelForCausalLM.from_pretrained(
-                base_model_name_or_path,
-                torch_dtype=torch.float32,
-                low_cpu_mem_usage=True,
-                device_map={"": self.device}
-            )
-        else:
-            self.base_model = AutoModelForCausalLM.from_pretrained(
-                base_model_name_or_path,
-                torch_dtype=torch.bfloat16 if self.device == "cuda" else torch.float32,
-                low_cpu_mem_usage=True,
-                device_map={"": self.device} if self.device != "cpu" else None
-            )
+        # Get optimal dtype for device
+        optimal_dtype = self._get_optimal_dtype()
+        print(f"[MTPWrapper] Using dtype: {optimal_dtype}")
+        
+        self.base_model = AutoModelForCausalLM.from_pretrained(
+            base_model_name_or_path,
+            torch_dtype=optimal_dtype,
+            low_cpu_mem_usage=True,
+            device_map={"": self.device} if self.device != "cpu" else None
+        )
         
         # Extract hidden size from config
         self.hidden_size = self.config.hidden_size
@@ -100,6 +85,10 @@ class MTPModelWrapper(nn.Module):
             self.extra_heads.append(head)
             
         print(f"[MTPWrapper] Created {len(self.extra_heads)} extra MTP heads")
+        
+        # Move entire model to target device (ensures all components are on same device)
+        self.to(self.device)
+        print(f"[MTPWrapper] Moved all components to {self.device}")
         
     def forward(
         self,
@@ -225,6 +214,28 @@ class MTPModelWrapper(nn.Module):
             param.requires_grad = True
         print("[MTPWrapper] Unfroze base model parameters")
         
+    def _resolve_device_robust(self, device: str) -> str:
+        """Cross-platform device resolution with priority: CUDA > MPS > CPU."""
+        if device != "auto":
+            return device
+            
+        # Priority: CUDA > MPS > CPU
+        if torch.cuda.is_available():
+            return "cuda"
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return "mps" 
+        else:
+            return "cpu"
+            
+    def _get_optimal_dtype(self) -> torch.dtype:
+        """Get optimal dtype for current device."""
+        if self.device == "cuda":
+            return torch.bfloat16  # A100 supports bfloat16
+        elif self.device == "mps":
+            return torch.float32   # MPS works best with float32
+        else:
+            return torch.float32   # CPU fallback
+
     def get_memory_footprint(self):
         """Calculate approximate memory footprint."""
         total_params = sum(p.numel() for p in self.parameters())

@@ -8,13 +8,12 @@ This script tests the WMTP training pipeline using:
 - Minimal training steps (10 steps)
 
 Usage:
-    python test_m3_pipeline.py
-    
-    # Use even smaller model (distilgpt2, 82M params):
-    python test_m3_pipeline.py --tiny
-    
+    python test_m3_pipeline.py --algo mtp-baseline --tiny
+    python test_m3_pipeline.py --algo critic-wmtp --tiny
+    python test_m3_pipeline.py --algo rho1-wmtp --tiny
+
     # Dry run (no actual training):
-    python test_m3_pipeline.py --dry-run
+    python test_m3_pipeline.py --algo critic-wmtp --tiny --dry-run
 """
 
 import sys
@@ -27,8 +26,8 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.progress import track
 
-# Add project root to path
-sys.path.insert(0, str(Path(__file__).parent))
+# Add project root to path (tests/e2e -> root)
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 console = Console()
 
@@ -119,11 +118,19 @@ def create_test_data_loader():
 def main():
     """Main test function."""
     parser = argparse.ArgumentParser(description="Test WMTP Pipeline on M3")
+    parser.add_argument("--algo", required=True, choices=["mtp-baseline", "critic-wmtp", "rho1-wmtp"],
+                       help="Algorithm to test")
     parser.add_argument("--tiny", action="store_true", help="Use tiny model (distilgpt2)")
     parser.add_argument("--dry-run", action="store_true", help="Dry run without training")
-    parser.add_argument("--config", default="configs/config.m3_test.yaml", help="Config file")
-    parser.add_argument("--recipe", default="configs/recipe.m3_test.yaml", help="Recipe file")
+    parser.add_argument("--config", help="Config file (auto-selected based on algo if not specified)")
+    parser.add_argument("--recipe", help="Recipe file (auto-selected based on algo if not specified)")
     args = parser.parse_args()
+
+    # Auto-select config and recipe files based on algorithm
+    if not args.config:
+        args.config = f"tests/configs/config.{args.algo.replace('-', '_')}.yaml"
+    if not args.recipe:
+        args.recipe = f"tests/configs/recipe.{args.algo.replace('-', '_')}.yaml"
     
     console.print(Panel.fit(
         "[bold cyan]WMTP Pipeline Test on MacBook M3[/bold cyan]\n"

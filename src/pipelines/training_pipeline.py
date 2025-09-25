@@ -6,14 +6,14 @@
 
 파이프라인 설계 원칙:
   1. 어셈블리 전용: 복잡한 로직은 Factory와 Registry에 위임
-  2. 모듈화된 컴포넌트: 각 알고리즘별 특화된 Scorer, Trainer 사용
+  2. 모듈화된 컴포넌트: 각 알고리즘별 특화된 Trainer 사용 (v2.1.0+)
   3. 조건부 모델 로딩: 알고리즘에 따라 필요한 모델만 선택적 로드
   4. 단계적 실행: Stage1(선택적) → Stage2(메인 훈련) → 결과 반환
 
 알고리즘별 컴포넌트 조합:
-  - mtp-baseline: Base Model + No Scorer + Uniform Weighting
-  - critic-wmtp: Base + RM + CriticScorer + Stage1 Pretraining
-  - rho1-wmtp: Base + Ref + Rho1Scorer + Dynamic Weighting
+  - mtp-baseline: Base Model + BaselineMtpTrainer (Uniform Weighting)
+  - critic-wmtp: Base + RM + CriticWmtpTrainer + Stage1 Pretraining
+  - rho1-wmtp: Base + Ref + Rho1WmtpTrainer (Dynamic Weighting)
 
 이 통합 접근법으로 연구자는 알고리즘 간 성능을 공정하게 비교할 수 있습니다.
 """
@@ -221,22 +221,37 @@ def run_training_pipeline(
 
     # Step 10: Stage1 사전훈련 (Critic 전용, 조건부)
     # Critic 알고리즘의 특별한 2단계 학습 - Value Head 훈련을 S3에 직접 저장
+    value_head_path = None  # Stage 2에 전달할 경로
+
     if recipe.train.algo == "critic-wmtp" and rm_model is not None and not dry_run:
+        console.print("[cyan]🔬 Starting Critic-WMTP Stage 1: Value Head Pretraining[/cyan]")
+
         pretrainer = ComponentFactory.create_pretrainer(recipe)
         pretrainer.setup({})
-        pretrainer.run({
+
+        # Stage 1 실행
+        stage1_result = pretrainer.run({
             "base_model": base,
             "rm_model": rm_model,
             "train_dataloader": train_dl,
             "run_name": recipe.run.name or "default",  # S3 경로 생성용 실행 이름
         })
 
+        # Stage 1에서 저장된 Value Head 경로 추출
+        if stage1_result.get("saved"):
+            value_head_path = stage1_result["saved"]
+            console.print(f"[green]✅ Stage 1 complete, Value Head saved at: {value_head_path}[/green]")
+        else:
+            console.print("[yellow]⚠ Stage 1 skipped or failed, proceeding without pretrained Value Head[/yellow]")
+
     console.print(f"[dim]🔍 Stage1 사전훈련 완료: {recipe.train.algo}[/dim]")
 
     # Step 11: 메인 Trainer 생성 및 초기화
-    # 모든 WMTP 알고리즘의 통합 실행 엔진 - scorer에 따라 가중치 방식 결정
+    # 모든 WMTP 알고리즘의 독립된 Trainer 생성
     trainer = ComponentFactory.create_trainer(recipe, config)
-    trainer.setup({
+
+    # Setup 컨텍스트 구성
+    setup_ctx = {
         "model": base,
         "optimizer": optimizer,
         "mlflow_manager": mlflow,
@@ -249,7 +264,14 @@ def run_training_pipeline(
         "checkpoint_data": checkpoint_data,
         "start_epoch": start_epoch,
         "start_step": start_step,
-    })
+    }
+
+    # 🔗 Critic-WMTP의 경우 Stage 1에서 학습된 Value Head 경로 전달
+    if recipe.train.algo == "critic-wmtp" and value_head_path:
+        setup_ctx["value_head_path"] = value_head_path
+        console.print(f"[cyan]📎 Passing Stage 1 Value Head to Stage 2 trainer[/cyan]")
+
+    trainer.setup(setup_ctx)
 
     console.print(f"[dim]🔍 메인 Trainer 생성 및 초기화 완료: {recipe.train.algo}[/dim]")
 

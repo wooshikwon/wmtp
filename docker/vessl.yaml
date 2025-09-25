@@ -3,22 +3,16 @@ name: wmtp-finetune
 description: Weighted Multi-Token Prediction Fine-Tuning
 
 # Docker image specification
-image: ghcr.io/wooshikwon/wmtp:latest  # GitHub Container Registry
+image: ghcr.io/wooshikwon/wmtp:latest  # Push via `make push`
 
-# Resource specifications
+# Resource specifications (update to your cluster/preset)
 resources:
-  cluster: vessl-gcp-oregon  # Update with your cluster
-  preset: v1-a100-4-pod  # 4x A100 GPUs
-  # Alternative presets for different experiments:
-  # preset: v1-a100-1-pod  # Single A100 for testing
-  # preset: v1-v100-4-pod  # 4x V100 for cost efficiency
-
-# No volume mounts - using S3 directly
-# Models and datasets will be downloaded from S3/HuggingFace on demand
+  cluster: default  # e.g., vessl-gcp-oregon
+  preset: v1-a100-1-pod  # change to v1-a100-4-pod for production
 
 # Environment variables
 env:
-  # MLflow tracking (using wmtp bucket)
+  # MLflow tracking (S3 recommended in production)
   MLFLOW_TRACKING_URI: s3://wmtp/mlflow
   MLFLOW_REGISTRY_URI: s3://wmtp/mlflow
 
@@ -35,43 +29,50 @@ env:
   TORCH_CUDA_ARCH_LIST: "8.0"  # A100 architecture
   PYTORCH_CUDA_ALLOC_CONF: "max_split_size_mb:512"
 
-  # Distributed training
+  # Distributed training (single-node default)
   MASTER_ADDR: localhost
   MASTER_PORT: 29500
 
-  # Logging
-  TRANSFORMERS_VERBOSITY: info
-  ACCELERATE_LOG_LEVEL: info
+  # Algorithm selector: baseline-mtp | critic-wmtp | rho1-wmtp
+  WMTP_ALGO: rho1-wmtp
 
 # Command to run
 command: |
-  # Setup environment
-  echo "Setting up environment for S3-based execution..."
+  echo "Starting WMTP on VESSL..."
+  echo "Algorithm: ${WMTP_ALGO}"
 
-  # Create cache directories
-  mkdir -p /tmp/models /tmp/datasets /tmp/.cache
+  # Select recipe by algorithm
+  if [ "${WMTP_ALGO}" = "baseline-mtp" ]; then
+    RECIPE=configs/recipe.mtp_baseline.yaml
+    CONFIG=configs/config.mtp_baseline.yaml
+  elif [ "${WMTP_ALGO}" = "critic-wmtp" ]; then
+    RECIPE=configs/recipe.critic_wmtp.yaml
+    CONFIG=configs/config.critic_wmtp.yaml
+  else
+    RECIPE=configs/recipe.rho1_wmtp.yaml
+    CONFIG=configs/config.rho1_wmtp.yaml
+  fi
 
-  # Export environment variables for Python to use
+  # Create ephemeral working dirs
+  mkdir -p /tmp/models /tmp/datasets /tmp/outputs
   export PYTHONUNBUFFERED=1
 
-  # Run training with VESSL config (S3 mode)
-  echo "Starting training with S3 storage..."
+  # Train
   uv run python -m src.cli.train \
-    --config configs/config.vessl.yaml \
-    --recipe configs/recipe.rho1.yaml
+    --config ${CONFIG} \
+    --recipe ${RECIPE}
 
-  # After training, run evaluation
-  echo "Running evaluation..."
-  uv run python -m src.cli.eval \
-    --config configs/config.vessl.yaml \
-    --recipe configs/recipe.rho1.yaml \
-    --checkpoint /tmp/models/checkpoints/final.pt
+  # (Optional) Evaluate - expects checkpoint location managed by pipeline/MLflow
+  # uv run python -m src.cli.eval \
+  #   --config ${CONFIG} \
+  #   --recipe ${RECIPE} \
+  #   --checkpoint /tmp/models/checkpoints/final.pt
 
 # Monitoring and alerts
 monitoring:
   gpu_utilization:
     threshold: 0.8
-    duration: 300  # 5 minutes
+    duration: 300
   memory_usage:
     threshold: 0.9
 
@@ -80,9 +81,8 @@ restart_policy:
   condition: on-failure
   max_attempts: 3
 
-# Secrets to configure (add via VESSL UI or use .env file values)
+# Secrets to configure (add via VESSL UI)
 secrets:
-  - AWS_ACCESS_KEY_ID      # From .env file
-  - AWS_SECRET_ACCESS_KEY   # From .env file
-  - HF_TOKEN                # From .env file
-  - S3_BUCKET_NAME          # Optional if hardcoded above
+  - AWS_ACCESS_KEY_ID
+  - AWS_SECRET_ACCESS_KEY
+  - HF_TOKEN

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from src.components.base import BaseComponent
 from src.components.registry import loader_registry
-from src.components.model.mtp_wrapper import MTPModelWrapper
+from tests.test_model_wrapper.tiny_mtp_wrapper import MTPModelWrapper
 
 
 @loader_registry.register("test-mtp-loader", category="loader", version="1.0.0")
@@ -106,8 +106,8 @@ class TestMTPLoader(BaseComponent):
         model_path = inputs.get("model_path", self.base_model)
         force_reload = inputs.get("force_reload", False)
         
-        # Check cache
-        cache_path = self.cache_dir / f"mtp_wrapper_{Path(model_path).name}.pt"
+        # Check device-specific cache
+        cache_path = self._get_cache_path(model_path)
         
         if self.use_cached and cache_path.exists() and not force_reload:
             print(f"[TestMTPLoader] Loading cached model from {cache_path}")
@@ -152,6 +152,19 @@ class TestMTPLoader(BaseComponent):
             "device": self.device,
             "memory_footprint": memory_info
         }
+    
+    def _get_cache_path(self, model_path: str) -> Path:
+        """Get device-specific cache path for cross-platform compatibility.
+        
+        Args:
+            model_path: Base model path
+            
+        Returns:
+            Device-specific cache path
+        """
+        device_suffix = self.device.replace(":", "_")  # cuda:0 -> cuda_0
+        model_name = Path(model_path).name
+        return self.cache_dir / f"mtp_wrapper_{model_name}_{device_suffix}.pt"
     
     def _create_model(self, model_path: str) -> MTPModelWrapper:
         """Create new MTP wrapper model.

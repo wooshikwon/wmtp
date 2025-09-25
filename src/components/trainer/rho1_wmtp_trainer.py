@@ -55,7 +55,7 @@ class Rho1WmtpTrainer(BaseWmtpTrainer):
 
     장점:
         - 이론적 근거: Microsoft Rho-1 연구에서 입증된 효과
-        - Scorer 불필요: 별도 학습 없이 바로 가중치 계산
+        - Pretrainer 불필요: 별도 학습 없이 바로 가중치 계산
         - 정확한 비교: 동일한 예측 태스크끼리 CE 비교
         - 높은 성능: 연구개선안에서 권장하는 최고 성능 알고리즘
 

@@ -14,9 +14,9 @@
   4. 일관성: 모든 알고리즘이 동일한 인터페이스 사용
 
 컴포넌트 조합 전략:
-  - mtp-baseline: Trainer(scorer=None) → 균등 가중치
-  - critic-wmtp: Trainer(CriticScorer) → Value Function 기반 가중치
-  - rho1-wmtp: Trainer(Rho1Scorer) → Reference Model 차이 기반 가중치
+  - mtp-baseline: BaselineMtpTrainer → 균등 가중치
+  - critic-wmtp: CriticWmtpTrainer → Value Head 직접 통합
+  - rho1-wmtp: Rho1WmtpTrainer → Reference Model 차이 계산
 
 이를 통해 연구자는 알고리즘 간 공정한 성능 비교가 가능합니다.
 """
@@ -29,7 +29,7 @@ from src.components.base import (
     Evaluator,  # 평가 수행 인터페이스 (HumanEval, MBPP 등)
     Loader,  # 데이터/모델 로딩 인터페이스
     Optimizer,  # 최적화기 인터페이스 (AdamW, Lion 등)
-    Scorer,  # 토큰 가중치 계산 인터페이스 (Critic, Rho1 등)
+    # Scorer 제거됨 (v2.1.0) - 모든 로직이 Trainer로 통합
     Trainer,  # 훈련 실행 인터페이스 (WMTP 통합 트레이너)
 )
 
@@ -39,7 +39,7 @@ from src.components.registry import (
     loader_registry,  # 로더 구현체들 (hf-model, mtp-native 등)
     optimizer_registry,  # 옵티마이저 구현체들 (adamw-bf16-fused 등)
     registry,  # 통합 레지스트리 (직접 접근용)
-    scorer_registry,  # 스코어러 구현체들 (critic-delta-v1, rho1-excess-v1 등)
+    # scorer_registry 제거됨 (v2.1.0) - 모든 scorer 로직이 trainer로 통합
     tokenizer_registry,  # 토크나이저 구현체들 (unified-sentencepiece 등)
     trainer_registry,  # 트레이너 구현체들 (mtp-weighted-ce-trainer 등)
 )
@@ -68,55 +68,11 @@ class ComponentFactory:
     # 🎯 직접 호출 방식: YAML 키가 곧 Registry 키
     # 매핑 딕셔너리 제거 - Pydantic 스키마와 Registry 키 완전 일치
 
-    @staticmethod
-    def create_scorer(recipe: Recipe) -> Scorer:
-        """알고리즘별 토큰 가중치 계산 Scorer 생성.
-
-        WMTP 핵심 철학 구현: "Not All Tokens Are What You Need"
-            이 메서드는 각 알고리즘의 토큰 중요도 계산 방식을 구현한
-            Scorer 인스턴스를 생성합니다. 이것이 WMTP와 기존 MTP의
-            핵심적인 차이점입니다.
-
-        알고리즘별 Scorer 매핑:
-            - mtp-baseline: None → 모든 토큰에 가중치 1.0 (균등)
-            - critic-wmtp: None (v2.1.0부터 Trainer에 직접 통합)
-            - rho1-wmtp: Rho1ExcessScorer → |CE^ref_t - CE^base_t|
-
-        Args:
-            recipe: 훈련 레시피 설정 (알고리즘 및 하이퍼파라미터 포함)
-
-        Returns:
-            선택된 알고리즘에 맞는 Scorer 인스턴스 또는 baseline용 None
-
-        Raises:
-            ValueError: 지원되지 않는 알고리즘이 요청된 경우
-        """
-        algo = recipe.train.algo
-
-        # Baseline: Scorer 없음 → 균등 가중치 (모든 토큰 = 1.0)
-        if algo == "baseline-mtp":
-            return None
-
-        # 직접 호출: YAML algo 값이 곧 Registry 키
-
-        # 알고리즘별 Scorer 설정 준비
-        if algo == "critic-wmtp":
-            # Critic-WMTP v2.1.0부터 scorer 없이 동작 (Trainer에 직접 통합)
-            return None
-        elif algo == "rho1-wmtp":
-            # Rho1: Reference Model과의 CE 차이 기반 가중치
-            scorer_config = {
-                "score": recipe.rho1.score,  # 점수 계산 방식
-                "percentile_top_p": recipe.rho1.percentile_top_p,  # 상위 백분위수
-                "refresh_per_epoch": recipe.rho1.refresh_per_epoch,  # 에포크별 갱신 여부
-                "temperature": recipe.loss.temperature,  # 소프트맥스 온도
-            }
-        else:
-            # 예상치 못한 알고리즘의 경우 빈 설정
-            scorer_config = {}
-
-        # Registry에서 Scorer 인스턴스 생성 및 반환
-        return scorer_registry.create(algo, scorer_config)
+    # create_scorer 메서드는 v2.1.0부터 제거됨
+    # 모든 scorer 로직이 각각의 Trainer 클래스로 통합되었습니다.
+    # - BaselineMtpTrainer: 균등 가중치 (scorer 불필요)
+    # - CriticWmtpTrainer: Value Head 직접 관리
+    # - Rho1WmtpTrainer: Reference Model 차이 직접 계산
 
     @staticmethod
     def create_trainer(recipe: Recipe, config: Config) -> Trainer:
@@ -133,10 +89,10 @@ class ComponentFactory:
             3. 유지보수성: 새 알고리즘 추가시 Scorer만 개발
             4. 버그 최소화: 공통 로직은 한 번만 테스트
 
-        알고리즘별 Trainer + Scorer 조합:
-            - baseline-mtp: BaselineMtpTrainer → 균등 가중치 (scorer 불필요)
-            - critic-wmtp: CriticWmtpTrainer → Value Head 직접 통합 (v2.1.0+, scorer 불필요)
-            - rho1-wmtp: Rho1WmtpTrainer → Reference CE 직접 계산 (scorer 불필요)
+        알고리즘별 Trainer 매핑:
+            - baseline-mtp: BaselineMtpTrainer → 균등 가중치
+            - critic-wmtp: CriticWmtpTrainer → Value Head 직접 통합 (v2.1.0+)
+            - rho1-wmtp: Rho1WmtpTrainer → Reference Model 차이 직접 계산
 
         Args:
             recipe: 훈련 레시피 (알고리즘, MTP 설정, 손실함수 등)
@@ -148,13 +104,7 @@ class ComponentFactory:
         Raises:
             ValueError: 지원되지 않는 알고리즘 요청시
         """
-        # 1. scorer를 내부에서 자동 생성 (더 이상 별도 인자 불필요)
-        if recipe.train.algo in ["baseline-mtp", "critic-wmtp"]:
-            scorer = None  # Baseline: 균등 가중치, Critic-WMTP v2.1.0+: Trainer에 통합
-        else:
-            scorer = ComponentFactory.create_scorer(recipe)  # 자동으로 적합한 scorer 생성
-
-        # 2. trainer 설정 구성 (기존 로직 유지)
+        # Trainer 설정 구성
         trainer_config = {
             # MTP 모델 관련 설정
             "n_heads": recipe.model.mtp.n_heads,  # 예측 헤드 개수 (보통 4)
@@ -174,12 +124,10 @@ class ComponentFactory:
             # FSDP (Fully Sharded Data Parallel) 설정
             "fsdp_config": config.devices.fsdp.model_dump()
             if config.devices.fsdp.enabled
-            else None,
-            # 🎯 핵심: 알고리즘별 차별화 요소 (자동 생성된 scorer)
-            "scorer": scorer,  # 자동 생성된 scorer 포함
+            else None
         }
 
-        # 3. registry 생성 및 반환
+        # Registry에서 Trainer 인스턴스 생성 및 반환
         return trainer_registry.create(recipe.train.algo, trainer_config)
 
     @staticmethod

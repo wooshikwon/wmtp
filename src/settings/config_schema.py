@@ -275,22 +275,28 @@ class DatasetPaths(BaseModel):
     코드 생성 능력 평가를 위한 벤치마크 데이터셋 경로입니다.
 
     Attributes:
-        mbpp_local: MBPP 데이터셋 경로
+        mbpp: MBPP 데이터셋 경로
             - Mostly Basic Python Problems
             - 974개의 Python 프로그래밍 문제
             - 초급~중급 난이도
             - Google Research 제작
 
-        contest_local: CodeContests 데이터셋 경로
+        contest: CodeContests 데이터셋 경로
             - 경쟁 프로그래밍 문제 모음
             - 높은 난이도의 알고리즘 문제
             - DeepMind 제작
             - pass@k 메트릭 평가용
 
+        humaneval: HumanEval 데이터셋 경로
+            - OpenAI의 코드 생성 벤치마크
+            - 164개의 Python 함수 작성 문제
+            - 프로그래밍 능력 평가의 표준
+
     Example:
         datasets:
-          mbpp_local: /data/benchmarks/mbpp
-          contest_local: /data/benchmarks/codecontests
+          mbpp: /data/benchmarks/mbpp
+          contest: /data/benchmarks/codecontests
+          humaneval: /data/benchmarks/humaneval
     """
 
     mbpp: str = Field(
@@ -300,6 +306,10 @@ class DatasetPaths(BaseModel):
     contest: str = Field(
         default="dataset/contest",
         description="CodeContests 데이터셋 경로 (로컬 또는 S3 URI)",
+    )
+    humaneval: str = Field(
+        default="dataset/humaneval",
+        description="HumanEval 데이터셋 경로 (로컬 또는 S3 URI)",
     )
 
 
@@ -430,35 +440,33 @@ class LauncherResources(BaseModel):
             - "V100": 구세대 (32GB VRAM)
             - "RTX4090": 개인 워크스테이션용
 
-        cpus: CPU 코어 수
-            - 데이터 전처리에 중요
-            - GPU당 8코어 이상 권장
+        cpu_limit: CPU 리소스 제한 (VESSL 형식)
+            - 문자열 형태: "32" 또는 "16"
+            - Kubernetes resource limit 형식
 
-        memory_gb: 시스템 RAM (GPU VRAM 아님)
-            - 모델 로딩과 데이터 처리에 사용
-            - 7B 모델: 최소 128GB
-            - 13B 모델: 최소 256GB
+        memory_limit: 메모리 제한 (VESSL 형식)
+            - 문자열 형태: "256Gi" 또는 "128Gi"
+            - Kubernetes resource limit 형식
 
-        disk_gb: 디스크 공간
-            - 체크포인트 저장 공간
-            - 캐시 및 임시 파일
-            - 모델 크기의 3배 이상 권장
+        shm_size: 공유 메모리 크기 (VESSL/Docker)
+            - 문자열 형태: "32Gi"
+            - 분산 훈련에서 중요
 
     Example:
-        # 7B 모델 학습용
+        # VESSL A100x2 설정
         resources:
-          gpus: 4
-          gpu_type: A6000
-          cpus: 32
-          memory_gb: 256
-          disk_gb: 500
+          gpus: 2
+          gpu_type: A100
+          cpu_limit: "32"
+          memory_limit: "256Gi"
+          shm_size: "32Gi"
     """
 
-    gpus: int = Field(default=4, ge=0, description="GPU 개수")
+    gpus: int = Field(default=2, ge=0, description="GPU 개수")
     gpu_type: str = Field(default="A100", description="GPU 종류")
-    cpus: int = Field(default=32, ge=1, description="CPU 코어 수")
-    memory_gb: int = Field(default=256, ge=1, description="메모리 크기 (GB)")
-    disk_gb: int = Field(default=500, ge=10, description="디스크 공간 (GB)")
+    cpu_limit: str = Field(default="32", description="CPU 리소스 제한")
+    memory_limit: str = Field(default="256Gi", description="메모리 제한")
+    shm_size: str = Field(default="32Gi", description="공유 메모리 크기")
 
 
 class Launcher(BaseModel):
@@ -550,9 +558,18 @@ class FSDPConfig(BaseModel):
     enabled: bool = Field(default=True, description="FSDP 활성화")
     auto_wrap: bool = Field(default=True, description="자동 래핑 활성화")
     activation_ckpt: bool = Field(default=True, description="활성화 체크포인팅 활성화")
-    sharding: Literal["full", "shard_grad_op"] = Field(
-        default="full", description="FSDP 샤딩 전략"
+    sharding: Literal["full", "full_shard", "shard_grad_op"] = Field(
+        default="full_shard", description="FSDP 샤딩 전략"
     )
+
+    @field_validator("sharding")
+    @classmethod
+    def validate_sharding_strategy(cls, v: str) -> str:
+        """FSDP 샤딩 전략 정규화."""
+        # config 파일에서 full_shard로 올 수 있음
+        if v == "full_shard":
+            return "full"
+        return v
 
 
 class Devices(BaseModel):
