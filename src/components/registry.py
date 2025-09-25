@@ -82,9 +82,10 @@ class UnifiedRegistry:
 
         return decorator
 
-    def get(self, key: str, *, category: str) -> type[Component]:
+    def _get(self, key: str, *, category: str) -> type[Component]:
+        """내부용: create()에서만 사용하는 클래스 조회 메서드"""
         if category not in self._by_category or key not in self._by_category[category]:
-            available = self.list_keys(category)
+            available = list(self._by_category.get(category, {}).keys())
             raise KeyError(
                 f"Component with key '{key}' not found in category '{category}' of registry '{self.name}'. Available keys: {available}"
             )
@@ -97,43 +98,10 @@ class UnifiedRegistry:
         category: str,
         config: dict[str, Any] | None = None,
     ) -> Component:
-        cls = self.get(key, category=category)
+        cls = self._get(key, category=category)
         return cls(config) if config else cls()
 
-    def exists(self, key: str, *, category: str) -> bool:
-        return category in self._by_category and key in self._by_category[category]
-
-    def list_keys(self, category: str | None = None) -> list[str]:
-        if category is None:
-            keys: list[str] = []
-            for cat, mapping in self._by_category.items():
-                keys.extend([f"{cat}:{k}" for k in mapping.keys()])
-            return keys
-        if category not in self._by_category:
-            return []
-        return list(self._by_category[category].keys())
-
-    def get_metadata(self, key: str, *, category: str) -> dict[str, Any]:
-        meta_key = (category, key)
-        if meta_key not in self._metadata:
-            raise KeyError(
-                f"No metadata found for key '{key}' in category '{category}'"
-            )
-        return self._metadata[meta_key]
-
-    def list_components(self, category: str | None = None) -> dict[str, dict[str, Any]]:
-        result: dict[str, dict[str, Any]] = {}
-        if category is None:
-            for (cat, key), meta in self._metadata.items():
-                result[f"{cat}:{key}"] = meta
-            return result
-        for key in self.list_keys(category):
-            result[key] = self._metadata[(category, key)]
-        return result
-
-    def clear(self) -> None:
-        self._by_category.clear()
-        self._metadata.clear()
+    # 사용되지 않는 메서드들 제거됨 (exists, list_keys, get_metadata, list_components, clear)
 
     def __len__(self) -> int:
         return sum(len(v) for v in self._by_category.values())
@@ -145,82 +113,44 @@ class UnifiedRegistry:
         )
 
 
-# Per-category adapter (no extra classes; only function-bound objects)
+# 단일 통합 레지스트리 - 모든 컴포넌트를 여기서 관리
+registry = UnifiedRegistry("main")
+
+# 하위 호환성을 위한 기존 인터페이스 유지 (내부적으로 registry 사용)
+class _CompatibilityAdapter:
+    """기존 *_registry.register() 패턴 지원을 위한 어댑터"""
+    def __init__(self, category: str):
+        self.category = category
+
+    def register(self, key: str, **kwargs):
+        # category 파라미터 제거 (중복)
+        kwargs.pop('category', None)
+        return registry.register(key, category=self.category, **kwargs)
+
+    def create(self, key: str, config=None):
+        return registry.create(key, category=self.category, config=config)
+
+# 기존 인터페이스 유지 - 코드 변경 없이 작동
+loader_registry = _CompatibilityAdapter("loader")
+scorer_registry = _CompatibilityAdapter("scorer")
+trainer_registry = _CompatibilityAdapter("trainer")
+optimizer_registry = _CompatibilityAdapter("optimizer")
+evaluator_registry = _CompatibilityAdapter("evaluator")
+pretrainer_registry = _CompatibilityAdapter("pretrainer")
+tokenizer_registry = _CompatibilityAdapter("tokenizer")
 
 
-def _category_api(root: UnifiedRegistry, category: str):
-    def register(
-        key: str,
-        *,
-        category: str | None = None,
-        version: str | None = None,
-        description: str | None = None,
-        **metadata: Any,
-    ) -> Callable[[type[T]], type[T]]:
-        return root.register(
-            key,
-            category=category or category_name,
-            version=version,
-            description=description,
-            **metadata,
-        )
-
-    def get(key: str) -> type[Component]:
-        return root.get(key, category=category_name)
-
-    def create(key: str, config: dict[str, Any] | None = None) -> Component:
-        return root.create(key, category=category_name, config=config)
-
-    def exists(key: str) -> bool:
-        return root.exists(key, category=category_name)
-
-    def list_keys() -> list[str]:
-        return root.list_keys(category_name)
-
-    def get_metadata(key: str) -> dict[str, Any]:
-        return root.get_metadata(key, category=category_name)
-
-    category_name = category
-    return SimpleNamespace(
-        register=register,
-        get=get,
-        create=create,
-        exists=exists,
-        list_keys=list_keys,
-        get_metadata=get_metadata,
-    )
-
-
-# Single unified registry and compatibility adapters
-unified_registry = UnifiedRegistry("main")
-loader_registry = _category_api(unified_registry, "loader")
-scorer_registry = _category_api(unified_registry, "scorer")
-trainer_registry = _category_api(unified_registry, "trainer")
-optimizer_registry = _category_api(unified_registry, "optimizer")
-evaluator_registry = _category_api(unified_registry, "evaluator")
-pretrainer_registry = _category_api(unified_registry, "pretrainer")
-
-
-def list_all() -> dict[str, Any]:
-    return {
-        "main": unified_registry,
-        "loader": loader_registry,
-        "scorer": scorer_registry,
-        "trainer": trainer_registry,
-        "optimizer": optimizer_registry,
-        "evaluator": evaluator_registry,
-        "pretrainer": pretrainer_registry,
-    }
+# list_all 함수 제거됨 (사용되지 않음)
 
 
 __all__ = [
     "UnifiedRegistry",
-    "unified_registry",
-    "list_all",
+    "registry",
     "loader_registry",
     "scorer_registry",
     "trainer_registry",
     "optimizer_registry",
     "evaluator_registry",
     "pretrainer_registry",
+    "tokenizer_registry",
 ]

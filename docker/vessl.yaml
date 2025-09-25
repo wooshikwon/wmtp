@@ -3,7 +3,7 @@ name: wmtp-finetune
 description: Weighted Multi-Token Prediction Fine-Tuning
 
 # Docker image specification
-image: wmtp:latest  # Will be replaced with actual registry URL
+image: ghcr.io/wooshikwon/wmtp:latest  # GitHub Container Registry
 
 # Resource specifications
 resources:

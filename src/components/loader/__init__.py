@@ -1,61 +1,39 @@
 """
-Data and model loaders for WMTP framework.
+Data and model loaders for WMTP framework - Phase 2 unified.
 
-This module provides individual loaders for datasets and models,
-each registered as separate components in the registry.
+This module now provides unified loaders that handle all types
+of datasets and models through a single interface.
 """
 
 # Import base classes
 from .base_loader import BaseLoader, DatasetLoader, ModelLoader
+from .unified_data_loader import UnifiedDataLoader
 
-# Import all dataset loaders (auto-registers them)
-from .dataset import (
-    CodeContestsDatasetLoader,
-    CustomDatasetLoader,
-    HumanEvalDatasetLoader,
-    MBPPDatasetLoader,
-)
+# Import unified loaders (Phase 2)
+from .unified_model_loader import UnifiedModelLoader
 
-# Import all model loaders (auto-registers them)
-from .model import (
-    CheckpointLoader,
-    HFModelLoader,
-    MTPNativeCPULoader,
-    MTPNativeLoader,
-    ShearedLLaMALoader,
-    StarlingRMLoader,
-)
+# Import specialized loaders
+from .checkpoint_loader import CheckpointLoader
 
-# Export all loaders
+# Export loaders
 __all__ = [
     # Base classes
     "BaseLoader",
     "DatasetLoader",
     "ModelLoader",
-    # Model loaders
-    "HFModelLoader",
-    "MTPNativeLoader",
-    "MTPNativeCPULoader",
-    "StarlingRMLoader",
-    "ShearedLLaMALoader",
+    # Unified loaders (Phase 2)
+    "UnifiedModelLoader",
+    "UnifiedDataLoader",
+    # Specialized loaders
     "CheckpointLoader",
-    # Dataset loaders
-    "MBPPDatasetLoader",
-    "CodeContestsDatasetLoader",
-    "HumanEvalDatasetLoader",
-    "CustomDatasetLoader",
 ]
 
-# Registry keys for loaders
+# Registry keys for unified loaders
 MODEL_LOADER_KEYS = {
-    "huggingface": "hf-model",
-    "mtp-native": "mtp-native",
-    "checkpoint": "checkpoint",
+    "unified": "unified-model-loader",
+    "checkpoint": "checkpoint-loader",
 }
 
 DATASET_LOADER_KEYS = {
-    "mbpp": "mbpp-dataset",
-    "codecontests": "codecontests-dataset",
-    "humaneval": "humaneval-dataset",
-    "custom": "custom-dataset",
+    "unified": "unified-data-loader",
 }

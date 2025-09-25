@@ -173,6 +173,7 @@ def train(
             tags=tag_list,  # 실험 분류 태그
             dry_run=dry_run,  # 검증 모드 여부
             max_steps=10 if dry_run else None,  # 검증시 10스텝만 실행
+            resume_checkpoint=resume,  # 체크포인트에서 재개
         )
 
         # 실행 결과 출력

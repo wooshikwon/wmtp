@@ -37,9 +37,7 @@ from ..registry import evaluator_registry
 console = Console()
 
 
-@evaluator_registry.register(
-    "meta-mtp-evaluator", category="evaluator", version="1.0.0"
-)
+@evaluator_registry.register("meta-mtp", category="evaluator", version="1.0.0")
 class MetaMTPEvaluator(BaseComponent):
     """
     WMTP 연구를 위한 통합 성능 평가 오케스트레이터입니다.

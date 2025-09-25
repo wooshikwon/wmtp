@@ -14,6 +14,7 @@ run:
 model:
   base_id: "facebook/multi-token-prediction"
   ref_id: "Sheared-LLaMA-2.7B"  # Using uploaded reference model from S3
+  tokenizer_type: "hf"  # HuggingFace compatible tokenizer interface
   tokenizer_pad_side: "right"
   mtp:
     n_heads: 4
@@ -23,14 +24,11 @@ model:
 train:
   algo: "mtp-baseline"  # Key difference: no token weighting
   full_finetune: true
-  lora:
-    enabled: false
-    r: 8
-    alpha: 16
-    dropout: 0.05
-    target_modules:
-      - "q_proj"
-      - "v_proj"
+  max_steps: 1000  # Maximum training steps
+  checkpointing:
+    save_interval: 100      # N스텝마다 저장
+    keep_last: 3           # 최근 N개 체크포인트 유지
+    save_final: true       # 최종 모델 저장 여부
 
 # Optimizer configuration
 optim:
@@ -55,11 +53,7 @@ data:
     batch_size: 4
     pack_sequences: false
 
-# Batching configuration
-batching:
-  global_batch_tokens: 1000000
-  micro_batch_size: 2
-  grad_accum_steps: 16
+# Note: Batching configuration removed - not used by pipeline
 
 # Loss configuration
 loss:

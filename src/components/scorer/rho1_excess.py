@@ -29,7 +29,7 @@ from src.components.base import BaseComponent
 from src.components.registry import scorer_registry
 
 
-@scorer_registry.register("rho1-excess-v1", category="scorer", version="1.0.0")
+@scorer_registry.register("rho1-wmtp", category="scorer", version="1.0.0")
 class Rho1ExcessScorer(BaseComponent):
     """
     Rho1-WMTP 방식: 참조모델 차이 기반으로 헤드별 중요도를 계산하는 스코어러입니다.

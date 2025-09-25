@@ -137,27 +137,34 @@ class Storage(BaseModel):
     """스토리지 설정.
 
     WMTP 학습 결과물 저장 방식을 설정합니다.
-    로컬 개발 환경에서는 'local', 프로덕션에서는 's3'를 권장합니다.
+    'auto' 모드는 경로에 따라 자동으로 로컬/S3를 판별합니다.
 
     Attributes:
         mode: 스토리지 모드
+            - "auto": 경로에 따라 자동 판별 (s3:// 프리픽스 확인)
             - "local": 로컬 파일시스템 사용 (개발/테스트용)
             - "s3": AWS S3 사용 (프로덕션/협업용)
-        s3: S3 설정 (mode="s3"일 때 필수)
+        s3: S3 설정 (S3 경로 사용 시 필요)
 
     Example:
-        # 로컬 개발
+        # 자동 판별 (권장)
+        storage:
+          mode: auto
+          s3:
+            bucket: wmtp
+
+        # 로컬 전용
         storage:
           mode: local
 
-        # 프로덕션
+        # S3 전용
         storage:
           mode: s3
           s3:
             bucket: wmtp-prod
     """
 
-    mode: Literal["local", "s3"] = Field(..., description="스토리지 모드")
+    mode: Literal["auto", "local", "s3"] = Field(..., description="스토리지 모드")
     s3: S3Config | None = None
 
     @model_validator(mode="after")
@@ -190,28 +197,32 @@ class ModelPaths(BaseModel):
     Critic-WMTP는 보상 모델로 가치 함수를 학습하고,
     Rho1-WMTP는 참조 모델과의 CE 차이로 중요도를 산출합니다.
 
+    통합 경로 시스템:
+    PathResolver가 s3:// 프리픽스를 자동 감지하여
+    로컬 경로와 S3 URI를 투명하게 처리합니다.
+
     구체적 동작:
     1. Base 모델 로드: MTP 사전학습 모델 (필수)
     2. 알고리즘별 추가 모델:
-       - critic-wmtp → rm_local 로드 → value head 학습
-       - rho1-wmtp → ref_local 로드 → CE 차이 계산
+       - critic-wmtp → rm 로드 → value head 학습
+       - rho1-wmtp → ref 로드 → CE 차이 계산
     3. 토크나이저 호환성 체크 (자동)
     4. 가중치 적용된 MTP 학습
 
     Attributes:
-        base_local: 기본 MTP 모델 경로
+        base: 기본 MTP 모델 경로
             - Facebook의 Multi-Token Prediction 모델
             - 7B 파라미터, 4개 토큰 동시 예측 (n=4)
             - 실제 학습이 진행되는 모델
-            - 예: "models/7b_1t_4" (7B, 1T 토큰, 4-head)
+            - 예: "models/7b_1t_4" 또는 "s3://wmtp/models/7b_1t_4"
 
-        rm_local: 보상 모델 경로 (Critic-WMTP 전용)
+        rm: 보상 모델 경로 (Critic-WMTP 전용)
             - 생성된 텍스트의 품질을 평가하는 Reward Model
             - Llama-3 8B 기반, 인간 선호도 학습됨
             - Stage1에서 value head 학습의 타겟 제공
             - critic-wmtp 선택 시 필수
 
-        ref_local: 참조 모델 경로 (Rho1-WMTP 전용)
+        ref: 참조 모델 경로 (Rho1-WMTP 전용)
             - 토큰 중요도 계산의 기준점 제공
             - CodeLlama-7B 또는 ShearedLlama-1.3B 권장
             - CE 차이 계산: |CE_ref - CE_base|
@@ -244,17 +255,17 @@ class ModelPaths(BaseModel):
         - Tokenizer 오류: 모델 간 토크나이저 호환성 확인
     """
 
-    base_local: Path = Field(
-        default=Path("models/7b_1t_4"),
-        description="기본 MTP 모델의 로컬 경로",
+    base: str = Field(
+        default="models/7b_1t_4",
+        description="기본 MTP 모델 경로 (로컬 또는 S3 URI)",
     )
-    rm_local: Path = Field(
-        default=Path("models/Llama_3_8B_RM"),
-        description="보상 모델의 로컬 경로 (Critic용)",
+    rm: str = Field(
+        default="models/Llama_3_8B_RM",
+        description="보상 모델 경로 (Critic용, 로컬 또는 S3 URI)",
     )
-    ref_local: Path = Field(
-        default=Path("models/sheared_llama_1.3B"),
-        description="참조 모델의 로컬 경로 (Rho1용)",
+    ref: str = Field(
+        default="models/sheared_llama_1.3B",
+        description="참조 모델 경로 (Rho1용, 로컬 또는 S3 URI)",
     )
 
 
@@ -282,13 +293,13 @@ class DatasetPaths(BaseModel):
           contest_local: /data/benchmarks/codecontests
     """
 
-    mbpp_local: Path = Field(
-        default=Path("dataset/mbpp"),
-        description="MBPP 데이터셋 로컬 경로",
+    mbpp: str = Field(
+        default="dataset/mbpp",
+        description="MBPP 데이터셋 경로 (로컬 또는 S3 URI)",
     )
-    contest_local: Path = Field(
-        default=Path("dataset/contest"),
-        description="CodeContests 데이터셋 로컬 경로",
+    contest: str = Field(
+        default="dataset/contest",
+        description="CodeContests 데이터셋 경로 (로컬 또는 S3 URI)",
     )
 
 
@@ -296,24 +307,18 @@ class Paths(BaseModel):
     """전체 경로 설정 통합.
 
     WMTP 프로젝트에서 사용하는 모든 경로를 한 곳에서 관리합니다.
+    PathResolver를 통해 로컬 경로와 S3 URI를 자동으로 구분합니다.
 
     Attributes:
-        models: 모델 파일 경로들
-        datasets: 데이터셋 경로들
-        cache: 캐시 디렉토리
-            - 토크나이저 캐시
-            - 전처리된 데이터
-            - 임시 체크포인트
-            - 기본값: .cache/
+        models: 모델 파일 경로들 (로컬 또는 S3)
+        datasets: 데이터셋 경로들 (로컬 또는 S3)
 
-    Tip:
-        캐시 디렉토리는 SSD에 위치시키면 성능이 향상됩니다.
-        용량이 큰 경우 주기적으로 정리가 필요합니다.
+    Note:
+        S3 체크포인트 전략 사용 - 모든 중간 결과는 S3에 직접 저장됩니다.
     """
 
     models: ModelPaths = Field(default_factory=ModelPaths)
     datasets: DatasetPaths = Field(default_factory=DatasetPaths)
-    cache: Path = Field(default=Path(".cache"), description="캐시 디렉토리")
 
 
 class MLflow(BaseModel):
@@ -338,6 +343,12 @@ class MLflow(BaseModel):
             - 보통 tracking_uri와 동일하게 설정
             - 프로덕션 모델 배포 시 사용
 
+        artifact_location: 아티팩트 저장 위치 (선택)
+            - MLflow 아티팩트 (모델, 플롯, 파일) 저장 위치
+            - S3: "s3://bucket/mlflow-artifacts"
+            - 로컬: "./mlflow-artifacts"
+            - None이면 tracking_uri 기본 위치 사용
+
     Example:
         # 로컬 개발
         mlflow:
@@ -345,11 +356,12 @@ class MLflow(BaseModel):
           tracking_uri: ./mlflow_runs
           registry_uri: ./mlflow_runs
 
-        # 프로덕션
+        # 프로덕션 (아티팩트 별도 저장)
         mlflow:
           experiment: prod/wmtp
           tracking_uri: s3://ml-artifacts/mlflow
           registry_uri: s3://ml-artifacts/mlflow
+          artifact_location: s3://ml-artifacts/mlflow-artifacts
 
     Note:
         환경 변수 사용 가능: ${MLFLOW_TRACKING_URI}
@@ -367,12 +379,15 @@ class MLflow(BaseModel):
         ...,
         description="MLflow 모델 레지스트리 URI (원격의 경우 S3 필수)",
     )
+    artifact_location: str | None = Field(
+        default=None,
+        description="MLflow 아티팩트 저장 위치 (None이면 tracking_uri 기본 위치 사용)",
+    )
 
     @field_validator("tracking_uri", "registry_uri")
     @classmethod
     def validate_uri(cls, v: str) -> str:
         """Validate and normalize MLflow URIs for both local and remote environments."""
-        from pathlib import Path
 
         # 로컬 개발: 상대 경로를 절대 경로로 변환
         if v.startswith("file://./"):

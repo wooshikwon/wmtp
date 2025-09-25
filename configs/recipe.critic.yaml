@@ -13,8 +13,7 @@ run:
 # Model configuration
 model:
   base_id: "facebook/multi-token-prediction"
-  rm_id: "Starling-RM-7B-alpha"  # Using uploaded RM model from S3
-  ref_id: "Sheared-LLaMA-2.7B"  # Using uploaded reference model from S3
+  rm_id: "sfair/Llama-3-8B-RM-Reward-Model"
   tokenizer_pad_side: "right"
   mtp:
     n_heads: 4
@@ -24,19 +23,6 @@ model:
 train:
   algo: "critic-wmtp"  # Options: critic-wmtp, rho1-wmtp
   full_finetune: true
-  lora:
-    enabled: false
-    r: 16
-    alpha: 32
-    dropout: 0.05
-    target_modules:
-      - "q_proj"
-      - "v_proj"
-      - "o_proj"
-      - "k_proj"
-      - "gate_proj"
-      - "up_proj"
-      - "down_proj"
 
 # Optimizer configuration
 optim:
@@ -60,12 +46,6 @@ data:
     max_length: 2048
     batch_size: 8
     pack_sequences: false
-
-# Batching configuration
-batching:
-  global_batch_tokens: 4000000  # 4M tokens per batch
-  micro_batch_size: 1
-  grad_accum_steps: 64
 
 # Loss configuration
 loss:

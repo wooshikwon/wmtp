@@ -18,9 +18,7 @@ from src.components.base import BaseComponent
 from src.components.registry import optimizer_registry
 
 
-@optimizer_registry.register(
-    "adamw-bf16-fused", category="optimizer", version="1.0.0"
-)
+@optimizer_registry.register("adamw", category="optimizer", version="1.0.0")
 class AdamWBF16FusedOptimizer(BaseComponent):
     """
     AdamW optimizer component with optional fused kernel and LR scheduler.

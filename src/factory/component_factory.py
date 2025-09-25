@@ -21,6 +21,7 @@
 이를 통해 연구자는 알고리즘 간 공정한 성능 비교가 가능합니다.
 """
 
+from pathlib import Path  # 경로 조작용
 from typing import Any  # 범용 타입 힌트
 
 # WMTP 컴포넌트 베이스 클래스들 - 모든 구현체가 상속받는 추상 인터페이스
@@ -37,7 +38,9 @@ from src.components.registry import (
     evaluator_registry,  # 평가기 구현체들 (meta-mtp, mbpp-v1 등)
     loader_registry,  # 로더 구현체들 (hf-model, mtp-native 등)
     optimizer_registry,  # 옵티마이저 구현체들 (adamw-bf16-fused 등)
+    registry,  # 통합 레지스트리 (직접 접근용)
     scorer_registry,  # 스코어러 구현체들 (critic-delta-v1, rho1-excess-v1 등)
+    tokenizer_registry,  # 토크나이저 구현체들 (unified-sentencepiece 등)
     trainer_registry,  # 트레이너 구현체들 (mtp-weighted-ce-trainer 등)
 )
 from src.settings import Config, Recipe  # Pydantic 설정 모델들
@@ -60,42 +63,11 @@ class ComponentFactory:
         4. 오류 처리: 잘못된 설정에 대한 명확한 에러 메시지 제공
     """
 
-    # 🎯 핵심 매핑 테이블들 - WMTP 알고리즘별 컴포넌트 선택 규칙
+    # 🎯 직접 호출 방식: YAML 키가 곧 Registry 키
+    # 매핑 딕셔너리 제거 - Pydantic 스키마와 Registry 키 완전 일치
 
-    # 알고리즘 → Scorer Registry 키 매핑
-    # WMTP의 핵심: 각 알고리즘은 고유한 토큰 가중치 계산 방식을 가짐
-    ALGO_TO_SCORER = {
-        "critic-wmtp": "critic-delta-v1",  # δ_t = V_t - V_{t-1} 차분값 기반
-        "rho1-wmtp": "rho1-excess-v1",  # |CE^ref_t - CE^base_t| 차이 기반
-        # "mtp-baseline"은 scorer=None - 균등 가중치(1.0)
-    }
-
-    # 옵티마이저 이름 → Registry 키 매핑
-    # 현재는 AdamW + BF16 + Fused 조합만 구현됨
-    OPTIMIZER_MAP = {
-        "adamw": "adamw-bf16-fused",  # AdamW + BFloat16 + 융합 최적화
-        # "lion": "lion-optimizer",          # Lion 옵티마이저 (미구현)
-        # "sgd": "sgd-optimizer",            # SGD 옵티마이저 (미구현)
-    }
-
-    # 🔑 통합 설계의 핵심: 모든 알고리즘이 동일한 Trainer 사용
-    # 차이점은 Scorer 조합뿐 - 이것이 WMTP의 우아한 설계
-    ALGO_TO_TRAINER = {
-        "mtp-baseline": "mtp-weighted-ce-trainer",  # scorer=None (균등)
-        "critic-wmtp": "mtp-weighted-ce-trainer",  # CriticDeltaScorer 조합
-        "rho1-wmtp": "mtp-weighted-ce-trainer",  # Rho1ExcessScorer 조합
-    }
-
-    # 평가 프로토콜 → Evaluator Registry 키 매핑
-    # 각 벤치마크별 특화된 평가 방식 제공
-    EVALUATOR_MAP = {
-        "meta-mtp": "meta-mtp-evaluator",  # Meta MTP 논문 평가 방식
-        "mbpp": "mbpp-v1",  # MBPP 코드 생성 평가
-        "codecontests": "codecontests-v1",  # CodeContests 경진 평가
-    }
-
-    @classmethod
-    def create_scorer(cls, recipe: Recipe) -> Scorer:
+    @staticmethod
+    def create_scorer(recipe: Recipe) -> Scorer:
         """알고리즘별 토큰 가중치 계산 Scorer 생성.
 
         WMTP 핵심 철학 구현: "Not All Tokens Are What You Need"
@@ -123,13 +95,7 @@ class ComponentFactory:
         if algo == "mtp-baseline":
             return None
 
-        # Registry에서 알고리즘에 맞는 Scorer 키 조회
-        scorer_key = cls.ALGO_TO_SCORER.get(algo)
-        if not scorer_key:
-            raise ValueError(
-                f"'{algo}' 알고리즘에 대한 Scorer 매핑을 찾을 수 없습니다. "
-                f"지원 알고리즘: {list(cls.ALGO_TO_SCORER.keys())}"
-            )
+        # 직접 호출: YAML algo 값이 곧 Registry 키
 
         # 알고리즘별 Scorer 설정 준비
         if algo == "critic-wmtp":
@@ -154,16 +120,11 @@ class ComponentFactory:
             scorer_config = {}
 
         # Registry에서 Scorer 인스턴스 생성 및 반환
-        return scorer_registry.create(scorer_key, scorer_config)
+        return scorer_registry.create(algo, scorer_config)
 
-    @classmethod
-    def create_trainer(
-        cls,
-        recipe: Recipe,  # 훈련 레시피 설정
-        config: Config,  # 환경 설정
-        scorer: Scorer | None = None,  # 토큰 가중치 계산기 (create_scorer에서 생성)
-    ) -> Trainer:
-        """WMTP 통합 Trainer 생성 - 모든 알고리즘의 핵심 실행기.
+    @staticmethod
+    def create_trainer(recipe: Recipe, config: Config) -> Trainer:
+        """트레이너 생성 - recipe/config만 사용, scorer 의존성 자동 관리.
 
         WMTP 설계의 우아함: "One Trainer, Multiple Scorers"
             이 메서드는 WMTP의 핵심 설계 철학을 보여줍니다.
@@ -184,7 +145,6 @@ class ComponentFactory:
         Args:
             recipe: 훈련 레시피 (알고리즘, MTP 설정, 손실함수 등)
             config: 환경 설정 (GPU, 분산훈련, 메모리 최적화 등)
-            scorer: 토큰 가중치 계산기 (None이면 균등 가중치)
 
         Returns:
             설정된 MTPWeightedCETrainer 인스턴스
@@ -192,16 +152,13 @@ class ComponentFactory:
         Raises:
             ValueError: 지원되지 않는 알고리즘 요청시
         """
-        # 알고리즘에 따른 Trainer Registry 키 조회 (모든 알고리즘이 동일함)
-        trainer_key = cls.ALGO_TO_TRAINER.get(recipe.train.algo)
+        # 1. scorer를 내부에서 자동 생성 (더 이상 별도 인자 불필요)
+        if recipe.train.algo == "mtp-baseline":
+            scorer = None  # Baseline: 균등 가중치
+        else:
+            scorer = ComponentFactory.create_scorer(recipe)  # 자동으로 적합한 scorer 생성
 
-        if not trainer_key:
-            raise ValueError(
-                f"'{recipe.train.algo}' 알고리즘에 대한 Trainer 매핑을 찾을 수 없습니다. "
-                f"지원 알고리즘: {list(cls.ALGO_TO_TRAINER.keys())}"
-            )
-
-        # Trainer 설정 구성 - 모든 필요한 하이퍼파라미터와 컴포넌트
+        # 2. trainer 설정 구성 (기존 로직 유지)
         trainer_config = {
             # MTP 모델 관련 설정
             "n_heads": recipe.model.mtp.n_heads,  # 예측 헤드 개수 (보통 4)
@@ -215,26 +172,22 @@ class ComponentFactory:
                 "max_weight": recipe.loss.max_weight,  # 최대 가중치 제한
             },
             # 훈련 방식 설정
-            "full_finetune": recipe.train.full_finetune,  # 전체 파인튜닝 vs LoRA
-            # LoRA 설정 (메모리 효율적 파인튜닝)
-            "lora_config": recipe.train.lora.model_dump()
-            if recipe.train.lora.enabled
-            else None,
+            "full_finetune": recipe.train.full_finetune,  # 전체 파인튜닝 전용
             # 분산 훈련 및 메모리 최적화
             "mixed_precision": config.devices.mixed_precision,  # BF16/FP16 혼합 정밀도
             # FSDP (Fully Sharded Data Parallel) 설정
             "fsdp_config": config.devices.fsdp.model_dump()
             if config.devices.fsdp.enabled
             else None,
-            # 🎯 핵심: 알고리즘별 차별화 요소
-            "scorer": scorer,  # None(baseline) / CriticScorer / Rho1Scorer
+            # 🎯 핵심: 알고리즘별 차별화 요소 (자동 생성된 scorer)
+            "scorer": scorer,  # 자동 생성된 scorer 포함
         }
 
-        # Registry에서 설정된 Trainer 인스턴스 생성 및 반환
-        return trainer_registry.create(trainer_key, trainer_config)
+        # 3. registry 생성 및 반환
+        return trainer_registry.create(recipe.train.algo, trainer_config)
 
-    @classmethod
-    def create_optimizer(cls, recipe: Recipe, model_params: Any) -> Optimizer:
+    @staticmethod
+    def create_optimizer(recipe: Recipe, model_params: Any) -> Optimizer:
         """최적화기(Optimizer) 생성 - 모델 파라미터 업데이트 담당.
 
         현재 WMTP에서는 AdamW + BFloat16 + Fused 조합을 주로 사용합니다.
@@ -255,14 +208,7 @@ class ComponentFactory:
         Raises:
             ValueError: 지원되지 않는 옵티마이저 요청시
         """
-        # 옵티마이저 이름으로 Registry 키 조회
-        optimizer_key = cls.OPTIMIZER_MAP.get(recipe.optim.optimizer)
-
-        if not optimizer_key:
-            raise ValueError(
-                f"'{recipe.optim.optimizer}' 옵티마이저는 지원되지 않습니다. "
-                f"사용 가능한 옵티마이저: {list(cls.OPTIMIZER_MAP.keys())}"
-            )
+        # 직접 호출: YAML optimizer 값이 곧 Registry 키
 
         # 옵티마이저 설정 구성
         optimizer_config = {
@@ -276,11 +222,11 @@ class ComponentFactory:
         }
 
         # Registry에서 Optimizer 인스턴스 생성 및 반환
-        return optimizer_registry.create(optimizer_key, optimizer_config)
+        return optimizer_registry.create(recipe.optim.optimizer, optimizer_config)
 
-    @classmethod
-    def create_data_loader(cls, source: str, config: Config) -> Loader:
-        """데이터셋 소스별 특화된 로더 생성.
+    @staticmethod
+    def create_data_loader(recipe: Recipe, config: Config) -> Loader:
+        """데이터 로더 생성 - recipe/config만 사용하는 통합 패턴.
 
         WMTP는 다양한 코드 생성 벤치마크를 지원합니다:
             - MBPP: Python 기본 프로그래밍 문제
@@ -289,162 +235,103 @@ class ComponentFactory:
             - Custom: 사용자 정의 데이터셋
 
         Args:
-            source: 데이터 소스명 (mbpp/codecontests/humaneval/custom)
-            config: 환경 설정 (캐시 디렉토리, 로컬 경로 등)
+            recipe: 훈련 레시피 (data.train.sources 필드 포함)
+            config: 환경 설정
 
         Returns:
-            해당 데이터셋에 특화된 Loader 인스턴스
+            UnifiedDataLoader 인스턴스
         """
-        # 데이터 소스명 → Registry 키 매핑
-        dataset_key_map = {
-            "mbpp": "mbpp-dataset",  # MBPP Python 기본 문제
-            "contest": "codecontests-dataset",  # 알고리즘 경진 문제
-            "codecontests": "codecontests-dataset",
-            "humaneval": "humaneval-dataset",  # OpenAI 함수 평가
-            "custom": "custom-dataset",  # 사용자 정의 데이터셋
-        }
+        # 1. source를 recipe에서 자동 추출 (더 이상 별도 인자 불필요)
+        source = recipe.data.train.sources[0]  # 첫 번째 훈련 소스 사용
 
-        # 소스명으로 Registry 키 조회 (기본값: custom-dataset)
-        dataset_key = dataset_key_map.get(source, "custom-dataset")
-
-        # 소스별 로컬 캐시 경로 설정
-        local_path = None
+        # 2. 소스별 데이터셋 경로 결정 (기존 로직 유지)
+        dataset_path = None
         if source == "mbpp":
-            local_path = (
-                str(config.paths.datasets.mbpp_local)
-                if config.paths.datasets.mbpp_local
-                else None
-            )
+            dataset_path = str(config.paths.datasets.mbpp)
         elif source in ["contest", "codecontests"]:
-            local_path = (
-                str(config.paths.datasets.contest_local)
-                if config.paths.datasets.contest_local
-                else None
-            )
-        # Custom 데이터셋은 별도 경로 지정 방식 사용
+            dataset_path = str(config.paths.datasets.contest)
+        else:
+            # Custom 또는 기타는 source를 그대로 경로로 사용
+            dataset_path = source
 
-        # 데이터셋 로더 기본 설정
+        # 3. 통합 데이터 로더 설정 (기존 로직 유지)
         loader_config = {
-            "split": "train",  # 기본 분할 (train/test/valid)
-            "max_samples": None,  # 샘플 수 제한 (None=전체)
-            "cache_dir": str(config.paths.cache),  # 캐시 디렉토리
+            "storage": config.storage.model_dump(),
+            "paths": config.paths.model_dump(),
+            "split": "train",  # 기본 분할
+            "dataset_type": source,  # 명시적 타입 지정
         }
 
-        # 데이터셋별 특화 설정 추가
-        if dataset_key == "codecontests-dataset":
-            loader_config["languages"] = ["Python 3"]  # 언어 제한
-        elif dataset_key == "custom-dataset":
-            loader_config["format_type"] = "auto"  # 자동 포맷 감지
+        # 4. UnifiedDataLoader 생성
+        return loader_registry.create("unified-data-loader", loader_config)
 
-        # Registry에서 특화된 데이터셋 로더 생성
-        return loader_registry.create(dataset_key, loader_config)
-
-    @classmethod
-    def create_model_loader(cls, config: Config, recipe: Recipe = None) -> Loader:
-        """모델 타입별 특화된 로더 생성.
+    @staticmethod
+    def create_model_loader(config: Config, recipe: Recipe = None) -> Loader:
+        """통합 모델 로더만 반환 - Phase 2 리팩토링 적용.
 
         WMTP는 Facebook의 native MTP 모델을 기본으로 사용하되,
         다양한 모델 소스와 포맷을 지원합니다:
             - mtp-native: Facebook native MTP (consolidated.pth)
             - hf-model: HuggingFace 변환된 모델
             - checkpoint: 훈련 중단점 파일 (.pt/.pth)
+            - sheared-llama: Princeton 경량화 모델
+            - starling-rm: Berkeley 보상 모델
 
         Args:
             config: 환경 설정 (모델 경로, GPU 설정 등)
-            recipe: 훈련 레시피 (None이면 기본 HF 로더)
+            recipe: 훈련 레시피 (선택)
 
         Returns:
-            모델 타입에 적합한 Loader 인스턴스
+            UnifiedModelLoader 인스턴스
         """
-        # 모델 타입과 경로 기반으로 적합한 로더 키 결정
-        loader_key = "hf-model"  # 기본값: HuggingFace 로더
+        # 통합 모델 로더 설정
+        loader_config = config.model_dump()
 
-        if recipe:
-            base_id = recipe.model.base_id
-            base_path = str(config.paths.models.base_local)
+        # UnifiedModelLoader 생성 - 모든 모델 타입을 하나의 로더로 처리
+        return loader_registry.create("unified-model-loader", loader_config)
 
-            # Facebook MTP native 모델 확인
-            if base_id == "facebook/multi-token-prediction":
-                # Native MTP 포맷 확인 (consolidated.pth 파일 존재)
-                if (
-                    "7b_1t_4" in base_path.lower()
-                    or "consolidated" in base_path.lower()
-                ):
-                    # CPU 환경에서는 메모리 최적화된 로더 사용
-                    compute_backend = (
-                        config.devices.compute_backend
-                        if hasattr(config, "devices")
-                        else "auto"
-                    )
-                    if compute_backend == "cpu":
-                        loader_key = "mtp-native-cpu"  # 📌 CPU 전용 메모리 최적화
-                    else:
-                        loader_key = "mtp-native"  # 📌 GPU/기본 성능
-                else:
-                    # HuggingFace로 변환된 MTP 모델의 경우
-                    loader_key = "hf-model"
+    @staticmethod
+    def create_checkpoint_loader(config: Config) -> Loader:
+        """체크포인트 전용 로더 생성 - 훈련 재개를 위한 특화된 인터페이스.
 
-            # Starling-RM Reward Model
-            elif (
-                "starling-rm" in base_id.lower()
-                or "starling-rm-7b" in base_path.lower()
-            ):
-                loader_key = "starling-rm"  # 📌 Critic-WMTP용 RM 모델
+        훈련 재개 시나리오를 위한 전용 로더:
+            - 메타데이터 자동 추출 (epoch, step, mlflow_run_id)
+            - S3/로컬 통합 지원
+            - Rich Console 기반 진행상황 표시
+            - 견고한 오류 처리
 
-            # Sheared-LLaMA 경량 모델
-            elif (
-                "sheared-llama" in base_id.lower()
-                or "sheared-llama-2.7b" in base_path.lower()
-            ):
-                loader_key = "sheared-llama"  # 📌 Rho1-WMTP용 참조 모델
+        UnifiedModelLoader와의 차이점:
+            - 체크포인트 전용 최적화
+            - 훈련 메타데이터 자동 파싱
+            - 재개 전용 인터페이스
 
-            # 체크포인트 파일 확인 (.pt/.pth 확장자)
-            elif base_path.endswith(".pt") or base_path.endswith(".pth"):
-                loader_key = "checkpoint"  # 훈련 재개용
+        Args:
+            config: 환경 설정 (S3, 경로, GPU 설정)
 
-            # 기타 모든 경우: HuggingFace 로더 사용
-            else:
-                loader_key = "hf-model"
+        Returns:
+            CheckpointLoader 인스턴스
 
-        # 로더 타입별 기본 설정 구성 - config.devices 설정 활용
-        loader_config = config.model_dump() if config else {}
+        Usage:
+            ```python
+            checkpoint_loader = ComponentFactory.create_checkpoint_loader(config)
+            checkpoint_loader.setup({})
+            result = checkpoint_loader.run({
+                "model_path": "s3://wmtp/checkpoints/model.pt",
+                "load_metadata": True
+            })
+            epoch = result["epoch"]
+            step = result["step"]
+            mlflow_run_id = result["mlflow_run_id"]
+            ```
+        """
+        # 체크포인트 로더 설정 구성
+        loader_config = config.model_dump()
 
-        # 로더별 특화 설정 추가
-        if loader_key == "hf-model":
-            # HuggingFace 모델: 양자화 옵션
-            loader_config.update(
-                {
-                    "use_4bit": getattr(config.compute, "use_4bit", False)
-                    if hasattr(config, "compute")
-                    else False,
-                    "use_8bit": getattr(config.compute, "use_8bit", False)
-                    if hasattr(config, "compute")
-                    else False,
-                }
-            )
-        elif loader_key == "mtp-native":
-            # MTP Native: 헤드 개수 설정
-            loader_config.update(
-                {
-                    "num_heads": recipe.model.mtp.n_heads
-                    if recipe
-                    else 4,  # 기본 4헤드
-                }
-            )
-        elif loader_key == "checkpoint":
-            # 체크포인트: 옵티마이저/스케줄러 포함 로드
-            loader_config.update(
-                {
-                    "load_optimizer": True,  # 옵티마이저 상태 복원
-                    "load_scheduler": True,  # 스케줄러 상태 복원
-                }
-            )
+        # CheckpointLoader 생성 - 체크포인트 전용 특화 기능
+        return loader_registry.create("checkpoint-loader", loader_config)
 
-        # Registry에서 특화된 모델 로더 생성
-        return loader_registry.create(loader_key, loader_config)
-
-    @classmethod
-    def create_evaluator(cls, recipe: Recipe, config: Config) -> Evaluator:
+    @staticmethod
+    def create_evaluator(recipe: Recipe, config: Config) -> Evaluator:
         """평가 프로토콜별 특화된 평가기 생성.
 
         각 벤치마크마다 다른 평가 방식과 메트릭이 필요합니다:
@@ -462,14 +349,8 @@ class ComponentFactory:
         Raises:
             ValueError: 지원되지 않는 평가 프로토콜
         """
+        # 직접 호출: YAML protocol 값이 곧 Registry 키
         protocol = recipe.eval.protocol
-        evaluator_key = cls.EVALUATOR_MAP.get(protocol)
-
-        if not evaluator_key:
-            raise ValueError(
-                f"'{protocol}' 평가 프로토콜은 지원되지 않습니다. "
-                f"사용 가능한 프로토콜: {list(cls.EVALUATOR_MAP.keys())}"
-            )
 
         # 평가기 설정 구성
         evaluator_config = {
@@ -479,8 +360,188 @@ class ComponentFactory:
         }
 
         # Registry에서 특화된 평가기 생성
-        return evaluator_registry.create(evaluator_key, evaluator_config)
+        return evaluator_registry.create(protocol, evaluator_config)
 
-    # 📝 설계 변경 기록: build_pipeline_components 메서드 제거
-    # 이유: 파이프라인에서 create_* 메서드들을 직접 호출하여 더 명확한 제어 제공
-    # 각 컴포넌트의 생성 시점과 의존성을 파이프라인에서 명시적으로 관리
+    @staticmethod
+    def create_pretrainer(recipe: Recipe) -> Any:
+        """알고리즘별 사전훈련기 생성 - ComponentFactory 패턴 일관성 유지.
+
+        현재는 critic-wmtp의 Stage1 pretrainer만 지원하지만,
+        향후 다른 알고리즘의 multi-stage 학습을 위해 확장 가능한 구조로 설계.
+
+        알고리즘별 Pretrainer 매핑:
+            - critic-wmtp: Stage1 Value Head 훈련기
+            - rho1-wmtp: 현재 미지원 (단일 스테이지)
+            - mtp-baseline: 현재 미지원 (단일 스테이지)
+
+        Args:
+            recipe: 훈련 레시피 설정 (알고리즘 및 critic 설정 포함)
+
+        Returns:
+            선택된 알고리즘에 맞는 Pretrainer 인스턴스
+
+        Raises:
+            ValueError: 지원되지 않는 알고리즘이 요청된 경우
+        """
+        algo = recipe.train.algo
+
+        if algo == "critic-wmtp":
+            # Critic: Stage1 Value Head 훈련을 위한 설정
+            pretrainer_config = {
+                # 보상 타겟: "rm_sequence" (시퀀스 레벨 보상 사용)
+                "target": getattr(recipe.critic, "target", "rm_sequence")
+                if hasattr(recipe, "critic")
+                else "rm_sequence",
+                # 토큰 확산 방식: "gae" (Generalized Advantage Estimation)
+                "token_spread": getattr(recipe.critic, "token_spread", "gae")
+                if hasattr(recipe, "critic")
+                else "gae",
+                # 델타 계산 모드: "td" (Temporal Difference)
+                "delta_mode": getattr(recipe.critic, "delta_mode", "td")
+                if hasattr(recipe, "critic")
+                else "td",
+                # 정규화 방식: "zscore" (표준화)
+                "normalize": getattr(recipe.critic, "normalize", "zscore")
+                if hasattr(recipe, "critic")
+                else "zscore",
+                "temperature": recipe.loss.temperature,  # 소프트맥스 온도
+                "lr": 1e-4,  # Stage1 전용 학습률 (보통 메인보다 낮음)
+            }
+
+            # Registry에서 Stage1 Pretrainer 인스턴스 생성 및 반환
+            from src.components.registry import pretrainer_registry
+            return pretrainer_registry.create("critic-stage1-pretrainer-v1", pretrainer_config)
+
+        else:
+            # 다른 알고리즘들은 단일 스테이지이므로 pretrainer 불필요
+            raise ValueError(
+                f"Algorithm '{algo}' does not support multi-stage training. "
+                f"Only 'critic-wmtp' currently requires pretrainer."
+            )
+
+    @staticmethod
+    def create_aux_model_loader(recipe: Recipe, config: Config, aux_type: str) -> Loader:
+        """알고리즘별 보조 모델 로더 생성 - ref/rm 모델 전용.
+
+        WMTP 알고리즘별 보조 모델 처리를 위한 특화된 로더:
+            - rho1-wmtp: Reference Model 로딩 (CE 차이 계산용)
+            - critic-wmtp: Reward Model 로딩 (Value Head 훈련용)
+            - mtp-baseline: 보조 모델 불필요 (에러 발생)
+
+        create_model_loader와의 차이점:
+            1. 알고리즘별 특화: recipe.train.algo에 따른 검증
+            2. 보조 모델 전용: base 모델과 구분된 처리
+            3. 경로 자동 매핑: aux_type에 따른 config 경로 자동 선택
+            4. 타입 안전성: 잘못된 알고리즘-모델 조합 차단
+
+        Args:
+            recipe: 훈련 레시피 (알고리즘 타입 확인용)
+            config: 환경 설정 (모델 경로들 포함)
+            aux_type: 보조 모델 타입 ("ref" | "rm")
+
+        Returns:
+            알고리즘에 맞는 UnifiedModelLoader 인스턴스
+
+        Raises:
+            ValueError: 잘못된 알고리즘-보조모델 조합
+
+        Usage:
+            ```python
+            # Rho1 알고리즘의 참조 모델
+            ref_loader = ComponentFactory.create_aux_model_loader(
+                recipe, config, "ref"
+            )
+
+            # Critic 알고리즘의 보상 모델
+            rm_loader = ComponentFactory.create_aux_model_loader(
+                recipe, config, "rm"
+            )
+            ```
+        """
+        algo = recipe.train.algo
+
+        # 알고리즘별 보조 모델 필요성 검증
+        if algo == "mtp-baseline":
+            raise ValueError(
+                f"Algorithm '{algo}' does not require auxiliary models. "
+                f"Use create_model_loader() for base model only."
+            )
+        elif algo == "rho1-wmtp" and aux_type != "ref":
+            raise ValueError(
+                f"Algorithm '{algo}' only supports aux_type='ref' for reference model. "
+                f"Got aux_type='{aux_type}'"
+            )
+        elif algo == "critic-wmtp" and aux_type != "rm":
+            raise ValueError(
+                f"Algorithm '{algo}' only supports aux_type='rm' for reward model. "
+                f"Got aux_type='{aux_type}'"
+            )
+        elif algo not in ["rho1-wmtp", "critic-wmtp"]:
+            raise ValueError(
+                f"Algorithm '{algo}' is not supported for auxiliary model loading. "
+                f"Supported algorithms: 'rho1-wmtp', 'critic-wmtp'"
+            )
+
+        # aux_type에 따른 모델 경로 자동 매핑
+        aux_model_paths = {
+            "ref": config.paths.models.ref,
+            "rm": config.paths.models.rm,
+        }
+
+        if aux_type not in aux_model_paths:
+            raise ValueError(
+                f"Invalid aux_type '{aux_type}'. "
+                f"Supported types: {list(aux_model_paths.keys())}"
+            )
+
+        # UnifiedModelLoader 설정 - base loader와 동일하나 경로 및 메타데이터 차별화
+        loader_config = config.model_dump()
+
+        # 보조 모델 메타데이터 추가
+        loader_config["_aux_model_info"] = {
+            "algorithm": algo,
+            "aux_type": aux_type,
+            "model_path": str(aux_model_paths[aux_type]),
+            "description": f"{algo} auxiliary {aux_type} model loader",
+        }
+
+        # UnifiedModelLoader 생성 - 동일한 로더 클래스 사용
+        return loader_registry.create("unified-model-loader", loader_config)
+
+    @staticmethod
+    def create_tokenizer(recipe: Recipe, config: Config) -> Any:
+        """토크나이저 생성 - recipe/config만 사용하는 통합 패턴.
+
+        두 가지 토크나이저 중 recipe 설정에 따라 자동 선택:
+        1. "hf": HfSentencePieceTokenizer - HuggingFace 호환 인터페이스
+        2. "raw": SentencePieceTokenizer - Raw SentencePiece 인터페이스
+
+        Args:
+            recipe: 훈련 레시피 (tokenizer_type 필드 포함)
+            config: 환경 설정 (토크나이저 경로 정보 포함)
+
+        Returns:
+            토크나이저 BaseComponent 인스턴스
+
+        Raises:
+            ValueError: 지원되지 않는 tokenizer_type
+        """
+        # 1. tokenizer_type을 recipe에서 가져옴 (더 이상 별도 인자 불필요)
+        tokenizer_type = recipe.model.tokenizer_type
+
+        # 2. Registry 키 결정 - recipe 기반 tokenizer_type
+        if tokenizer_type in ["hf", "huggingface", "hf-sentencepiece"]:
+            registry_key = "hf"
+        elif tokenizer_type in ["raw", "sentencepiece", "default"]:
+            registry_key = "default"
+        else:
+            raise ValueError(
+                f"지원되지 않는 tokenizer_type: {tokenizer_type}. "
+                f"사용 가능한 옵션: 'hf', 'huggingface', 'raw', 'sentencepiece'"
+            )
+
+        # 3. 설정 구성 - config 값 직접 사용
+        tokenizer_config = config.model_dump()
+
+        # 4. Registry 생성 및 반환 - 표준 패턴
+        return tokenizer_registry.create(registry_key, tokenizer_config)
