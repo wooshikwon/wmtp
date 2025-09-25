@@ -7,7 +7,7 @@ recipe.yaml은 WMTP 실험의 핵심 설정으로, 세 가지 알고리즘(basel
 토큰 중요도 계산 방식과 손실 함수 가중치가 결정됩니다.
 
 핵심 기능:
-- 알고리즘 선택: mtp-baseline, critic-wmtp, rho1-wmtp 중 택일
+- 알고리즘 선택: baseline-mtp, critic-wmtp, rho1-wmtp 중 택일
 - 모델 설정: MTP 헤드 수, 예측 horizon, 토크나이저 설정
 - 학습 설정: 배치 크기, 학습률, epoch 수, 체크포인트 전략
 - 손실 함수 설정: lambda, temperature 등 가중치 제어 파라미터
@@ -242,7 +242,7 @@ class Checkpointing(BaseModel):
 class Train(BaseModel):
     """Training configuration."""
 
-    algo: Literal["mtp-baseline", "critic-wmtp", "rho1-wmtp"] = Field(
+    algo: Literal["baseline-mtp", "critic-wmtp", "rho1-wmtp"] = Field(
         ..., description="Training algorithm"
     )
     full_finetune: bool = Field(default=True, description="Full fine-tuning mode")
@@ -442,7 +442,7 @@ class Recipe(BaseModel):
             if self.rho1 is None:
                 raise ValueError("rho1 configuration is required when algo='rho1-wmtp'")
             # Critic config is ignored for rho1 algorithm
-        elif self.train.algo == "mtp-baseline":
+        elif self.train.algo == "baseline-mtp":
             # No critic or rho1 config needed for baseline
             pass
         else:

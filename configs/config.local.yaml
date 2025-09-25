@@ -13,8 +13,8 @@ storage:
 paths:
   models:
     base: "models/7b_1t_4"
-    rm: "models/Llama_3_8B_RM"
-    ref: "models/codellama_7b_python"
+    rm: "models/Starling-RM-7B-alpha"
+    ref: "models/Sheared-LLaMA-2.7B"
   datasets:
     mbpp: "dataset/mbpp"
     contest: "dataset/contest"

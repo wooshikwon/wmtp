@@ -93,21 +93,21 @@ def test_pipeline_s3_resume():
 
 
 def test_trainer_mlflow_pass():
-    """MTPWeightedCETrainer MLflow 전달 확인."""
-    print("5. MTPWeightedCETrainer MLflow 전달 확인...")
+    """BaseWmtpTrainer MLflow 전달 확인 (Phase 2 refactored)."""
+    print("5. BaseWmtpTrainer MLflow 전달 확인...")
     try:
         import inspect
-        from src.components.trainer.mtp_weighted_ce_trainer import MTPWeightedCETrainer
+        from src.components.trainer.base_wmtp_trainer import BaseWmtpTrainer
 
         # _save_checkpoint 메서드 소스 확인
-        source = inspect.getsource(MTPWeightedCETrainer._save_checkpoint)
+        source = inspect.getsource(BaseWmtpTrainer._save_checkpoint)
 
         # MLflow 매니저 전달 확인
         assert "mlflow_manager=self.mlflow" in source, "mlflow_manager 전달 안 함"
         print("   ✓ save_checkpoint에 mlflow_manager 전달 확인")
 
         # _save_final_checkpoint도 확인
-        source_final = inspect.getsource(MTPWeightedCETrainer._save_final_checkpoint)
+        source_final = inspect.getsource(BaseWmtpTrainer._save_final_checkpoint)
         assert "mlflow_manager=self.mlflow" in source_final, "최종 체크포인트에 mlflow_manager 전달 안 함"
         print("   ✓ save_final_checkpoint에도 mlflow_manager 전달 확인")
 

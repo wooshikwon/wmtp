@@ -22,7 +22,7 @@ model:
 
 # Training configuration for baseline
 train:
-  algo: "mtp-baseline"  # Key difference: no token weighting
+  algo: "baseline-mtp"  # Key difference: no token weighting
   full_finetune: true
   max_steps: 1000  # Maximum training steps
   checkpointing:

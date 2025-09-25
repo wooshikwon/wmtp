@@ -1,10 +1,7 @@
-"""Token importance scoring components (critic, rho-1)."""
+"""Token importance scoring components.
 
-# Import scorer implementations to ensure they are registered
-from .critic_delta import CriticDeltaScorer
-from .rho1_excess import Rho1ExcessScorer
+Note: As of v2.1.0, CriticDeltaScorer has been integrated directly into CriticWmtpTrainer.
+Only external scorer implementations remain in this module.
+"""
 
-__all__ = [
-    "CriticDeltaScorer",
-    "Rho1ExcessScorer",
-]
+__all__ = []

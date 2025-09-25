@@ -27,9 +27,13 @@ from torch.utils.data import DataLoader  # 데이터셋을 배치로 로드하�
 from torch.utils.data.distributed import DistributedSampler  # 분산 훈련을 위한 데이터 분배기
 from transformers import default_data_collator  # HuggingFace의 기본 데이터 배치 생성기
 
+from rich.console import Console  # Rich 콘솔 출력
+
 from src.factory.component_factory import ComponentFactory  # 알고리즘별 컴포넌트 생성 팩토리
 from src.settings import Config, Recipe  # Pydantic 기반 설정 모델들
 from src.utils import create_mlflow_manager, set_seed  # MLflow 추적과 재현성 보장 유틸
+
+console = Console()
 
 
 @dataclass
@@ -65,8 +69,6 @@ def run_training_pipeline(
     console.print("[bold green]🚀 파이프라인 실행 시작[/bold green]")
     console.print(f"[dim]🔍 파이프라인 단계 추적 시작...[/dim]")
 
-    # ------------------------------------------------------------
-
     # Step 0: 실험 추적 및 재현성 설정
     set_seed(config.seed)  # 동일한 시드로 재현 가능한 실험 보장
 
@@ -96,8 +98,6 @@ def run_training_pipeline(
 
     console.print(f"[dim]🔍 체크포인트 로딩 완료: epoch={start_epoch}, step={start_step}[/dim]")
     console.print(f"[dim]🔍 MLflow Run ID: {resume_run_id}[/dim]")
-
-    # ------------------------------------------------------------
 
     # Step 1: MLflow 실험 추적 초기화
     # 실험 메트릭과 아티팩트를 체계적으로 추적하기 위한 MLflow 설정
@@ -244,7 +244,8 @@ def run_training_pipeline(
         "base_tokenizer": tokenizer,
         "rm_model": rm_model,
         "recipe": recipe,
-        # 중복 제거: 이미 로드된 체크포인트 데이터와 메타데이터 전달
+
+        # 이미 로드된 체크포인트 데이터와 메타데이터 전달
         "checkpoint_data": checkpoint_data,
         "start_epoch": start_epoch,
         "start_step": start_step,

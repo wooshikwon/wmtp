@@ -53,8 +53,10 @@ class ComponentFactory:
         이 클래스는 설정 파일(recipe.yaml)의 알고리즘 선택에 따라
         적합한 컴포넌트 조합을 자동으로 생성합니다.
 
-        모든 WMTP 알고리즘은 동일한 MTPWeightedCETrainer를 사용하되,
-        서로 다른 Scorer를 조합하여 토큰 가중치 계산 방식을 차별화합니다.
+        Phase 2 리팩토링: 각 WMTP 알고리즘마다 독립된 트레이너 클래스를 사용합니다.
+        - BaselineMtpTrainer: 균등 가중치
+        - CriticWmtpTrainer: Critic 기반 가중치  
+        - Rho1WmtpTrainer: Reference 모델 기반 가중치
 
     설계 원칙:
         1. 하드코딩 방지: 모든 매핑 정보를 클래스 상수로 관리
@@ -77,7 +79,7 @@ class ComponentFactory:
 
         알고리즘별 Scorer 매핑:
             - mtp-baseline: None → 모든 토큰에 가중치 1.0 (균등)
-            - critic-wmtp: CriticDeltaScorer → δ_t = V_t - V_{t-1}
+            - critic-wmtp: None (v2.1.0부터 Trainer에 직접 통합)
             - rho1-wmtp: Rho1ExcessScorer → |CE^ref_t - CE^base_t|
 
         Args:
@@ -92,21 +94,15 @@ class ComponentFactory:
         algo = recipe.train.algo
 
         # Baseline: Scorer 없음 → 균등 가중치 (모든 토큰 = 1.0)
-        if algo == "mtp-baseline":
+        if algo == "baseline-mtp":
             return None
 
         # 직접 호출: YAML algo 값이 곧 Registry 키
 
         # 알고리즘별 Scorer 설정 준비
         if algo == "critic-wmtp":
-            # Critic: Value Function 기반 토큰 가중치 계산
-            scorer_config = {
-                "target": recipe.critic.target,  # 보상 타겟 ("rm_sequence")
-                "token_spread": recipe.critic.token_spread,  # 확산 방식 ("gae")
-                "delta_mode": recipe.critic.delta_mode,  # 델타 계산 ("td")
-                "normalize": recipe.critic.normalize,  # 정규화 방식 ("zscore")
-                "temperature": recipe.loss.temperature,  # 소프트맥스 온도
-            }
+            # Critic-WMTP v2.1.0부터 scorer 없이 동작 (Trainer에 직접 통합)
+            return None
         elif algo == "rho1-wmtp":
             # Rho1: Reference Model과의 CE 차이 기반 가중치
             scorer_config = {
@@ -128,8 +124,8 @@ class ComponentFactory:
 
         WMTP 설계의 우아함: "One Trainer, Multiple Scorers"
             이 메서드는 WMTP의 핵심 설계 철학을 보여줍니다.
-            모든 알고리즘이 동일한 MTPWeightedCETrainer를 사용하되,
-            서로 다른 Scorer를 조합하여 차별화됩니다.
+            Phase 2 리팩토링으로 각 알고리즘마다 독립된 트레이너를 사용합니다.
+            공통 로직은 BaseWmtpTrainer에 추상화되어 있습니다.
 
             이 통합 접근법의 장점:
             1. 공정한 비교: 알고리즘 간 차이는 오직 가중치 계산 방식
@@ -138,23 +134,23 @@ class ComponentFactory:
             4. 버그 최소화: 공통 로직은 한 번만 테스트
 
         알고리즘별 Trainer + Scorer 조합:
-            - mtp-baseline: MTPWeightedCETrainer + None → 균등 가중치
-            - critic-wmtp: MTPWeightedCETrainer + CriticDeltaScorer → δ 기반
-            - rho1-wmtp: MTPWeightedCETrainer + Rho1ExcessScorer → CE 차이 기반
+            - baseline-mtp: BaselineMtpTrainer → 균등 가중치 (scorer 불필요)
+            - critic-wmtp: CriticWmtpTrainer → Value Head 직접 통합 (v2.1.0+, scorer 불필요)
+            - rho1-wmtp: Rho1WmtpTrainer → Reference CE 직접 계산 (scorer 불필요)
 
         Args:
             recipe: 훈련 레시피 (알고리즘, MTP 설정, 손실함수 등)
             config: 환경 설정 (GPU, 분산훈련, 메모리 최적화 등)
 
         Returns:
-            설정된 MTPWeightedCETrainer 인스턴스
+            알고리즘별 독립 Trainer 인스턴스 (BaseWmtpTrainer 상속)
 
         Raises:
             ValueError: 지원되지 않는 알고리즘 요청시
         """
         # 1. scorer를 내부에서 자동 생성 (더 이상 별도 인자 불필요)
-        if recipe.train.algo == "mtp-baseline":
-            scorer = None  # Baseline: 균등 가중치
+        if recipe.train.algo in ["baseline-mtp", "critic-wmtp"]:
+            scorer = None  # Baseline: 균등 가중치, Critic-WMTP v2.1.0+: Trainer에 통합
         else:
             scorer = ComponentFactory.create_scorer(recipe)  # 자동으로 적합한 scorer 생성
 
@@ -260,6 +256,7 @@ class ComponentFactory:
             "paths": config.paths.model_dump(),
             "split": "train",  # 기본 분할
             "dataset_type": source,  # 명시적 타입 지정
+            "dataset_path": dataset_path,  # 경로 추가
         }
 
         # 4. UnifiedDataLoader 생성
@@ -410,7 +407,7 @@ class ComponentFactory:
 
             # Registry에서 Stage1 Pretrainer 인스턴스 생성 및 반환
             from src.components.registry import pretrainer_registry
-            return pretrainer_registry.create("critic-stage1-pretrainer-v1", pretrainer_config)
+            return pretrainer_registry.create("critic-head-pretrainer", pretrainer_config)
 
         else:
             # 다른 알고리즘들은 단일 스테이지이므로 pretrainer 불필요
@@ -461,7 +458,7 @@ class ComponentFactory:
         algo = recipe.train.algo
 
         # 알고리즘별 보조 모델 필요성 검증
-        if algo == "mtp-baseline":
+        if algo == "baseline-mtp":
             raise ValueError(
                 f"Algorithm '{algo}' does not require auxiliary models. "
                 f"Use create_model_loader() for base model only."
@@ -545,3 +542,98 @@ class ComponentFactory:
 
         # 4. Registry 생성 및 반환 - 표준 패턴
         return tokenizer_registry.create(registry_key, tokenizer_config)
+
+    @staticmethod
+    def create_evaluator_by_type(eval_type: str, recipe: Recipe, config: Config) -> Evaluator:
+        """평가 타입별 특화된 평가기 생성 (Meta 논문 지원).
+
+        Meta 2024 MTP 논문의 모든 평가 항목을 재현하기 위한
+        평가기 동적 생성 메서드. evaluation_pipeline.py에서 사용됩니다.
+
+        Args:
+            eval_type: 평가 타입
+                - "meta-mtp": Pass@k 메트릭
+                - "inference-speed": 추론 속도 비교
+                - "per-head-analysis": 헤드별 성능 분석
+                - "token-accuracy": 토큰 위치별 정확도
+            recipe: 평가 레시피 설정
+            config: 환경 설정
+
+        Returns:
+            평가 타입에 맞는 Evaluator 인스턴스
+
+        Raises:
+            ValueError: 지원되지 않는 평가 타입
+        """
+        # torch import for CUDA check
+        import torch
+
+        # 평가 타입별 설정 구성
+        eval_configs = {
+            "meta-mtp": {
+                "metrics": recipe.eval.metrics,
+                "sampling": recipe.eval.sampling.model_dump(),
+                "batch_size": recipe.data.eval.batch_size,
+                "device": "cuda" if torch.cuda.is_available() else "cpu"
+            },
+            "inference-speed": {
+                "batch_sizes": [1, 4, 8, 16],
+                "sequence_lengths": [512, 1024, 2048],
+                "num_trials": 10,
+                "warmup_steps": 3,
+                "device": "cuda" if torch.cuda.is_available() else "cpu"
+            },
+            "per-head-analysis": {
+                "analyze_positions": True,
+                "compute_confidence": True,
+                "head_comparison": True,
+                "position_buckets": [(0, 128), (128, 512), (512, 1024), (1024, 2048)],
+                "batch_size": recipe.data.eval.batch_size,
+                "device": "cuda" if torch.cuda.is_available() else "cpu"
+            },
+            "token-accuracy": {
+                "position_range": (0, 100),
+                "token_types": ["code", "text", "special"],
+                "accuracy_threshold": 0.5,
+                "granularity": 10,
+                "analyze_token_types": True,
+                "batch_size": recipe.data.eval.batch_size,
+                "device": "cuda" if torch.cuda.is_available() else "cpu"
+            },
+            # Phase 2 평가기 추가
+            "self-speculative": {
+                "num_sequences": 100,
+                "max_tokens": 512,
+                "temperature": recipe.eval.sampling.temperature if hasattr(recipe.eval.sampling, 'temperature') else 0.8,
+                "top_p": recipe.eval.sampling.top_p if hasattr(recipe.eval.sampling, 'top_p') else 0.95,
+                "measure_speedup": True,
+                "device": "cuda" if torch.cuda.is_available() else "cpu"
+            },
+            "perplexity-measurer": {
+                "batch_size": recipe.data.eval.batch_size,
+                "max_length": 2048,
+                "position_buckets": [[0, 128], [128, 512], [512, 1024], [1024, 2048]],
+                "analyze_token_types": True,
+                "compute_head_perplexity": True,
+                "device": "cuda" if torch.cuda.is_available() else "cpu"
+            },
+            "metrics-visualizer": {
+                "output_dir": "./figures",
+                "save_formats": ["png", "pdf"],
+                "use_plotly": True,
+                "upload_to_mlflow": True,
+                "figure_size": [10, 6]
+            }
+        }
+
+        if eval_type not in eval_configs:
+            raise ValueError(
+                f"지원되지 않는 평가 타입: {eval_type}. "
+                f"사용 가능한 옵션: {list(eval_configs.keys())}"
+            )
+
+        # 평가기 설정 가져오기
+        eval_config = eval_configs[eval_type]
+
+        # Registry에서 평가기 생성
+        return evaluator_registry.create(eval_type, eval_config)

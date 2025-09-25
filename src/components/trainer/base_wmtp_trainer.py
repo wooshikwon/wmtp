@@ -1,0 +1,550 @@
+"""
+WMTP 알고리즘 공통 기반 클래스
+
+BaseWmtpTrainer는 모든 WMTP 알고리즘(mtp-baseline, critic-wmtp, rho1-wmtp)의
+공통 기능을 제공하는 추상 클래스입니다.
+
+공통 기능:
+- 모델/옵티마이저 초기화 (setup)
+- 체크포인트 관리 훈련 루프 (run)
+- 체크포인트 저장/관리 (_save_checkpoint, _manage_checkpoints, _save_final_checkpoint)
+- MLflow 통합 및 분산 훈련 지원
+
+각 알고리즘별 구현이 필요한 추상 메서드:
+- compute_head_weights: 알고리즘별 헤드 가중치 계산
+- train_step: 알고리즘별 훈련 스텝 구현
+"""
+
+from __future__ import annotations  # Python 3.10+ 타입 힌트 호환성
+
+import math  # 수학 연산 (가중치 정규화 등)
+from abc import abstractmethod  # 추상 메서드
+from pathlib import Path  # 경로 처리
+from typing import Any  # 범용 타입 힌트
+
+import torch  # PyTorch 딥러닝 프레임워크
+import torch.nn as nn  # 신경망 모듈
+import torch.nn.functional as F  # 함수형 API (cross_entropy 등)
+from rich.console import Console  # 컬러풀한 콘솔 출력
+
+from src.components.base import BaseComponent  # WMTP 컴포넌트 베이스 클래스
+from src.utils import get_dist_manager  # 분산 훈련 매니저
+
+console = Console()  # 전역 콘솔 객체
+
+
+def compute_weighted_mtp_loss(
+    logits: torch.Tensor,  # [B, S, H, V]
+    target_ids: torch.Tensor,  # [B, S]
+    head_weights: torch.Tensor,  # [B, S, H] - 새로운 헤드별 가중치!
+    horizon: int,
+    ignore_index: int = -100,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    연구제안서 정확 구현: L_WMTP = Σ(k=0 to H-1) w_{t+k} × CE_k
+
+    각 헤드별 CE에 해당 헤드의 가중치를 직접 적용하여
+    토큰 중요도가 손실에 정확히 반영되도록 함.
+
+    Args:
+        logits: [batch, seq_len, horizon, vocab] - MTP 모델 출력
+        target_ids: [batch, seq_len] - 타겟 라벨
+        head_weights: [batch, seq_len, horizon] - 헤드별 가중치 매트릭스
+        horizon: 예측 헤드 수 (4)
+        ignore_index: 무시할 라벨 값
+
+    Returns:
+        weighted_loss: 가중 평균 손실 (scalar)
+        valid_mask: 유효한 위치 마스크 [batch, seq_len]
+        ce_per_head: 헤드별 CE 손실 [batch, seq_len, horizon] - Rho-1을 위한 핵심 반환값
+    """
+    # Input validation
+    if not isinstance(logits, torch.Tensor) or not isinstance(target_ids, torch.Tensor):
+        raise TypeError("logits and target_ids must be torch.Tensor")
+
+    if not isinstance(head_weights, torch.Tensor):
+        raise TypeError("head_weights must be torch.Tensor")
+
+    if logits.ndim != 4:
+        raise ValueError(f"logits must be 4D [B,S,H,V], got shape {logits.shape}")
+
+    if target_ids.ndim != 2:
+        raise ValueError(f"target_ids must be 2D [B,S], got shape {target_ids.shape}")
+
+    if head_weights.ndim != 3:
+        raise ValueError(
+            f"head_weights must be 3D [B,S,H], got shape {head_weights.shape}"
+        )
+
+    bsz, seqlen, H, vocab = logits.shape
+    if target_ids.shape != (bsz, seqlen):
+        raise ValueError(
+            f"Shape mismatch: logits {logits.shape} vs target_ids {target_ids.shape}"
+        )
+
+    if head_weights.shape != (bsz, seqlen, H):
+        raise ValueError(
+            f"Shape mismatch: head_weights {head_weights.shape} vs expected {(bsz, seqlen, H)}"
+        )
+
+    if horizon != H:
+        raise ValueError(
+            f"Mismatch between logits heads ({H}) and configured horizon ({horizon})"
+        )
+
+    device = logits.device
+    dtype = logits.dtype
+
+    # 헤드별 가중 CE 누적용
+    weighted_ce_sum = torch.zeros((bsz, seqlen), device=device, dtype=dtype)
+    total_weights = torch.zeros((bsz, seqlen), device=device, dtype=dtype)
+
+    # Rho-1을 위한 헤드별 CE 저장 [B, S, H]
+    ce_per_head = torch.zeros((bsz, seqlen, H), device=device, dtype=dtype)
+
+    # 각 헤드별로 CE 계산 및 가중치 적용
+    for k in range(H):
+        shift = k + 1  # k번째 헤드는 t+(k+1) 위치 예측
+        valid_len = seqlen - shift
+        if valid_len <= 0:
+            continue
+
+        # 유효 영역 슬라이싱
+        logits_k = logits[:, :valid_len, k, :]  # [B, valid_len, V]
+        labels_k = target_ids[:, shift : shift + valid_len]  # [B, valid_len]
+        weights_k = head_weights[:, :valid_len, k]  # [B, valid_len]
+
+        # 헤드별 CE 계산
+        ce_k = F.cross_entropy(
+            logits_k.transpose(1, 2),  # [B, V, valid_len]
+            labels_k,
+            ignore_index=ignore_index,
+            reduction="none",
+        )  # [B, valid_len]
+
+        # 유효 위치 마스킹 (ignore_index 제외)
+        valid_k_mask = (labels_k != ignore_index).to(dtype)  # [B, valid_len]
+
+        # Rho-1을 위한 헤드별 CE 저장 (마스킹 적용)
+        ce_per_head[:, :valid_len, k] = ce_k * valid_k_mask
+
+        # 가중 CE: w_{t+k} × CE_k (연구제안서 공식!)
+        weighted_ce_k = weights_k * ce_k * valid_k_mask  # [B, valid_len]
+        effective_weights_k = weights_k * valid_k_mask  # [B, valid_len]
+
+        # 전체 시퀀스에 누적 ([B, S] 형태로 맞춤)
+        weighted_ce_sum[:, :valid_len] += weighted_ce_k
+        total_weights[:, :valid_len] += effective_weights_k
+
+    # 가중 평균 계산 (분모 0 방지)
+    total_weights_clamped = torch.clamp(total_weights, min=1e-8)
+    weighted_loss_per_token = weighted_ce_sum / total_weights_clamped
+
+    # 유효 마스크: 최소 하나의 헤드에서 유효한 위치
+    valid_mask = total_weights > 1e-8
+
+    # 최종 스칼라 손실: 유효 토큰들의 평균
+    if valid_mask.any():
+        final_loss = (
+            weighted_loss_per_token * valid_mask.to(dtype)
+        ).sum() / valid_mask.sum().to(dtype)
+    else:
+        final_loss = torch.tensor(0.0, device=device, dtype=dtype)
+
+    return final_loss, valid_mask, ce_per_head
+
+
+class BaseWmtpTrainer(BaseComponent):
+    """WMTP 알고리즘 공통 기능을 제공하는 추상 기반 클래스.
+
+    연구 철학 "Not All Tokens Are What You Need"의 구현을 위해
+    모든 WMTP 알고리즘(mtp-baseline, critic-wmtp, rho1-wmtp)이
+    공유하는 기본 기능을 제공합니다.
+
+    🔬 핵심 동작 원리:
+        1. 알고리즘별 토큰 가중치 계산 (compute_head_weights - 추상)
+        2. 각 MTP 헤드별로 Cross-Entropy 손실 계산
+        3. WMTP 공식 적용: L_WMTP = Σ w_{t+k} × CE_k
+        4. 체크포인트 관리와 MLflow 통합된 훈련 루프
+
+    공통 제공 기능:
+        - 모델/옵티마이저 초기화 및 분산 훈련 설정 (setup)
+        - 체크포인트 관리 훈련 루프 (run)
+        - 주기적/최종 체크포인트 저장/관리
+        - MLflow 실험 추적 통합
+        - 혼합 정밀도 및 그래디언트 클리핑
+
+    필수 구현 메서드 (하위 클래스에서):
+        - compute_head_weights: 알고리즘별 헤드 가중치 계산
+        - train_step: 알고리즘별 훈련 스텝 구현
+
+    필수 설정 키:
+        - horizon: 예측 헤드 수 (일반적으로 4)
+        - mixed_precision: 혼합 정밀도 ("bf16"/"fp16"/"fp32")
+        - loss_config: 손실 함수 설정 (lambda 등)
+        - scorer: 토큰 가중치 계산기 (None이면 baseline)
+    """
+
+    def __init__(self, config: dict[str, Any] | None = None):
+        """WMTP 베이스 트레이너 초기화.
+
+        Args:
+            config: 트레이너 설정 딕셔너리 (horizon, 손실 설정, Scorer 등)
+        """
+        super().__init__(config)
+
+        # 주요 컴포넌트들 (setup에서 초기화됨)
+        self.model: nn.Module | None = None  # Facebook MTP 모델
+        self.optimizer = None  # AdamW 등 최적화기
+
+        # 훈련 상태 추적
+        self.global_step: int = 0  # 전역 훈련 스텝 카운터
+
+        # MTP 설정
+        self.horizon: int = int(self.config.get("horizon", 4))  # 예측 헤드 수
+
+        # Scorer 출력 캐싱 (성능 최적화용)
+        self._last_score_out: dict[str, Any] | None = None
+
+    def setup(self, ctx: dict[str, Any]) -> None:
+        """트레이너 초기화 - 모델, 분산 훈련, Scorer 등 모든 컴포넌트 설정.
+
+        이 메서드는 파이프라인에서 제공받은 컴포넌트들을 연결하고
+        WMTP 훈련에 필요한 모든 설정을 완료합니다.
+
+        Args:
+            ctx: 컨텍스트 딕셔너리 (model, optimizer, scorers, tokenizers 등)
+        """
+        super().setup(ctx)
+        dm = get_dist_manager()  # 분산 훈련 매니저
+
+        # 필수 컴포넌트 검증 및 설정
+        model: nn.Module | None = ctx.get("model")  # Facebook MTP 모델
+        optimizer = ctx.get("optimizer")  # AdamW 등 최적화기
+        if model is None:
+            raise ValueError("트레이너에 'model'이 필요합니다 (ctx에서 누락)")
+        if optimizer is None:
+            raise ValueError("트레이너에 'optimizer'가 필요합니다 (ctx에서 누락)")
+
+        # 분산 훈련: FSDP 래핑 (선택적)
+        fsdp_cfg = self.config.get("fsdp_config")
+        if fsdp_cfg:
+            # Fully Sharded Data Parallel로 모델 래핑
+            model = dm.setup_fsdp(model, fsdp_cfg)
+
+        self.model = model
+        self.optimizer = optimizer
+
+        # 디바이스 설정 - 모델의 파라미터로부터 추론
+        if hasattr(model, 'parameters') and list(model.parameters()):
+            self.device = next(model.parameters()).device
+        else:
+            # 폴백: 사용 가능한 최적 디바이스 자동 선택
+            if torch.cuda.is_available():
+                self.device = torch.device('cuda')
+            elif torch.backends.mps.is_available():
+                self.device = torch.device('mps')
+            else:
+                self.device = torch.device('cpu')
+
+        # 혼합 정밀도 설정: 메모리와 속도 최적화
+        mp = str(self.config.get("mixed_precision", "bf16")).lower()
+        if mp not in {"bf16", "fp16", "fp32"}:
+            mp = "bf16"  # 기본값: BFloat16 (권장)
+
+        self._amp_dtype = (
+            torch.bfloat16  # BF16: 안정성과 성능의 균형
+            if mp == "bf16"
+            else (torch.float16 if mp == "fp16" else torch.float32)  # FP16 또는 FP32
+        )
+
+        # 🎯 핵심: 알고리즘별 토큰 가중치 계산 Scorer 연결
+        self.scorer = self.config.get(
+            "scorer"
+        )  # None(baseline), CriticScorer, Rho1Scorer
+
+        # WMTP 손실 함수 설정
+        self.loss_cfg = self.config.get("loss_config", {})
+
+        # MLflow 실험 추적 (선택적)
+        self.mlflow = ctx.get("mlflow_manager")
+
+        # 알고리즘별 보조 모델들 (선택적 - 해당 알고리즘에서만 사용)
+        self.ref_model: nn.Module | None = ctx.get("ref_model")  # Rho-1용 참조 모델
+        self.rm_model: nn.Module | None = ctx.get("rm_model")  # Critic용 보상 모델
+        self.base_tokenizer = ctx.get("base_tokenizer")  # 기본 토크나이저
+        self.ref_tokenizer = ctx.get("ref_tokenizer")  # 참조 모델용 토크나이저
+
+        # 체크포인트 관리 설정
+        self.dist_manager = dm  # 분산 훈련 매니저 (체크포인트 저장/로드용)
+
+        # Recipe에서 체크포인트 설정 파싱
+        recipe = ctx.get("recipe")  # Recipe 객체 가져오기 (없으면 None)
+        if (
+            recipe
+            and hasattr(recipe, "train")
+            and hasattr(recipe.train, "checkpointing")
+        ):
+            checkpointing = recipe.train.checkpointing
+            self.save_interval = getattr(checkpointing, "save_interval", 100)
+            self.keep_last = getattr(checkpointing, "keep_last", 3)
+            self.save_final = getattr(checkpointing, "save_final", True)
+        else:
+            # 기본값 설정
+            self.save_interval = 100
+            self.keep_last = 3
+            self.save_final = True
+
+        # 알고리즘 정보 저장 (recipe에서 추출)
+        self.algorithm = (
+            getattr(recipe.train, "algo", "wmtp")
+            if recipe and hasattr(recipe, "train")
+            else "wmtp"
+        )
+
+        # 체크포인트 디렉토리 설정
+        run_name = (
+            recipe.run.name if recipe and hasattr(recipe, "run") else "default"
+        )
+        self.checkpoint_dir = Path("./checkpoints") / run_name
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+        # 저장된 체크포인트 목록 관리
+        self.saved_checkpoints = []
+
+        # 재개 처리 로직
+        self.start_step = 0
+        self.resume_metrics = {}
+
+        resume_checkpoint = ctx.get("resume_checkpoint")
+        if resume_checkpoint:
+            checkpoint_data = self.dist_manager.load_checkpoint(
+                model=self.model,
+                optimizer=self.optimizer,
+                checkpoint_path=str(resume_checkpoint),
+            )
+
+            self.start_step = checkpoint_data.get("step", 0)
+            self.resume_metrics = checkpoint_data.get("metrics", {})
+
+            console.print(
+                f"[green]Model and optimizer states restored from step {self.start_step}[/green]"
+            )
+
+    @abstractmethod
+    def compute_head_weights(self, logits: torch.Tensor, target_ids: torch.Tensor, **kwargs) -> torch.Tensor:
+        """각 알고리즘별 헤드 가중치 계산 (필수 구현).
+
+        Args:
+            logits: MTP 모델 출력 [B, S, H, V]
+            target_ids: 타겟 토큰 ID [B, S]
+            **kwargs: 알고리즘별 추가 인자 (hidden_states, ce_per_head 등)
+
+        Returns:
+            head_weights: 헤드별 가중치 [B, S, H]
+        """
+        pass
+
+    @abstractmethod
+    def train_step(self, batch: dict[str, Any]) -> dict[str, Any]:
+        """알고리즘별 훈련 스텝 구현 (필수 구현).
+
+        Args:
+            batch: 훈련 배치 데이터
+
+        Returns:
+            메트릭 딕셔너리 (loss, lr 등)
+        """
+        pass
+
+    def run(self, ctx: dict[str, Any]) -> dict[str, Any]:
+        """
+        체크포인트 저장 기능이 포함된 확장된 훈련 루프.
+        주기적 체크포인트 저장과 최종 모델 저장을 지원합니다.
+
+        Args:
+            ctx: 'train_dataloader'와 'max_steps' 포함
+
+        Returns:
+            훈련 메트릭 딕셔너리
+        """
+        if self.model is None:
+            raise RuntimeError("Trainer not initialized. Call setup() first.")
+
+        dataloader = ctx.get("train_dataloader")
+        if dataloader is None:
+            raise ValueError("Trainer.run expects 'train_dataloader' in ctx")
+        max_steps: int | None = ctx.get("max_steps")
+
+        epoch = 0  # 단순화를 위해 epoch=0으로 설정
+        metrics = {}
+
+        console.print(
+            f"[green]체크포인트 저장 활성화: 매 {self.save_interval}스텝마다 저장[/green]"
+        )
+        console.print(f"[green]체크포인트 디렉토리: {self.checkpoint_dir}[/green]")
+
+        for step, batch in enumerate(dataloader):
+            current_step = step + 1
+
+            # 재개시 이미 완료된 스텝 건너뛰기
+            if current_step <= self.start_step:
+                continue
+
+            # 각 알고리즘별 훈련 스텝 실행 (추상 메서드)
+            out = self.train_step(batch)
+            metrics = out
+
+            # 주기적 체크포인트 저장
+            if current_step % self.save_interval == 0:
+                try:
+                    checkpoint_path = self._save_checkpoint(
+                        epoch, current_step, metrics
+                    )
+                    self.saved_checkpoints = self._manage_checkpoints(
+                        self.saved_checkpoints, checkpoint_path
+                    )
+                except Exception as e:
+                    console.print(
+                        f"[yellow]체크포인트 저장 실패 (스텝 {current_step}): {e}[/yellow]"
+                    )
+
+            # 최대 스텝 도달 시 종료
+            if max_steps is not None and current_step >= max_steps:
+                break
+
+        # 최종 체크포인트 저장
+        if self.save_final:
+            try:
+                final_step = step + 1 if "step" in locals() else 1
+                final_path = self._save_final_checkpoint(epoch, final_step, metrics)
+                console.print(f"[green]최종 모델 저장 완료: {final_path}[/green]")
+            except Exception as e:
+                console.print(f"[yellow]최종 모델 저장 실패: {e}[/yellow]")
+
+        return metrics
+
+    def _save_checkpoint(self, epoch: int, step: int, metrics: dict) -> Path:
+        """
+        단일 체크포인트 저장.
+
+        Args:
+            epoch: 현재 에폭
+            step: 현재 스텝
+            metrics: 훈련 메트릭
+
+        Returns:
+            저장된 체크포인트 경로
+        """
+        checkpoint_path = self.checkpoint_dir / f"checkpoint_step_{step}.pt"
+
+        # FSDP 호환 체크포인트 저장 (MLflow 통합)
+        self.dist_manager.save_checkpoint(
+            model=self.model,
+            optimizer=self.optimizer,
+            checkpoint_path=str(checkpoint_path),
+            epoch=epoch,
+            step=step,
+            mlflow_manager=self.mlflow,  # MLflow 매니저 전달
+            metrics=metrics,
+            algorithm=getattr(self, "algorithm", "wmtp"),
+            mlflow_run_id=self.mlflow.get_run_id() if self.mlflow else None,
+        )
+
+        # MLflow에 아티팩트 업로드 (있는 경우)
+        if self.mlflow is not None:
+            try:
+                self.mlflow.log_artifact(
+                    local_path=checkpoint_path, artifact_path="checkpoints"
+                )
+                console.print(
+                    f"[green]Checkpoint uploaded to MLflow: {checkpoint_path.name}[/green]"
+                )
+            except Exception as e:
+                console.print(f"[yellow]MLflow upload warning: {e}[/yellow]")
+
+        console.print(f"[green]체크포인트 저장 완료: {checkpoint_path}[/green]")
+        return checkpoint_path
+
+    def _manage_checkpoints(
+        self, saved_checkpoints: list, new_checkpoint: Path
+    ) -> list:
+        """
+        체크포인트 파일 개수 관리 (keep_last 개만 유지).
+
+        Args:
+            saved_checkpoints: 기존 체크포인트 목록
+            new_checkpoint: 새로 저장된 체크포인트
+
+        Returns:
+            업데이트된 체크포인트 목록
+        """
+        saved_checkpoints.append(new_checkpoint)
+
+        # keep_last 개수 초과 시 오래된 파일 삭제
+        while len(saved_checkpoints) > self.keep_last:
+            old_checkpoint = saved_checkpoints.pop(0)
+            try:
+                if old_checkpoint.exists():
+                    old_checkpoint.unlink()
+                    console.print(
+                        f"[blue]이전 체크포인트 삭제: {old_checkpoint.name}[/blue]"
+                    )
+            except Exception as e:
+                console.print(f"[yellow]체크포인트 삭제 실패: {e}[/yellow]")
+
+        return saved_checkpoints
+
+    def _save_final_checkpoint(self, epoch: int, step: int, metrics: dict) -> Path:
+        """
+        최종 모델 저장.
+
+        Args:
+            epoch: 최종 에폭
+            step: 최종 스텝
+            metrics: 최종 메트릭
+
+        Returns:
+            저장된 최종 모델 경로
+        """
+        final_path = self.checkpoint_dir / "final_model.pt"
+
+        # 최종 체크포인트 저장 (MLflow 통합)
+        self.dist_manager.save_checkpoint(
+            model=self.model,
+            optimizer=self.optimizer,
+            checkpoint_path=str(final_path),
+            epoch=epoch,
+            step=step,
+            mlflow_manager=self.mlflow,  # MLflow 매니저 전달
+            metrics=metrics,
+            algorithm=getattr(self, "algorithm", "wmtp"),
+            final_model=True,
+            mlflow_run_id=self.mlflow.get_run_id() if self.mlflow else None,
+        )
+
+        # MLflow 모델 레지스트리 등록 및 아티팩트 업로드
+        if self.mlflow is not None:
+            try:
+                # 모델 이름 생성 (recipe에서 알고리즘 정보 사용)
+                model_name = f"wmtp-{self.algorithm}"
+
+                # 모델 레지스트리 등록
+                self.mlflow.log_model(
+                    model=self.model,
+                    artifact_path="final_model",
+                    registered_model_name=model_name,
+                )
+
+                # 체크포인트 파일 업로드
+                self.mlflow.log_artifact(
+                    local_path=final_path, artifact_path="final_checkpoint"
+                )
+
+                console.print(f"[green]MLflow 모델 등록 완료: {model_name}[/green]")
+            except Exception as e:
+                console.print(
+                    f"[yellow]MLflow model registration warning: {e}[/yellow]"
+                )
+
+        return final_path

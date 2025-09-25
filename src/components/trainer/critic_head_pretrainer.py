@@ -1,8 +1,8 @@
 """
-Critic Stage1 pretrainer implemented as a trainer component.
+Critic Head Pretrainer - Value Head 사전학습 컴포넌트.
 
-Runs lightweight value-head regression using RM sequence rewards and
-stores the trained head to cache for Stage2 usage.
+RM(Reward Model)의 시퀀스 보상을 사용하여 가치함수 헤드를 학습하고,
+Critic WMTP의 Stage 2에서 사용할 수 있도록 저장합니다.
 """
 
 from __future__ import annotations
@@ -15,14 +15,14 @@ import torch
 from src.components.base import BaseComponent
 from src.components.registry import pretrainer_registry
 from src.components.reward.sequence_reward import compute_sequence_rewards
-from src.components.scorer.critic_delta import CriticDeltaScorer
+import torch.nn as nn
 
 
 @pretrainer_registry.register(
-    "critic-stage1-pretrainer-v1", category="pretrainer", version="1.0.0"
+    "critic-head-pretrainer", category="pretrainer", version="1.0.0"
 )
-class CriticStage1Pretrainer(BaseComponent):
-    """Stage1 trainer to fit a value head for critic-wmtp."""
+class CriticHeadPretrainer(BaseComponent):
+    """Critic WMTP를 위한 Value Head 사전학습 트레이너."""
 
     def run(self, ctx: dict[str, Any]) -> dict[str, Any]:
         self.validate_initialized()
@@ -42,12 +42,20 @@ class CriticStage1Pretrainer(BaseComponent):
         hidden_size = getattr(
             getattr(base_model, "config", object()), "hidden_size", 4096
         )
-        scorer = CriticDeltaScorer(
-            {
-                "target": self.config.get("target", "rm_sequence"),
-                "token_spread": self.config.get("token_spread", "gae"),
-                "delta_mode": self.config.get("delta_mode", "td"),
-                "normalize": self.config.get("normalize", "zscore"),
+
+        # Value Head 직접 생성 (CriticDeltaScorer 대신)
+        value_head = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_size // 2, 1),
+        )
+
+        # 설정 가져오기
+        config = {
+            "target": self.config.get("target", "rm_sequence"),
+            "token_spread": self.config.get("token_spread", "gae"),
+            "delta_mode": self.config.get("delta_mode", "td"),
+            "normalize": self.config.get("normalize", "zscore"),
                 "temperature": self.config.get("temperature", 0.7),
             }
         )

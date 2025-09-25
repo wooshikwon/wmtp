@@ -130,6 +130,13 @@ class _CompatibilityAdapter:
     def create(self, key: str, config=None):
         return registry.create(key, category=self.category, config=config)
 
+    def list_keys(self, category: str = None):
+        """List all keys in this category."""
+        # If category is provided and matches, or if not provided, use self.category
+        if category is None or category == self.category:
+            return list(registry._by_category.get(self.category, {}).keys())
+        return []
+
 # 기존 인터페이스 유지 - 코드 변경 없이 작동
 loader_registry = _CompatibilityAdapter("loader")
 scorer_registry = _CompatibilityAdapter("scorer")
