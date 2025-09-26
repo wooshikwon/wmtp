@@ -24,8 +24,11 @@ import torch
 import torch.nn.functional as F
 from rich.console import Console
 
-from src.components.trainer.base_wmtp_trainer import BaseWmtpTrainer, compute_weighted_mtp_loss
 from src.components.registry import trainer_registry
+from src.components.trainer.base_wmtp_trainer import (
+    BaseWmtpTrainer,
+    compute_weighted_mtp_loss,
+)
 
 console = Console()
 
@@ -54,7 +57,9 @@ class BaselineMtpTrainer(BaseWmtpTrainer):
         - 빠른 실험 및 디버깅
     """
 
-    def compute_head_weights(self, logits: torch.Tensor, target_ids: torch.Tensor, **kwargs) -> torch.Tensor:
+    def compute_head_weights(
+        self, logits: torch.Tensor, target_ids: torch.Tensor, **kwargs  # noqa: ARG002
+    ) -> torch.Tensor:
         """균등 헤드 가중치 계산 - 모든 헤드에 1.0 가중치.
 
         가장 단순한 가중치 계산으로 모든 MTP 헤드에 동일한 중요도를 부여합니다.
@@ -85,8 +90,9 @@ class BaselineMtpTrainer(BaseWmtpTrainer):
         self.model.train()
 
         # 배치를 디바이스로 이동
-        batch = {k: v.to(self.device) if torch.is_tensor(v) else v
-                 for k, v in batch.items()}
+        batch = {
+            k: v.to(self.device) if torch.is_tensor(v) else v for k, v in batch.items()
+        }
 
         target_ids: torch.Tensor = batch["labels"]  # [B, S]
 
@@ -160,7 +166,9 @@ class BaselineMtpTrainer(BaseWmtpTrainer):
                         shift = k + 1
                         valid_len = S - shift
                         if valid_len <= 0:
-                            ce_head_means.append(torch.tensor(0.0, device=logits.device))
+                            ce_head_means.append(
+                                torch.tensor(0.0, device=logits.device)
+                            )
                             continue
                         logits_k = logits[:, :valid_len, k, :]
                         labels_k = target_ids[:, shift : shift + valid_len]
@@ -178,18 +186,30 @@ class BaselineMtpTrainer(BaseWmtpTrainer):
                         f"train/ce_head_{i}": float(x)
                         for i, x in enumerate(ce_head_means)
                     }
-                    metrics.update({
-                        "train/loss": float(loss.detach().item()),
-                        "train/ce_mean": float(
-                            (ce_per_head[valid_mask.unsqueeze(-1).expand(-1, -1, H)]).mean().item()
-                        ) if valid_mask.any() else 0.0,
-                    })
+                    metrics.update(
+                        {
+                            "train/loss": float(loss.detach().item()),
+                            "train/ce_mean": float(
+                                (
+                                    ce_per_head[
+                                        valid_mask.unsqueeze(-1).expand(-1, -1, H)
+                                    ]
+                                )
+                                .mean()
+                                .item()
+                            )
+                            if valid_mask.any()
+                            else 0.0,
+                        }
+                    )
 
                     # Baseline 특화 메트릭
-                    metrics.update({
-                        "train/baseline_uniform_weight": 1.0,  # 항상 1.0
-                        "train/baseline_algorithm": 1,  # Baseline 플래그
-                    })
+                    metrics.update(
+                        {
+                            "train/baseline_uniform_weight": 1.0,  # 항상 1.0
+                            "train/baseline_algorithm": 1,  # Baseline 플래그
+                        }
+                    )
 
                     # 유효 토큰 비율
                     total_tokens = float(valid_mask.numel())

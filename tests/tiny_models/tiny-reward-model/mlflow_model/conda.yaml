@@ -1,0 +1,7 @@
+channels:
+- conda-forge
+- pytorch
+dependencies:
+- python=3.12
+- pytorch>=2.0.0
+name: wmtp_reward_model_env

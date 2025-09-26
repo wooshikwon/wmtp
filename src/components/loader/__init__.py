@@ -7,13 +7,13 @@ of datasets and models through a single interface.
 
 # Import base classes
 from .base_loader import BaseLoader, DatasetLoader, ModelLoader
-from .unified_data_loader import UnifiedDataLoader
-
-# Import unified loaders (Phase 2)
-from .unified_model_loader import UnifiedModelLoader
 
 # Import specialized loaders
 from .checkpoint_loader import CheckpointLoader
+
+# Import unified loaders (Phase 2)
+from .standardized_model_loader import StandardizedModelLoader
+from .unified_data_loader import UnifiedDataLoader
 
 # Export loaders
 __all__ = [
@@ -22,7 +22,7 @@ __all__ = [
     "DatasetLoader",
     "ModelLoader",
     # Unified loaders (Phase 2)
-    "UnifiedModelLoader",
+    "StandardizedModelLoader",
     "UnifiedDataLoader",
     # Specialized loaders
     "CheckpointLoader",
@@ -30,7 +30,7 @@ __all__ = [
 
 # Registry keys for unified loaders
 MODEL_LOADER_KEYS = {
-    "unified": "unified-model-loader",
+    "standardized": "standardized-model-loader",
     "checkpoint": "checkpoint-loader",
 }
 

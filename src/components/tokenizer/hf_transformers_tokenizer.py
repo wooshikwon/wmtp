@@ -15,7 +15,7 @@ SentencePiece 의존성 없이 다양한 모델을 지원합니다.
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 from datasets import Dataset
 from transformers import AutoTokenizer, PreTrainedTokenizer
@@ -38,8 +38,8 @@ class HfTransformersTokenizer(BaseComponent):
     """
 
     # 클래스 레벨 싱글톤 변수 (모델별 캐싱)
-    _tokenizers: Dict[str, PreTrainedTokenizer] = {}
-    _instances: Dict[str, "HfTransformersTokenizer"] = {}
+    _tokenizers: dict[str, PreTrainedTokenizer] = {}
+    _instances: dict[str, "HfTransformersTokenizer"] = {}
 
     def __new__(cls, config: dict[str, Any], *args, **kwargs):
         """모델별 싱글톤 패턴 구현"""
@@ -133,7 +133,9 @@ class HfTransformersTokenizer(BaseComponent):
                 elif model_path.name:
                     self.model_id = model_path.name
 
-        logger.debug(f"토크나이저 설정 업데이트: model_id={self.model_id}, pad_side={self.pad_side}")
+        logger.debug(
+            f"토크나이저 설정 업데이트: model_id={self.model_id}, pad_side={self.pad_side}"
+        )
 
     def _ensure_tokenizer_loaded(self) -> None:
         """
@@ -156,7 +158,7 @@ class HfTransformersTokenizer(BaseComponent):
                     use_fast=True,  # Rust 기반 빠른 토크나이저 사용
                     trust_remote_code=False,  # 보안: 원격 코드 실행 방지
                     cache_dir=self.cache_dir,
-                    local_files_only=True
+                    local_files_only=True,
                 )
             except Exception as e:
                 logger.warning(f"로컬 로드 실패, HuggingFace Hub 시도: {e}")
@@ -172,7 +174,7 @@ class HfTransformersTokenizer(BaseComponent):
                     self.model_id,
                     use_fast=True,
                     trust_remote_code=False,
-                    cache_dir=self.cache_dir
+                    cache_dir=self.cache_dir,
                 )
             except Exception as e:
                 # 최종 폴백: 기본 GPT-2 토크나이저
@@ -183,9 +185,9 @@ class HfTransformersTokenizer(BaseComponent):
                             "gpt2",
                             use_fast=True,
                             trust_remote_code=False,
-                            cache_dir=self.cache_dir
+                            cache_dir=self.cache_dir,
                         )
-                        logger.warning(f"⚠️ GPT-2 토크나이저로 폴백 (호환성 주의)")
+                        logger.warning("⚠️ GPT-2 토크나이저로 폴백 (호환성 주의)")
                     except Exception as e2:
                         raise RuntimeError(
                             f"토크나이저 로드 완전 실패: {self.model_id}\n"
@@ -268,14 +270,14 @@ class HfTransformersTokenizer(BaseComponent):
 
     def __call__(
         self,
-        text: Union[str, List[str]],
-        truncation: Optional[bool] = None,
-        max_length: Optional[int] = None,
-        padding: Union[bool, str] = None,
+        text: str | list[str],
+        truncation: bool | None = None,
+        max_length: int | None = None,
+        padding: bool | str = None,
         return_attention_mask: bool = True,
-        return_tensors: Optional[str] = None,
-        **kwargs
-    ) -> Dict[str, Any]:
+        return_tensors: str | None = None,
+        **kwargs,
+    ) -> dict[str, Any]:
         """
         HuggingFace 호환 토크나이징 인터페이스.
 
@@ -311,18 +313,18 @@ class HfTransformersTokenizer(BaseComponent):
             padding=padding,
             return_attention_mask=return_attention_mask,
             return_tensors=return_tensors,
-            **kwargs
+            **kwargs,
         )
 
     def tokenize_dataset(
         self,
         dataset: Dataset,
         max_length: int,
-        text_column: Optional[str] = None,
-        remove_columns: Optional[List[str]] = None,
+        text_column: str | None = None,
+        remove_columns: list[str] | None = None,
         load_from_cache_file: bool = True,
-        num_proc: Optional[int] = None,
-        **kwargs
+        num_proc: int | None = None,
+        **kwargs,
     ) -> Dataset:
         """
         HuggingFace Dataset 토크나이징.
@@ -354,7 +356,9 @@ class HfTransformersTokenizer(BaseComponent):
                         texts = examples[col]
                         break
                 else:
-                    raise ValueError(f"텍스트 컬럼을 찾을 수 없습니다. 가능한 컬럼: {examples.keys()}")
+                    raise ValueError(
+                        f"텍스트 컬럼을 찾을 수 없습니다. 가능한 컬럼: {examples.keys()}"
+                    )
 
             # 토크나이징
             tokenized = self(
@@ -362,7 +366,7 @@ class HfTransformersTokenizer(BaseComponent):
                 truncation=True,
                 max_length=max_length,
                 padding=False,  # 데이터셋 토크나이징 시에는 패딩 안함
-                return_attention_mask=True
+                return_attention_mask=True,
             )
 
             # 언어 모델링용 레이블 추가 (input_ids의 복사본)
@@ -380,7 +384,7 @@ class HfTransformersTokenizer(BaseComponent):
             remove_columns=remove_columns,
             load_from_cache_file=load_from_cache_file,
             num_proc=num_proc,
-            desc=f"HuggingFace 토크나이징 ({self.model_id})"
+            desc=f"HuggingFace 토크나이징 ({self.model_id})",
         )
 
     # 일반적인 토크나이저 속성들 위임
@@ -408,14 +412,14 @@ class HfTransformersTokenizer(BaseComponent):
         tokenizer = HfTransformersTokenizer._tokenizers.get(self.model_id)
         return tokenizer.bos_token_id if tokenizer else 0
 
-    def decode(self, token_ids: List[int], **kwargs) -> str:
+    def decode(self, token_ids: list[int], **kwargs) -> str:
         """토큰 ID를 텍스트로 디코딩"""
         tokenizer = HfTransformersTokenizer._tokenizers.get(self.model_id)
         if tokenizer is None:
             raise RuntimeError(f"토크나이저가 초기화되지 않았습니다: {self.model_id}")
         return tokenizer.decode(token_ids, **kwargs)
 
-    def batch_decode(self, sequences: List[List[int]], **kwargs) -> List[str]:
+    def batch_decode(self, sequences: list[list[int]], **kwargs) -> list[str]:
         """토큰 ID 시퀀스 배치를 텍스트로 디코딩"""
         tokenizer = HfTransformersTokenizer._tokenizers.get(self.model_id)
         if tokenizer is None:
@@ -423,7 +427,7 @@ class HfTransformersTokenizer(BaseComponent):
         return tokenizer.batch_decode(sequences, **kwargs)
 
     @classmethod
-    def reset(cls, model_id: Optional[str] = None):
+    def reset(cls, model_id: str | None = None):
         """
         토크나이저 인스턴스 초기화 (주로 테스트용).
 

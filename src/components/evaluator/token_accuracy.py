@@ -64,7 +64,9 @@ class TokenAccuracyAnalyzer(BaseComponent):
         self.accuracy_threshold = self.config.get("accuracy_threshold", 0.5)
         self.granularity = self.config.get("granularity", 10)
         self.analyze_token_types = self.config.get("analyze_token_types", True)
-        self.device = self.config.get("device", "cuda" if torch.cuda.is_available() else "cpu")
+        self.device = self.config.get(
+            "device", "cuda" if torch.cuda.is_available() else "cpu"
+        )
         self.batch_size = self.config.get("batch_size", 8)
 
     def run(self, ctx: dict[str, Any]) -> dict[str, Any]:
@@ -87,7 +89,9 @@ class TokenAccuracyAnalyzer(BaseComponent):
         dataset = ctx.get("dataset")
 
         if not model or not tokenizer:
-            raise ValueError("Model and tokenizer are required for token accuracy analysis")
+            raise ValueError(
+                "Model and tokenizer are required for token accuracy analysis"
+            )
 
         # 모델을 평가 모드로 설정
         model.eval()
@@ -100,13 +104,19 @@ class TokenAccuracyAnalyzer(BaseComponent):
 
         # 위치별 정확도 수집
         position_accuracies = defaultdict(list)  # position -> accuracy list
-        token_type_accuracies = defaultdict(lambda: defaultdict(list))  # type -> position -> accuracy list
-        head_position_accuracies = defaultdict(lambda: defaultdict(list))  # head -> position -> accuracy list
+        token_type_accuracies = defaultdict(
+            lambda: defaultdict(list)
+        )  # type -> position -> accuracy list
+        head_position_accuracies = defaultdict(
+            lambda: defaultdict(list)
+        )  # head -> position -> accuracy list
 
         # 배치별로 평가 수행
         total_samples = 0
         with torch.no_grad():
-            for batch in tqdm(self._create_batches(dataset), desc="Analyzing token positions"):
+            for batch in tqdm(
+                self._create_batches(dataset), desc="Analyzing token positions"
+            ):
                 batch_results = self._analyze_batch(model, tokenizer, batch)
 
                 # 위치별 정확도 수집
@@ -115,12 +125,16 @@ class TokenAccuracyAnalyzer(BaseComponent):
 
                 # 토큰 유형별 정확도 수집
                 if self.analyze_token_types:
-                    for token_type, type_positions in batch_results["token_type_accuracies"].items():
+                    for token_type, type_positions in batch_results[
+                        "token_type_accuracies"
+                    ].items():
                         for pos, accuracies in type_positions.items():
                             token_type_accuracies[token_type][pos].extend(accuracies)
 
                 # 헤드-위치 상호작용 수집
-                for head_idx, head_positions in batch_results["head_position_accuracies"].items():
+                for head_idx, head_positions in batch_results[
+                    "head_position_accuracies"
+                ].items():
                     for pos, accuracies in head_positions.items():
                         head_position_accuracies[head_idx][pos].extend(accuracies)
 
@@ -128,27 +142,21 @@ class TokenAccuracyAnalyzer(BaseComponent):
 
         # 결과 집계
         results = self._aggregate_results(
-            position_accuracies,
-            token_type_accuracies,
-            head_position_accuracies
+            position_accuracies, token_type_accuracies, head_position_accuracies
         )
 
         # 패턴 분석
         patterns = self._analyze_patterns(results)
         results["patterns"] = patterns
 
-        console.print(f"[green]Analyzed {total_samples} samples for token position accuracy[/green]")
+        console.print(
+            f"[green]Analyzed {total_samples} samples for token position accuracy[/green]"
+        )
 
-        return {
-            "metrics": self._extract_metrics(results),
-            "detailed_results": results
-        }
+        return {"metrics": self._extract_metrics(results), "detailed_results": results}
 
     def _analyze_batch(
-        self,
-        model: nn.Module,
-        tokenizer: Any,
-        batch: dict[str, torch.Tensor]
+        self, model: nn.Module, tokenizer: Any, batch: dict[str, torch.Tensor]
     ) -> dict[str, Any]:
         """
         단일 배치에 대한 위치별 정확도 분석.
@@ -170,10 +178,10 @@ class TokenAccuracyAnalyzer(BaseComponent):
         batch_results = {
             "position_accuracies": defaultdict(list),
             "token_type_accuracies": defaultdict(lambda: defaultdict(list)),
-            "head_position_accuracies": defaultdict(lambda: defaultdict(list))
+            "head_position_accuracies": defaultdict(lambda: defaultdict(list)),
         }
 
-        if hasattr(outputs, 'prediction_logits'):
+        if hasattr(outputs, "prediction_logits"):
             batch_size, seq_len = input_ids.shape
 
             # 각 헤드별로 분석
@@ -194,22 +202,28 @@ class TokenAccuracyAnalyzer(BaseComponent):
                         for pos in range(min(valid_length, self.position_range[1])):
                             if pos >= self.position_range[0]:
                                 # 위치별 정확도
-                                pos_correct = (predictions[:, pos] == target_labels_valid[:, pos]).float()
-                                batch_results["position_accuracies"][pos].extend(pos_correct.cpu().tolist())
-
-                                # 헤드-위치 상호작용
-                                batch_results["head_position_accuracies"][head_idx][pos].extend(
+                                pos_correct = (
+                                    predictions[:, pos] == target_labels_valid[:, pos]
+                                ).float()
+                                batch_results["position_accuracies"][pos].extend(
                                     pos_correct.cpu().tolist()
                                 )
+
+                                # 헤드-위치 상호작용
+                                batch_results["head_position_accuracies"][head_idx][
+                                    pos
+                                ].extend(pos_correct.cpu().tolist())
 
                                 # 토큰 유형별 정확도 (선택적)
                                 if self.analyze_token_types:
                                     for b in range(batch_size):
                                         token_id = target_labels_valid[b, pos].item()
-                                        token_type = self._classify_token_type(token_id, tokenizer)
-                                        batch_results["token_type_accuracies"][token_type][pos].append(
-                                            pos_correct[b].item()
+                                        token_type = self._classify_token_type(
+                                            token_id, tokenizer
                                         )
+                                        batch_results["token_type_accuracies"][
+                                            token_type
+                                        ][pos].append(pos_correct[b].item())
 
         return batch_results
 
@@ -245,7 +259,7 @@ class TokenAccuracyAnalyzer(BaseComponent):
         self,
         position_accuracies: dict[int, list[float]],
         token_type_accuracies: dict[str, dict[int, list[float]]],
-        head_position_accuracies: dict[int, dict[int, list[float]]]
+        head_position_accuracies: dict[int, dict[int, list[float]]],
     ) -> dict[str, Any]:
         """
         위치별 정확도 결과 집계.
@@ -275,8 +289,7 @@ class TokenAccuracyAnalyzer(BaseComponent):
             grouped_accuracies[f"pos_{group}_{group+self.granularity}"].append(acc)
 
         results["grouped_position_accuracies"] = {
-            group: float(np.mean(accs))
-            for group, accs in grouped_accuracies.items()
+            group: float(np.mean(accs)) for group, accs in grouped_accuracies.items()
         }
 
         # 토큰 유형별 정확도
@@ -290,7 +303,7 @@ class TokenAccuracyAnalyzer(BaseComponent):
                 if type_avg:
                     type_results[token_type] = {
                         "position_accuracies": type_avg,
-                        "overall_accuracy": float(np.mean(list(type_avg.values())))
+                        "overall_accuracy": float(np.mean(list(type_avg.values()))),
                     }
             results["token_type_accuracies"] = type_results
 
@@ -304,7 +317,7 @@ class TokenAccuracyAnalyzer(BaseComponent):
             if head_avg:
                 head_results[f"head_{head_idx+1}"] = {
                     "position_accuracies": head_avg,
-                    "overall_accuracy": float(np.mean(list(head_avg.values())))
+                    "overall_accuracy": float(np.mean(list(head_avg.values()))),
                 }
         results["head_position_interactions"] = head_results
 
@@ -338,7 +351,11 @@ class TokenAccuracyAnalyzer(BaseComponent):
                     patterns["accuracy_trend"] = {
                         "slope": float(slope),
                         "intercept": float(intercept),
-                        "trend": "increasing" if slope > 0.001 else "decreasing" if slope < -0.001 else "stable"
+                        "trend": "increasing"
+                        if slope > 0.001
+                        else "decreasing"
+                        if slope < -0.001
+                        else "stable",
                     }
 
                 # 정확도 범위
@@ -346,14 +363,19 @@ class TokenAccuracyAnalyzer(BaseComponent):
                     "min": float(min(accuracies)),
                     "max": float(max(accuracies)),
                     "mean": float(np.mean(accuracies)),
-                    "std": float(np.std(accuracies))
+                    "std": float(np.std(accuracies)),
                 }
 
                 # 임계값 이하 위치 찾기
-                below_threshold = [p for p, a in zip(positions, accuracies)
-                                 if a < self.accuracy_threshold]
+                below_threshold = [
+                    p
+                    for p, a in zip(positions, accuracies)
+                    if a < self.accuracy_threshold
+                ]
                 if below_threshold:
-                    patterns["below_threshold_positions"] = below_threshold[:10]  # 처음 10개만
+                    patterns["below_threshold_positions"] = below_threshold[
+                        :10
+                    ]  # 처음 10개만
 
         # 토큰 유형별 패턴
         if "token_type_accuracies" in results and results["token_type_accuracies"]:
@@ -369,11 +391,14 @@ class TokenAccuracyAnalyzer(BaseComponent):
                     "best_accuracy": type_comparison[best_type],
                     "worst_type": worst_type,
                     "worst_accuracy": type_comparison[worst_type],
-                    "all_types": type_comparison
+                    "all_types": type_comparison,
                 }
 
         # 헤드별 위치 성능 패턴
-        if "head_position_interactions" in results and results["head_position_interactions"]:
+        if (
+            "head_position_interactions" in results
+            and results["head_position_interactions"]
+        ):
             head_comparison = {}
             for head_name, head_data in results["head_position_interactions"].items():
                 head_comparison[head_name] = head_data["overall_accuracy"]
@@ -382,7 +407,7 @@ class TokenAccuracyAnalyzer(BaseComponent):
                 patterns["head_position_performance"] = {
                     "head_accuracies": head_comparison,
                     "best_head": max(head_comparison, key=head_comparison.get),
-                    "consistency": float(1.0 - np.std(list(head_comparison.values())))
+                    "consistency": float(1.0 - np.std(list(head_comparison.values()))),
                 }
 
         return patterns
@@ -411,9 +436,14 @@ class TokenAccuracyAnalyzer(BaseComponent):
             if "accuracy_trend" in patterns:
                 metrics["accuracy_trend_slope"] = patterns["accuracy_trend"]["slope"]
             if "accuracy_range" in patterns:
-                metrics["accuracy_range_span"] = patterns["accuracy_range"]["max"] - patterns["accuracy_range"]["min"]
+                metrics["accuracy_range_span"] = (
+                    patterns["accuracy_range"]["max"]
+                    - patterns["accuracy_range"]["min"]
+                )
             if "token_type_performance" in patterns:
-                metrics["best_token_type_accuracy"] = patterns["token_type_performance"]["best_accuracy"]
+                metrics["best_token_type_accuracy"] = patterns[
+                    "token_type_performance"
+                ]["best_accuracy"]
 
         # 그룹화된 위치별 메트릭
         if "grouped_position_accuracies" in results:
@@ -436,11 +466,13 @@ class TokenAccuracyAnalyzer(BaseComponent):
 
         if isinstance(dataset, list):
             for i in range(0, len(dataset), self.batch_size):
-                batch_data = dataset[i:i+self.batch_size]
+                batch_data = dataset[i : i + self.batch_size]
                 if batch_data and isinstance(batch_data[0], dict):
                     batch = {
                         "input_ids": torch.stack([d["input_ids"] for d in batch_data]),
-                        "labels": torch.stack([d.get("labels", d["input_ids"]) for d in batch_data])
+                        "labels": torch.stack(
+                            [d.get("labels", d["input_ids"]) for d in batch_data]
+                        ),
                     }
                     batches.append(batch)
 
@@ -456,15 +488,14 @@ class TokenAccuracyAnalyzer(BaseComponent):
         Returns:
             더미 데이터셋
         """
-        console.print("[yellow]No dataset provided, using dummy data for testing[/yellow]")
+        console.print(
+            "[yellow]No dataset provided, using dummy data for testing[/yellow]"
+        )
 
         dataset = []
         for _ in range(10):  # 10개 샘플
             # 다양한 토큰 유형을 포함한 더미 데이터
             input_ids = torch.randint(0, tokenizer.vocab_size, (256,))
-            dataset.append({
-                "input_ids": input_ids,
-                "labels": input_ids.clone()
-            })
+            dataset.append({"input_ids": input_ids, "labels": input_ids.clone()})
 
         return dataset

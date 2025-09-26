@@ -85,14 +85,21 @@ class S3AuthConfig(BaseModel):
         환경변수 AWS_PROFILE, AWS_REGION도 자동으로 인식됩니다.
     """
 
+    # AWS 인증 정보 (런타임에 .env에서 주입됨)
+    access_key_id: str | None = Field(
+        default=None, description="AWS Access Key ID (.env에서 주입)"
+    )
+    secret_access_key: str | None = Field(
+        default=None, description="AWS Secret Access Key (.env에서 주입)"
+    )
+
+    # S3 설정
     default_bucket: str | None = Field(
-        default=None,
-        description="기본 S3 버킷 (경로에 버킷이 없을 때 사용)"
+        default=None, description="기본 S3 버킷 (경로에 버킷이 없을 때 사용)"
     )
     region: str = Field(default="ap-northeast-2", description="AWS 리전")
     profile: str | None = Field(
-        default=None,
-        description="AWS 프로파일 이름 (None이면 기본 프로파일)"
+        default=None, description="AWS 프로파일 이름 (None이면 기본 프로파일)"
     )
 
     @field_validator("default_bucket")
@@ -278,7 +285,9 @@ class Paths(BaseModel):
 
     @field_validator("models", "datasets")
     @classmethod
-    def validate_paths(cls, v: ModelPaths | DatasetPaths, info) -> ModelPaths | DatasetPaths:
+    def validate_paths(
+        cls, v: ModelPaths | DatasetPaths, info
+    ) -> ModelPaths | DatasetPaths:
         """경로 프로토콜 검증 및 정규화.
 
         Phase 2 핵심 기능:
@@ -314,7 +323,7 @@ class Paths(BaseModel):
                                 f"{field_name}.{attr_name}: S3 경로에 버킷이 없습니다: {path}"
                             )
                         # S3 경로는 최소한 버킷과 키 구조를 가져야 함 (s3://bucket/key)
-                        if not path.endswith('/') and not key:
+                        if not path.endswith("/") and not key:
                             raise ValueError(
                                 f"{field_name}.{attr_name}: S3 경로가 잘못된 형식입니다. s3://bucket/key 또는 s3://bucket/ 형태여야 합니다: {path}"
                             )
@@ -520,28 +529,26 @@ class DistributedConfig(BaseModel):
     """
 
     enabled: bool = Field(
-        default=False,
-        description="분산 학습 활성화 (True: 멀티 GPU, False: 단일 GPU)"
+        default=False, description="분산 학습 활성화 (True: 멀티 GPU, False: 단일 GPU)"
     )
 
     backend: Literal["nccl", "gloo", "auto"] = Field(
         default="auto",
-        description="분산 통신 백엔드 (nccl: GPU, gloo: CPU, auto: 자동감지)"
+        description="분산 통신 백엔드 (nccl: GPU, gloo: CPU, auto: 자동감지)",
     )
 
     init_method: str = Field(
         default="env://",
-        description="분산 초기화 방법 (env:// 권장, torchrun 환경변수 사용)"
+        description="분산 초기화 방법 (env:// 권장, torchrun 환경변수 사용)",
     )
 
     timeout: int = Field(
-        default=1800,
-        description="분산 통신 타임아웃 (초, NCCL 기본값)"
+        default=1800, description="분산 통신 타임아웃 (초, NCCL 기본값)"
     )
 
     find_unused_parameters: bool = Field(
         default=False,
-        description="사용되지 않는 파라미터 검색 (FSDP 환경에서 False 권장)"
+        description="사용되지 않는 파라미터 검색 (FSDP 환경에서 False 권장)",
     )
 
     @field_validator("backend")
@@ -686,8 +693,7 @@ class Devices(BaseModel):
 
     # 🆕 분산 학습 설정 추가
     distributed: DistributedConfig = Field(
-        default_factory=DistributedConfig,
-        description="분산 학습 설정"
+        default_factory=DistributedConfig, description="분산 학습 설정"
     )
 
     fsdp: FSDPConfig = Field(default_factory=FSDPConfig)
@@ -781,17 +787,36 @@ class Devices(BaseModel):
 
         # 🆕 분산 설정과 FSDP 설정 간 일관성 검증
         from rich.console import Console
+
         console = Console()
 
         # 분산이 활성화되지 않으면 FSDP도 단일 GPU 모드로 조정
         if not self.distributed.enabled and self.fsdp.enabled:
-            console.print("[yellow]단일 GPU 환경에서 FSDP는 효과가 제한적입니다.[/yellow]")
+            console.print(
+                "[yellow]단일 GPU 환경에서 FSDP는 효과가 제한적입니다.[/yellow]"
+            )
 
         # FSDP가 활성화되면 분산도 활성화하는 것이 일반적
         if self.fsdp.enabled and not self.distributed.enabled:
-            console.print("[yellow]FSDP 사용 시 분산 학습을 함께 활성화하는 것을 권장합니다.[/yellow]")
+            console.print(
+                "[yellow]FSDP 사용 시 분산 학습을 함께 활성화하는 것을 권장합니다.[/yellow]"
+            )
 
         return self
+
+
+class HFAuthConfig(BaseModel):
+    """HuggingFace 인증 설정: HF Hub 접근을 위한 토큰 정보
+
+    사용자가 제한된 모델이나 데이터셋에 접근할 때 필요합니다.
+
+    Attributes:
+        token: HuggingFace 액세스 토큰
+            - hf_xxx 형태의 토큰
+            - 읽기 전용 또는 쓰기 권한 토큰 모두 지원
+    """
+
+    token: str = Field(description="HuggingFace 액세스 토큰")
 
 
 class Config(BaseModel):
@@ -811,7 +836,8 @@ class Config(BaseModel):
             - 42: 과학계의 전통적인 기본값
             - 같은 시드 = 같은 결과
 
-        storage: 스토리지 설정 (local/s3)
+        s3_auth: S3 인증 설정 (S3 경로 사용 시)
+        hf_auth: HuggingFace 인증 설정 (HF 모델 사용 시)
         paths: 모델/데이터/캐시 경로
         mlflow: 실험 추적 설정
         launcher: 실행 환경 설정
@@ -820,11 +846,14 @@ class Config(BaseModel):
     Example:
         project: wmtp_experiment_v1
         seed: 42
-        storage:
-          mode: local
+        s3_auth:
+          default_bucket: wmtp
+          region: ap-northeast-2
+        hf_auth:
+          token: hf_xxxxxxxxxx
         paths:
           models:
-            base_local: models/7b_mtp
+            base: s3://wmtp/models/7b_mtp
         mlflow:
           experiment: wmtp/baseline
           tracking_uri: ./mlruns
@@ -836,15 +865,17 @@ class Config(BaseModel):
           mixed_precision: bf16
 
     Note:
-        필수 필드는 storage, mlflow, launcher입니다.
+        필수 필드는 mlflow, launcher입니다.
         나머지는 기본값이 제공됩니다.
     """
 
     project: str = Field(default="mtp_ft", description="프로젝트 이름")
     seed: int = Field(default=42, description="재현성을 위한 난수 시드")
     s3_auth: S3AuthConfig | None = Field(
-        default=None,
-        description="S3 인증 설정 (S3 경로 사용 시 필요)"
+        default=None, description="S3 인증 설정 (S3 경로 사용 시 필요)"
+    )
+    hf_auth: HFAuthConfig | None = Field(
+        default=None, description="HuggingFace 인증 설정 (HF 모델 사용 시 필요)"
     )
     paths: Paths = Field(default_factory=Paths, description="경로 설정")
     mlflow: MLflow = Field(..., description="MLflow 설정")
@@ -854,7 +885,7 @@ class Config(BaseModel):
     # 하위 호환성을 위한 storage 필드 (deprecated)
     storage: Any | None = Field(
         default=None,
-        description="[Deprecated] Phase 2에서 제거됨. s3_auth와 경로 프로토콜 사용"
+        description="[Deprecated] Phase 2에서 제거됨. s3_auth와 경로 프로토콜 사용",
     )
 
     model_config = ConfigDict(

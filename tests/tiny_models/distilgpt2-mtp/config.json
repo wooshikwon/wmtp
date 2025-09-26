@@ -35,7 +35,7 @@
   "add_cross_attention": false,
   "tie_encoder_decoder": false,
   "architectures": [
-    "GPT2LMHeadModel"
+    "DistilGPT2MTP"
   ],
   "finetuning_task": null,
   "id2label": {

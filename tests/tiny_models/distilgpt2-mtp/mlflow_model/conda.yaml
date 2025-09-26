@@ -1,0 +1,7 @@
+channels:
+- conda-forge
+- pytorch
+dependencies:
+- python=3.12
+- pytorch>=2.0.0
+name: wmtp_mtp_huggingface_env

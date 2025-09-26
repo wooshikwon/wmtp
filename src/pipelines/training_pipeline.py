@@ -24,15 +24,22 @@ from dataclasses import dataclass  # 간단한 데이터 클래스 생성용
 from pathlib import Path  # 파일 경로 처리
 from typing import Any  # 범용 타입 힌트
 
+from rich.console import Console  # Rich 콘솔 출력
 from torch.utils.data import DataLoader  # 데이터셋을 배치로 로드하는 도구
-from torch.utils.data.distributed import DistributedSampler  # 분산 훈련을 위한 데이터 분배기
+from torch.utils.data.distributed import (
+    DistributedSampler,  # 분산 훈련을 위한 데이터 분배기
+)
 from transformers import default_data_collator  # HuggingFace의 기본 데이터 배치 생성기
 
-from rich.console import Console  # Rich 콘솔 출력
-
-from src.factory.component_factory import ComponentFactory  # 알고리즘별 컴포넌트 생성 팩토리
+from src.factory.component_factory import (
+    ComponentFactory,  # 알고리즘별 컴포넌트 생성 팩토리
+)
 from src.settings import Config, Recipe  # Pydantic 기반 설정 모델들
-from src.utils import create_mlflow_manager, set_seed, get_dist_manager  # MLflow 추적과 재현성 보장 유틸
+from src.utils import (  # MLflow 추적과 재현성 보장 유틸
+    create_mlflow_manager,
+    get_dist_manager,
+    set_seed,
+)
 
 console = Console()
 
@@ -68,7 +75,7 @@ def run_training_pipeline(
     """
     # 파이프라인 실행 단계 추적 시작
     console.print("[bold green]🚀 파이프라인 실행 시작[/bold green]")
-    console.print(f"[dim]🔍 파이프라인 단계 추적 시작...[/dim]")
+    console.print("[dim]🔍 파이프라인 단계 추적 시작...[/dim]")
 
     # Step 0: 실험 추적 및 재현성 설정
     set_seed(config.seed)  # 동일한 시드로 재현 가능한 실험 보장
@@ -89,10 +96,9 @@ def run_training_pipeline(
         checkpoint_loader.setup({})
 
         # 체크포인트 로딩 및 메타데이터 추출
-        checkpoint_result = checkpoint_loader.run({
-            "model_path": resume_checkpoint,
-            "load_metadata": True
-        })
+        checkpoint_result = checkpoint_loader.run(
+            {"model_path": resume_checkpoint, "load_metadata": True}
+        )
 
         # 메타데이터와 체크포인트 데이터 모두 추출
         if checkpoint_result.get("checkpoint_data") is not None:
@@ -101,7 +107,9 @@ def run_training_pipeline(
             start_step = checkpoint_result.get("step", 0)
             resume_run_id = checkpoint_result.get("mlflow_run_id")
 
-    console.print(f"[dim]🔍 체크포인트 로딩 완료: epoch={start_epoch}, step={start_step}[/dim]")
+    console.print(
+        f"[dim]🔍 체크포인트 로딩 완료: epoch={start_epoch}, step={start_step}[/dim]"
+    )
     console.print(f"[dim]🔍 MLflow Run ID: {resume_run_id}[/dim]")
 
     # Step 1: MLflow 실험 추적 초기화
@@ -116,15 +124,15 @@ def run_training_pipeline(
     else:
         mlflow.start_run(run_name=recipe.run.name, tags=tag_map)
 
-    console.print(f"[dim]🔍 MLflow 실험 추적 초기화 완료: run_name={recipe.run.name}[/dim]")
+    console.print(
+        f"[dim]🔍 MLflow 실험 추적 초기화 완료: run_name={recipe.run.name}[/dim]"
+    )
 
     # Step 2: Base 모델 로딩
     # Facebook native MTP 모델 - 4개 head가 내장된 WMTP의 핵심 아키텍처
     base_loader = ComponentFactory.create_model_loader(config, recipe)
     base_loader.setup({})
-    base_result = base_loader.run({
-        "model_path": str(config.paths.models.base)
-    })
+    base_result = base_loader.run({"model_path": str(config.paths.models.base)})
     base = base_result["model"]
 
     console.print(f"[dim]🔍 Base 모델 로딩 완료: {config.paths.models.base}[/dim]")
@@ -147,18 +155,14 @@ def run_training_pipeline(
         # Rho-1: Reference Model 로딩 - |CE^ref_t - CE^base_t| 계산용
         ref_loader = ComponentFactory.create_aux_model_loader(recipe, config, "ref")
         ref_loader.setup({})
-        ref_result = ref_loader.run({
-            "model_path": str(config.paths.models.ref)
-        })
+        ref_result = ref_loader.run({"model_path": str(config.paths.models.ref)})
         ref_model = ref_result["model"]
 
     elif recipe.train.algo == "critic-wmtp":
         # Critic: Reward Model 로딩 - Stage1 Value Head 훈련용
         rm_loader = ComponentFactory.create_aux_model_loader(recipe, config, "rm")
         rm_loader.setup({})
-        rm_result = rm_loader.run({
-            "model_path": str(config.paths.models.rm)
-        })
+        rm_result = rm_loader.run({"model_path": str(config.paths.models.rm)})
         rm_model = rm_result["model"]
 
     # mtp-baseline은 추가 모델 불필요 - Base 모델만으로 균등 가중치 MTP 수행
@@ -168,9 +172,7 @@ def run_training_pipeline(
     # Step 5: 옵티마이저 설정 (예외: .run() 없는 패턴)
     # AdamW + BF16 + FSDP 조합으로 대규모 모델 훈련 최적화
     optimizer = ComponentFactory.create_optimizer(recipe, base.parameters())
-    optimizer.setup({
-        "num_training_steps": recipe.train.max_steps or 0
-    })
+    optimizer.setup({"num_training_steps": recipe.train.max_steps or 0})
 
     console.print(f"[dim]🔍 옵티마이저 설정 완료: {recipe.train.algo}[/dim]")
 
@@ -178,11 +180,13 @@ def run_training_pipeline(
     # MBPP, CodeContests, HumanEval 등 코드 생성 벤치마크 지원
     train_loader_comp = ComponentFactory.create_data_loader(recipe, config)
     train_loader_comp.setup({})
-    train_ds = train_loader_comp.run({
-        "split": "train",
-        "max_length": recipe.data.train.max_length,
-        "add_solution": True,
-    })["dataset"]
+    train_ds = train_loader_comp.run(
+        {
+            "split": "train",
+            "max_length": recipe.data.train.max_length,
+            "add_solution": True,
+        }
+    )["dataset"]
 
     console.print(f"[dim]🔍 데이터셋 토크나이징 완료: {recipe.train.algo}[/dim]")
 
@@ -195,7 +199,9 @@ def run_training_pipeline(
         load_from_cache_file=True,
     )
 
-    console.print(f"[dim]🔍 분산 훈련용 데이터 샘플러 설정 완료: {recipe.train.algo}[/dim]")
+    console.print(
+        f"[dim]🔍 분산 훈련용 데이터 샘플러 설정 완료: {recipe.train.algo}[/dim]"
+    )
 
     # Step 8: 분산 훈련용 데이터 샘플러 설정
     # 다중 GPU 환경에서 데이터를 효율적으로 분배하기 위한 샘플러 구성
@@ -203,12 +209,15 @@ def run_training_pipeline(
     try:
         import torch
         import torch.distributed as dist
+
         if dist.is_available() and dist.is_initialized():
             sampler = DistributedSampler(tokenized, shuffle=True)
     except Exception:
         sampler = None
 
-    console.print(f"[dim]🔍 분산 훈련용 데이터 샘플러 설정 완료: {recipe.train.algo}[/dim]")
+    console.print(
+        f"[dim]🔍 분산 훈련용 데이터 샘플러 설정 완료: {recipe.train.algo}[/dim]"
+    )
 
     # Step 9: PyTorch DataLoader 생성
     # 토큰화된 데이터를 배치 단위로 모델에 공급하기 위한 데이터 로더 구성
@@ -229,25 +238,33 @@ def run_training_pipeline(
     value_head_path = None  # Stage 2에 전달할 경로
 
     if recipe.train.algo == "critic-wmtp" and rm_model is not None and not dry_run:
-        console.print("[cyan]🔬 Starting Critic-WMTP Stage 1: Value Head Pretraining[/cyan]")
+        console.print(
+            "[cyan]🔬 Starting Critic-WMTP Stage 1: Value Head Pretraining[/cyan]"
+        )
 
         pretrainer = ComponentFactory.create_pretrainer(recipe)
         pretrainer.setup({})
 
         # Stage 1 실행
-        stage1_result = pretrainer.run({
-            "base_model": base,
-            "rm_model": rm_model,
-            "train_dataloader": train_dl,
-            "run_name": recipe.run.name or "default",  # S3 경로 생성용 실행 이름
-        })
+        stage1_result = pretrainer.run(
+            {
+                "base_model": base,
+                "rm_model": rm_model,
+                "train_dataloader": train_dl,
+                "run_name": recipe.run.name or "default",  # S3 경로 생성용 실행 이름
+            }
+        )
 
         # Stage 1에서 저장된 Value Head 경로 추출
         if stage1_result.get("saved"):
             value_head_path = stage1_result["saved"]
-            console.print(f"[green]✅ Stage 1 complete, Value Head saved at: {value_head_path}[/green]")
+            console.print(
+                f"[green]✅ Stage 1 complete, Value Head saved at: {value_head_path}[/green]"
+            )
         else:
-            console.print("[yellow]⚠ Stage 1 skipped or failed, proceeding without pretrained Value Head[/yellow]")
+            console.print(
+                "[yellow]⚠ Stage 1 skipped or failed, proceeding without pretrained Value Head[/yellow]"
+            )
 
     console.print(f"[dim]🔍 Stage1 사전훈련 완료: {recipe.train.algo}[/dim]")
 
@@ -264,7 +281,6 @@ def run_training_pipeline(
         "base_tokenizer": tokenizer,
         "rm_model": rm_model,
         "recipe": recipe,
-
         # 이미 로드된 체크포인트 데이터와 메타데이터 전달
         "checkpoint_data": checkpoint_data,
         "start_epoch": start_epoch,
@@ -274,11 +290,13 @@ def run_training_pipeline(
     # 🔗 Critic-WMTP의 경우 Stage 1에서 학습된 Value Head 경로 전달
     if recipe.train.algo == "critic-wmtp" and value_head_path:
         setup_ctx["value_head_path"] = value_head_path
-        console.print(f"[cyan]📎 Passing Stage 1 Value Head to Stage 2 trainer[/cyan]")
+        console.print("[cyan]📎 Passing Stage 1 Value Head to Stage 2 trainer[/cyan]")
 
     trainer.setup(setup_ctx)
 
-    console.print(f"[dim]🔍 메인 Trainer 생성 및 초기화 완료: {recipe.train.algo}[/dim]")
+    console.print(
+        f"[dim]🔍 메인 Trainer 생성 및 초기화 완료: {recipe.train.algo}[/dim]"
+    )
 
     # Step 12: 실행 모드 분기
     # Dry run 모드에서는 설정 검증만 수행하고 실제 훈련은 건너뛰기
@@ -290,10 +308,9 @@ def run_training_pipeline(
 
     # Step 13: 메인 WMTP 훈련 실행
     # L_WMTP = Σ w_{t+k} × CE_k 공식으로 토큰별 중요도 반영 훈련
-    metrics = trainer.run({
-        "train_dataloader": train_dl,
-        "max_steps": recipe.train.max_steps
-    })
+    metrics = trainer.run(
+        {"train_dataloader": train_dl, "max_steps": recipe.train.max_steps}
+    )
 
     console.print(f"[dim]🔍 메인 WMTP 훈련 실행 완료: {recipe.train.algo}[/dim]")
 

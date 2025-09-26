@@ -36,7 +36,6 @@ from typing import TYPE_CHECKING, Any, Union
 import numpy as np
 import torch
 import torch.distributed as dist
-from accelerate import Accelerator
 from rich.console import Console
 from torch.distributed.fsdp import (
     BackwardPrefetch,
@@ -54,7 +53,7 @@ from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 
 # Type checking imports - Pydantic Config 클래스들을 타입 힌트용으로만 import
 if TYPE_CHECKING:
-    from src.settings.config_schema import FSDPConfig, DistributedConfig
+    from src.settings.config_schema import DistributedConfig, FSDPConfig
 
 console = Console()
 
@@ -92,6 +91,7 @@ class DistributedManager:
         # Config 처리 - 늦은 import로 순환 import 방지
         if config is None:
             from src.settings.config_schema import DistributedConfig
+
             self.config = DistributedConfig()  # 기본값 제공 (enabled=False)
         else:
             self.config = config
@@ -107,7 +107,9 @@ class DistributedManager:
 
             # 환경변수가 제대로 설정되지 않은 경우 경고
             if self.world_size == 1:
-                console.print("[yellow]경고: 분산이 활성화되었지만 WORLD_SIZE=1입니다. torchrun을 사용했는지 확인하세요.[/yellow]")
+                console.print(
+                    "[yellow]경고: 분산이 활성화되었지만 WORLD_SIZE=1입니다. torchrun을 사용했는지 확인하세요.[/yellow]"
+                )
         else:
             # 단일 GPU 모드
             self.rank = 0
@@ -151,17 +153,21 @@ class DistributedManager:
                     init_method=self.config.init_method,
                     rank=self.rank,
                     world_size=self.world_size,
-                    timeout=datetime.timedelta(seconds=self.config.timeout)
+                    timeout=datetime.timedelta(seconds=self.config.timeout),
                 )
                 self.initialized = True
-                console.print(f"[green]✅ 분산 초기화 완료 (rank={self.rank}/{self.world_size}, backend={backend})[/green]")
+                console.print(
+                    f"[green]✅ 분산 초기화 완료 (rank={self.rank}/{self.world_size}, backend={backend})[/green]"
+                )
             except Exception as e:
                 console.print(f"[red]분산 초기화 실패: {e}[/red]")
                 raise
 
         elif self.world_size == 1:
             # 단일 프로세스 환경 (분산 활성화되었지만 실제로는 단일 GPU)
-            console.print("[yellow]분산이 활성화되었지만 단일 프로세스 환경입니다.[/yellow]")
+            console.print(
+                "[yellow]분산이 활성화되었지만 단일 프로세스 환경입니다.[/yellow]"
+            )
             if torch.cuda.is_available():
                 self.device = torch.device("cuda:0")
             else:
@@ -192,35 +198,39 @@ class DistributedManager:
             - 속도 우선: sharding="shard_grad_op"
         """
         # Pydantic 모델인 경우 dict로 변환
-        if hasattr(config, 'model_dump'):
+        if hasattr(config, "model_dump"):
             # Pydantic v2 모델
             config_dict = config.model_dump()
-        elif hasattr(config, 'dict'):
+        elif hasattr(config, "dict"):
             # Pydantic v1 모델 (호환성)
             config_dict = config.dict()
         elif isinstance(config, dict):
             config_dict = config
         else:
             raise TypeError(f"Unsupported config type: {type(config)}")
-        
+
         # 이제 config_dict를 사용하여 FSDP 설정
 
         # Set up mixed precision
-        mixed_precision_policy = self._get_mixed_precision(config_dict.get('mixed_precision', 'bf16'))
+        mixed_precision_policy = self._get_mixed_precision(
+            config_dict.get("mixed_precision", "bf16")
+        )
 
         # Set up sharding strategy
-        sharding_strategy = self._get_sharding_strategy(config_dict.get('sharding', 'full'))
+        sharding_strategy = self._get_sharding_strategy(
+            config_dict.get("sharding", "full")
+        )
 
         # Set up auto wrap policy
         auto_wrap_policy = None
-        if config_dict.get('auto_wrap', True):
+        if config_dict.get("auto_wrap", True):
             auto_wrap_policy = transformer_auto_wrap_policy(
                 transformer_layer_cls={LlamaDecoderLayer},
             )
 
         # Set up CPU offload
         cpu_offload_config = None
-        if config_dict.get('cpu_offload', False):
+        if config_dict.get("cpu_offload", False):
             cpu_offload_config = CPUOffload(offload_params=True)
 
         # Wrap model with FSDP
@@ -231,16 +241,16 @@ class DistributedManager:
             mixed_precision=mixed_precision_policy,
             cpu_offload=cpu_offload_config,
             backward_prefetch=BackwardPrefetch.BACKWARD_PRE
-            if config_dict.get('backward_prefetch', True)
+            if config_dict.get("backward_prefetch", True)
             else None,
-            sync_module_states=config_dict.get('sync_module_states', True),
-            use_orig_params=config_dict.get('use_orig_params', True),
+            sync_module_states=config_dict.get("sync_module_states", True),
+            use_orig_params=config_dict.get("use_orig_params", True),
             device_id=self.local_rank
             if torch.cuda.is_available() and self.world_size > 1
             else None,
         )
 
-        if config_dict.get('activation_ckpt', True):
+        if config_dict.get("activation_ckpt", True):
             self._enable_activation_checkpointing(model)
 
         console.print("[green]Model wrapped with FSDP[/green]")
@@ -368,7 +378,7 @@ class DistributedManager:
                             f.write(buffer.getvalue())
                         mlflow_manager.log_artifact(
                             local_path=str(tmp_path),
-                            artifact_path=f"checkpoints/step_{step}"
+                            artifact_path=f"checkpoints/step_{step}",
                         )
                     console.print(
                         f"[green]Checkpoint uploaded to MLflow: step_{step}[/green]"
@@ -502,10 +512,12 @@ def set_seed(seed: int, deterministic: bool = False) -> None:
 
 
 # 전역 분산 매니저 인스턴스
-_dist_manager: Union[DistributedManager, None] = None
+_dist_manager: DistributedManager | None = None
 
 
-def get_dist_manager(config: Union["DistributedConfig", None] = None) -> DistributedManager:
+def get_dist_manager(
+    config: Union["DistributedConfig", None] = None,
+) -> DistributedManager:
     """Config 기반 분산 매니저 싱글톤 생성.
 
     Args:

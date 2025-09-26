@@ -17,7 +17,6 @@ ComponentFactory 통합:
 
 from __future__ import annotations
 
-import io
 from pathlib import Path
 from typing import Any
 
@@ -93,7 +92,9 @@ class CheckpointLoader(BaseLoader):
             checkpoint_data = self._load_checkpoint(checkpoint_path)
 
             if checkpoint_data is None:
-                self.console.print(f"[yellow]Checkpoint not found: {checkpoint_path}[/yellow]")
+                self.console.print(
+                    f"[yellow]Checkpoint not found: {checkpoint_path}[/yellow]"
+                )
                 return self._create_empty_result(checkpoint_path)
 
             # 메타데이터 추출
@@ -144,7 +145,9 @@ class CheckpointLoader(BaseLoader):
             return None
 
         else:
-            raise ValueError(f"Unsupported checkpoint path type: {type(checkpoint_path)}")
+            raise ValueError(
+                f"Unsupported checkpoint path type: {type(checkpoint_path)}"
+            )
 
     def _load_from_s3(self, s3_uri: str) -> dict[str, Any] | None:
         """S3에서 체크포인트 스트리밍 로드
@@ -167,7 +170,7 @@ class CheckpointLoader(BaseLoader):
             checkpoint_bytes = self.s3_manager.stream_model(s3_key)
             checkpoint_data = torch.load(checkpoint_bytes, map_location=self.device)
 
-            self.console.print(f"[green]Successfully loaded checkpoint from S3[/green]")
+            self.console.print("[green]Successfully loaded checkpoint from S3[/green]")
             return checkpoint_data
 
         except Exception as e:
@@ -185,7 +188,7 @@ class CheckpointLoader(BaseLoader):
         """
         self.console.print(f"[blue]Loading checkpoint from local: {local_path}[/blue]")
         checkpoint_data = torch.load(local_path, map_location=self.device)
-        self.console.print(f"[green]Successfully loaded local checkpoint[/green]")
+        self.console.print("[green]Successfully loaded local checkpoint[/green]")
         return checkpoint_data
 
     def _extract_metadata(self, checkpoint_data: dict[str, Any]) -> dict[str, Any]:

@@ -90,15 +90,16 @@ def run_evaluation_pipeline(
     tag_map = {str(i): t for i, t in enumerate(recipe.run.tags)}
     mlflow.start_run(run_name=f"eval_{recipe.run.name}", tags=tag_map)
 
-    console.print(f"[dim]🔍 MLflow 실험 추적 초기화 완료: run_name=eval_{recipe.run.name}[/dim]")
+    console.print(
+        f"[dim]🔍 MLflow 실험 추적 초기화 완료: run_name=eval_{recipe.run.name}[/dim]"
+    )
 
     # Step 2: 체크포인트 로딩
     checkpoint_loader = ComponentFactory.create_checkpoint_loader(config)
     checkpoint_loader.setup({})
-    checkpoint_result = checkpoint_loader.run({
-        "model_path": str(checkpoint_path),
-        "load_metadata": True
-    })
+    checkpoint_result = checkpoint_loader.run(
+        {"model_path": str(checkpoint_path), "load_metadata": True}
+    )
 
     model = checkpoint_result["model"]
     model.eval()  # 평가 모드 설정
@@ -111,13 +112,18 @@ def run_evaluation_pipeline(
     tokenizer_result = tokenizer_component.run({})
     tokenizer = tokenizer_result["tokenizer"]
 
-    console.print(f"[dim]🔍 토크나이저 생성 완료[/dim]")
+    console.print("[dim]🔍 토크나이저 생성 완료[/dim]")
 
     # Step 4: 평가 타입 결정
     if eval_types is None:
         eval_types = ["meta-mtp"]  # 기본값: Meta MTP 논문 평가
     elif "all" in eval_types:
-        eval_types = ["meta-mtp", "inference-speed", "per-head-analysis", "token-accuracy"]
+        eval_types = [
+            "meta-mtp",
+            "inference-speed",
+            "per-head-analysis",
+            "token-accuracy",
+        ]
 
     console.print(f"[dim]🔍 평가 타입: {eval_types}[/dim]")
 
@@ -127,7 +133,7 @@ def run_evaluation_pipeline(
         return EvaluationOutputs(
             metrics={"dry_run": True},
             algorithm=recipe.train.algo,
-            checkpoint=str(checkpoint_path)
+            checkpoint=str(checkpoint_path),
         )
 
     # Step 6: 평가 타입별 데이터셋 로딩 (조건부)
@@ -141,12 +147,11 @@ def run_evaluation_pipeline(
             mbpp_recipe.data.train.sources = ["mbpp"]
             mbpp_loader = ComponentFactory.create_data_loader(mbpp_recipe, config)
             mbpp_loader.setup({})
-            mbpp_result = mbpp_loader.run({
-                "split": "test",
-                "max_length": recipe.data.eval.max_length
-            })
+            mbpp_result = mbpp_loader.run(
+                {"split": "test", "max_length": recipe.data.eval.max_length}
+            )
             datasets["mbpp_dataset"] = mbpp_result["dataset"]
-            console.print(f"[dim]🔍 MBPP 데이터셋 로딩 완료[/dim]")
+            console.print("[dim]🔍 MBPP 데이터셋 로딩 완료[/dim]")
 
         # CodeContests 데이터셋 로딩
         if "codecontests" in recipe.data.eval.sources:
@@ -154,12 +159,11 @@ def run_evaluation_pipeline(
             contest_recipe.data.train.sources = ["contest"]
             contest_loader = ComponentFactory.create_data_loader(contest_recipe, config)
             contest_loader.setup({})
-            contest_result = contest_loader.run({
-                "split": "test",
-                "max_length": recipe.data.eval.max_length
-            })
+            contest_result = contest_loader.run(
+                {"split": "test", "max_length": recipe.data.eval.max_length}
+            )
             datasets["contest_dataset"] = contest_result["dataset"]
-            console.print(f"[dim]🔍 CodeContests 데이터셋 로딩 완료[/dim]")
+            console.print("[dim]🔍 CodeContests 데이터셋 로딩 완료[/dim]")
 
     # Step 7: 평가 타입별 실행 및 메트릭 수집
     all_metrics = {}
@@ -171,16 +175,18 @@ def run_evaluation_pipeline(
         evaluator = ComponentFactory.create_evaluator_by_type(eval_type, recipe, config)
 
         # 평가기 초기화
-        evaluator.setup({
-            "device": "cuda" if torch.cuda.is_available() else "cpu",
-            "sampling": recipe.eval.sampling.model_dump()
-        })
+        evaluator.setup(
+            {
+                "device": "cuda" if torch.cuda.is_available() else "cpu",
+                "sampling": recipe.eval.sampling.model_dump(),
+            }
+        )
 
         # 평가 컨텍스트 준비
         eval_context = {
             "model": model,
             "tokenizer": tokenizer,
-            **datasets  # 필요한 데이터셋 포함
+            **datasets,  # 필요한 데이터셋 포함
         }
 
         # 평가 실행
@@ -200,14 +206,17 @@ def run_evaluation_pipeline(
     # Step 8: MLflow 파라미터 기록
     # Phase 3: recipe.model 제거됨 - MTP_CONFIG 사용
     from src.factory.component_factory import MTP_CONFIG
-    mlflow.log_params({
-        "checkpoint": str(checkpoint_path),
-        "algorithm": recipe.train.algo,
-        "mtp_heads": MTP_CONFIG["n_heads"],  # 고정값 4
-        "mtp_horizon": MTP_CONFIG["horizon"],  # 고정값 4
-        "eval_protocol": recipe.eval.protocol,
-        "eval_types": ",".join(eval_types)
-    })
+
+    mlflow.log_params(
+        {
+            "checkpoint": str(checkpoint_path),
+            "algorithm": recipe.train.algo,
+            "mtp_heads": MTP_CONFIG["n_heads"],  # 고정값 4
+            "mtp_horizon": MTP_CONFIG["horizon"],  # 고정값 4
+            "eval_protocol": recipe.eval.protocol,
+            "eval_types": ",".join(eval_types),
+        }
+    )
 
     # Step 9: 실험 종료 및 결과 반환
     mlflow.end_run("FINISHED")
@@ -218,5 +227,5 @@ def run_evaluation_pipeline(
     return EvaluationOutputs(
         metrics=all_metrics,
         algorithm=recipe.train.algo,
-        checkpoint=str(checkpoint_path)
+        checkpoint=str(checkpoint_path),
     )

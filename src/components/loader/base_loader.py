@@ -68,11 +68,11 @@ class BaseLoader(BaseComponent, ABC):
 
         # Initialize S3 manager if configured
         self.s3_manager = create_s3_manager(config)
-        self.storage_mode = config.get("storage", {}).get("mode", "local")
+
+        # Phase 2: storage 필드 완전 제거 - PathResolver가 프로토콜 기반으로 처리
 
         # Extract path configurations
         self.paths_config = config.get("paths", {})
-
 
     def get_local_path(self, path_spec: str) -> Path | None:
         """
@@ -96,7 +96,6 @@ class BaseLoader(BaseComponent, ABC):
             return direct_path
 
         return None
-
 
     def load_with_streaming(
         self,
@@ -129,7 +128,7 @@ class BaseLoader(BaseComponent, ABC):
             console.print("[yellow]Local not found, streaming from S3...[/yellow]")
             try:
                 # Stream directly from S3 to memory
-                if s3_key.endswith(('.pth', '.pt', '.safetensors')):
+                if s3_key.endswith((".pth", ".pt", ".safetensors")):
                     # Model files - use stream_model
                     stream = self.s3_manager.stream_model(s3_key)
                     console.print(f"[green]Streaming model from S3: {s3_key}[/green]")
@@ -146,7 +145,6 @@ class BaseLoader(BaseComponent, ABC):
         raise FileNotFoundError(
             f"Could not find data at local path '{local_path}' or S3 key '{s3_key}'"
         )
-
 
     @abstractmethod
     def load(self, path: str, **kwargs) -> Any:
@@ -198,7 +196,7 @@ class DatasetLoader(BaseLoader):
         train_ratio: float = 0.8,
         val_ratio: float = 0.1,
         test_ratio: float = 0.1,
-        seed: int = 42,
+        seed: int = 42,  # noqa: ARG002
     ) -> dict[str, Any]:
         """
         Create train/val/test splits from data.
@@ -256,7 +254,6 @@ class ModelLoader(BaseLoader):
             Loaded model
         """
         pass
-
 
     def load(self, path: str, **kwargs) -> dict[str, Any]:
         """

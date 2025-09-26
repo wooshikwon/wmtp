@@ -1,0 +1,22 @@
+artifact_path: model
+flavors:
+  python_function:
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.transformers
+    model_path: model
+    python_version: 3.11.7
+  transformers:
+    code: null
+    framework: pt
+    model_path: model
+    task: text-classification
+mlflow_version: 2.15.1
+model_size_bytes: 82456136
+model_uuid: 12345678901234567890123456789014
+run_id: null
+signature:
+  inputs: '[{"type": "string"}]'
+  outputs: '[{"type": "tensor", "tensor-spec": {"dtype": "float32", "shape": [-1, 2]}}]'
+utc_time_created: '2024-09-26 10:58:00.000000'

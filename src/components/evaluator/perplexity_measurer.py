@@ -27,7 +27,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
+from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from torch.utils.data import DataLoader
 
@@ -37,7 +37,9 @@ from ..registry import evaluator_registry
 console = Console()
 
 
-@evaluator_registry.register("perplexity-measurer", category="evaluator", version="1.0.0")
+@evaluator_registry.register(
+    "perplexity-measurer", category="evaluator", version="1.0.0"
+)
 class PerplexityMeasurer(BaseComponent):
     """
     언어모델 Perplexity 및 Cross-Entropy 측정기.
@@ -66,12 +68,14 @@ class PerplexityMeasurer(BaseComponent):
         super().__init__(config)
         self.batch_size = self.config.get("batch_size", 8)
         self.max_length = self.config.get("max_length", 2048)
-        self.position_buckets = self.config.get("position_buckets", [
-            [0, 128], [128, 512], [512, 1024], [1024, 2048]
-        ])
+        self.position_buckets = self.config.get(
+            "position_buckets", [[0, 128], [128, 512], [512, 1024], [1024, 2048]]
+        )
         self.analyze_token_types = self.config.get("analyze_token_types", True)
         self.compute_head_perplexity = self.config.get("compute_head_perplexity", True)
-        self.device = self.config.get("device", "cuda" if torch.cuda.is_available() else "cpu")
+        self.device = self.config.get(
+            "device", "cuda" if torch.cuda.is_available() else "cpu"
+        )
 
     def _classify_token_type(self, token_id: int, tokenizer: Any) -> str:
         """
@@ -88,14 +92,46 @@ class PerplexityMeasurer(BaseComponent):
         token_str = tokenizer.decode([token_id], skip_special_tokens=False)
 
         # Special 토큰 확인
-        if token_id in [tokenizer.bos_token_id, tokenizer.eos_token_id, tokenizer.pad_token_id]:
+        if token_id in [
+            tokenizer.bos_token_id,
+            tokenizer.eos_token_id,
+            tokenizer.pad_token_id,
+        ]:
             return "special"
 
         # 코드 관련 토큰 패턴
         code_patterns = [
-            "def", "class", "import", "if", "else", "for", "while", "return",
-            "(", ")", "[", "]", "{", "}", ":", ";", "=", "+", "-", "*", "/",
-            "self", "None", "True", "False", "__", "->", "==", "!=", "<=", ">="
+            "def",
+            "class",
+            "import",
+            "if",
+            "else",
+            "for",
+            "while",
+            "return",
+            "(",
+            ")",
+            "[",
+            "]",
+            "{",
+            "}",
+            ":",
+            ";",
+            "=",
+            "+",
+            "-",
+            "*",
+            "/",
+            "self",
+            "None",
+            "True",
+            "False",
+            "__",
+            "->",
+            "==",
+            "!=",
+            "<=",
+            ">=",
         ]
 
         # 코드 토큰 확인
@@ -109,7 +145,7 @@ class PerplexityMeasurer(BaseComponent):
         self,
         model: torch.nn.Module,
         input_ids: torch.Tensor,
-        attention_mask: torch.Tensor | None = None
+        attention_mask: torch.Tensor | None = None,
     ) -> tuple[float, torch.Tensor]:
         """
         배치에 대한 perplexity 계산.
@@ -130,10 +166,7 @@ class PerplexityMeasurer(BaseComponent):
             outputs = model(input_ids=input_ids, attention_mask=attention_mask)
 
             # 로짓 추출
-            if hasattr(outputs, 'logits'):
-                logits = outputs.logits
-            else:
-                logits = outputs
+            logits = outputs.logits if hasattr(outputs, "logits") else outputs
 
             # MTP 모델 처리
             if logits.ndim == 4:  # [B, S, H, V]
@@ -148,7 +181,7 @@ class PerplexityMeasurer(BaseComponent):
             ce_losses = F.cross_entropy(
                 shift_logits.view(-1, shift_logits.size(-1)),
                 shift_labels.view(-1),
-                reduction='none'
+                reduction="none",
             ).view(batch_size, seq_len - 1)
 
             # 마스킹 처리
@@ -161,7 +194,7 @@ class PerplexityMeasurer(BaseComponent):
 
             # 평균 CE 및 Perplexity
             avg_ce = ce_losses.sum() / valid_tokens if valid_tokens > 0 else 0
-            perplexity = math.exp(avg_ce.item()) if avg_ce < 50 else float('inf')
+            perplexity = math.exp(avg_ce.item()) if avg_ce < 50 else float("inf")
 
             return perplexity, ce_losses
 
@@ -169,7 +202,7 @@ class PerplexityMeasurer(BaseComponent):
         self,
         model: torch.nn.Module,
         input_ids: torch.Tensor,
-        attention_mask: torch.Tensor | None = None
+        attention_mask: torch.Tensor | None = None,
     ) -> dict[str, float]:
         """
         MTP 모델의 헤드별 perplexity 계산.
@@ -186,7 +219,7 @@ class PerplexityMeasurer(BaseComponent):
 
         with torch.no_grad():
             outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-            logits = outputs.logits if hasattr(outputs, 'logits') else outputs
+            logits = outputs.logits if hasattr(outputs, "logits") else outputs
 
             if logits.ndim != 4:  # Not MTP
                 return {}
@@ -213,18 +246,17 @@ class PerplexityMeasurer(BaseComponent):
                 ce_loss = F.cross_entropy(
                     head_logits.reshape(-1, vocab_size),
                     head_labels.reshape(-1),
-                    reduction='mean'
+                    reduction="mean",
                 )
 
                 # Perplexity
-                perplexity = math.exp(ce_loss.item()) if ce_loss < 50 else float('inf')
+                perplexity = math.exp(ce_loss.item()) if ce_loss < 50 else float("inf")
                 head_perplexities[f"head_{h+1}"] = perplexity
 
         return head_perplexities
 
     def _analyze_position_wise_ce(
-        self,
-        ce_losses: list[torch.Tensor]
+        self, ce_losses: list[torch.Tensor]
     ) -> dict[str, float]:
         """
         위치별 Cross-Entropy 분석.
@@ -238,7 +270,9 @@ class PerplexityMeasurer(BaseComponent):
         position_ce = {}
 
         # 모든 CE를 연결
-        all_ce = torch.cat([ce.cpu() for ce in ce_losses], dim=0)  # [total_samples, seq_len-1]
+        all_ce = torch.cat(
+            [ce.cpu() for ce in ce_losses], dim=0
+        )  # [total_samples, seq_len-1]
 
         for start, end in self.position_buckets:
             # 해당 위치 구간의 CE 추출
@@ -252,15 +286,14 @@ class PerplexityMeasurer(BaseComponent):
                 if valid_ce.numel() > 0:
                     avg_ce = valid_ce.mean().item()
                     position_ce[f"pos_{start}_{end}"] = avg_ce
-                    position_ce[f"ppl_{start}_{end}"] = math.exp(avg_ce) if avg_ce < 50 else float('inf')
+                    position_ce[f"ppl_{start}_{end}"] = (
+                        math.exp(avg_ce) if avg_ce < 50 else float("inf")
+                    )
 
         return position_ce
 
     def _analyze_token_type_perplexity(
-        self,
-        model: torch.nn.Module,
-        dataloader: DataLoader,
-        tokenizer: Any
+        self, model: torch.nn.Module, dataloader: DataLoader, tokenizer: Any
     ) -> dict[str, float]:
         """
         토큰 타입별 perplexity 분석.
@@ -280,7 +313,7 @@ class PerplexityMeasurer(BaseComponent):
 
             with torch.no_grad():
                 outputs = model(input_ids=input_ids)
-                logits = outputs.logits if hasattr(outputs, 'logits') else outputs
+                logits = outputs.logits if hasattr(outputs, "logits") else outputs
 
                 if logits.ndim == 4:  # MTP
                     logits = logits[:, :, 0, :]
@@ -288,14 +321,14 @@ class PerplexityMeasurer(BaseComponent):
                 # CE 계산
                 for i in range(input_ids.shape[0]):
                     for j in range(input_ids.shape[1] - 1):
-                        token_id = input_ids[i, j+1].item()
+                        token_id = input_ids[i, j + 1].item()
                         token_type = self._classify_token_type(token_id, tokenizer)
 
                         # 해당 토큰의 CE
                         ce = F.cross_entropy(
                             logits[i, j].unsqueeze(0),
-                            input_ids[i, j+1].unsqueeze(0),
-                            reduction='none'
+                            input_ids[i, j + 1].unsqueeze(0),
+                            reduction="none",
                         )
                         type_ce[token_type].append(ce.item())
 
@@ -309,7 +342,9 @@ class PerplexityMeasurer(BaseComponent):
             if ce_list:
                 avg_ce = np.mean(ce_list)
                 type_perplexity[f"{token_type}_ce"] = avg_ce
-                type_perplexity[f"{token_type}_ppl"] = math.exp(avg_ce) if avg_ce < 50 else float('inf')
+                type_perplexity[f"{token_type}_ppl"] = (
+                    math.exp(avg_ce) if avg_ce < 50 else float("inf")
+                )
 
         return type_perplexity
 
@@ -333,7 +368,9 @@ class PerplexityMeasurer(BaseComponent):
         eval_dataset = ctx.get("eval_dataset")
 
         if not model or not tokenizer:
-            raise ValueError("Model and tokenizer are required for perplexity measurement")
+            raise ValueError(
+                "Model and tokenizer are required for perplexity measurement"
+            )
 
         # 모델 설정
         model.eval()
@@ -358,16 +395,20 @@ class PerplexityMeasurer(BaseComponent):
                     max_length=self.max_length,
                     truncation=True,
                     padding="max_length",
-                    return_tensors="pt"
+                    return_tensors="pt",
                 )
                 # Squeeze batch dimension if present (from return_tensors="pt")
                 if isinstance(tokens, dict):
-                    tokens = {k: v.squeeze(0) if v.dim() > 1 else v for k, v in tokens.items()}
+                    tokens = {
+                        k: v.squeeze(0) if v.dim() > 1 else v for k, v in tokens.items()
+                    }
                 eval_dataset.append(tokens)
 
         # DataLoader 생성
         if not isinstance(eval_dataset, DataLoader):
-            dataloader = DataLoader(eval_dataset, batch_size=self.batch_size, shuffle=False)
+            dataloader = DataLoader(
+                eval_dataset, batch_size=self.batch_size, shuffle=False
+            )
         else:
             dataloader = eval_dataset
 
@@ -383,11 +424,10 @@ class PerplexityMeasurer(BaseComponent):
             TextColumn("[progress.description]{task.description}"),
             BarColumn(),
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-            console=console
+            console=console,
         ) as progress:
             task = progress.add_task(
-                "[cyan]Computing perplexity...",
-                total=len(dataloader)
+                "[cyan]Computing perplexity...", total=len(dataloader)
             )
 
             for batch in dataloader:
@@ -413,7 +453,9 @@ class PerplexityMeasurer(BaseComponent):
                 progress.update(task, advance=1)
 
         # 평균 perplexity
-        avg_perplexity = total_perplexity / num_batches if num_batches > 0 else float('inf')
+        avg_perplexity = (
+            total_perplexity / num_batches if num_batches > 0 else float("inf")
+        )
 
         # 위치별 CE 분석
         console.print("\n[yellow]Analyzing position-wise cross-entropy...[/yellow]")
@@ -434,29 +476,37 @@ class PerplexityMeasurer(BaseComponent):
                 sample_ids = sample_batch.to(self.device)
                 sample_mask = None
 
-            head_metrics = self._compute_head_perplexities(model, sample_ids, sample_mask)
+            head_metrics = self._compute_head_perplexities(
+                model, sample_ids, sample_mask
+            )
 
         # 토큰 타입별 perplexity
         type_metrics = {}
         if self.analyze_token_types:
             console.print("[yellow]Analyzing token-type perplexity...[/yellow]")
-            type_metrics = self._analyze_token_type_perplexity(model, dataloader, tokenizer)
+            type_metrics = self._analyze_token_type_perplexity(
+                model, dataloader, tokenizer
+            )
 
         # 결과 출력
-        self._print_results(avg_perplexity, position_metrics, head_metrics, type_metrics)
+        self._print_results(
+            avg_perplexity, position_metrics, head_metrics, type_metrics
+        )
 
         # 메트릭 통합
         metrics = {
             "overall_perplexity": avg_perplexity,
-            "overall_ce": math.log(avg_perplexity) if avg_perplexity < float('inf') else 50.0,
+            "overall_ce": math.log(avg_perplexity)
+            if avg_perplexity < float("inf")
+            else 50.0,
             **position_metrics,
             **head_metrics,
             **type_metrics,
             "config": {
                 "batch_size": self.batch_size,
                 "max_length": self.max_length,
-                "num_samples": num_batches * self.batch_size
-            }
+                "num_samples": num_batches * self.batch_size,
+            },
         }
 
         return {"metrics": metrics}
@@ -466,7 +516,7 @@ class PerplexityMeasurer(BaseComponent):
         overall_ppl: float,
         position_metrics: dict,
         head_metrics: dict,
-        type_metrics: dict
+        type_metrics: dict,
     ):
         """결과를 테이블 형식으로 출력."""
         # 전체 결과 테이블
@@ -476,7 +526,10 @@ class PerplexityMeasurer(BaseComponent):
 
         # Overall metrics
         table.add_row("Overall Perplexity", f"{overall_ppl:.2f}")
-        table.add_row("Overall Cross-Entropy", f"{math.log(overall_ppl):.4f}" if overall_ppl < float('inf') else "inf")
+        table.add_row(
+            "Overall Cross-Entropy",
+            f"{math.log(overall_ppl):.4f}" if overall_ppl < float("inf") else "inf",
+        )
 
         # Position-wise metrics
         for key, value in position_metrics.items():

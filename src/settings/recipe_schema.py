@@ -84,7 +84,9 @@ class Run(BaseModel):
 class Checkpointing(BaseModel):
     """체크포인트 저장 설정."""
 
-    save_interval: int = Field(default=100, ge=1, description="N스텝마다 체크포인트 저장")
+    save_interval: int = Field(
+        default=100, ge=1, description="N스텝마다 체크포인트 저장"
+    )
     keep_last: int = Field(default=3, ge=1, description="최근 N개 체크포인트 유지")
     save_final: bool = Field(default=True, description="최종 모델 저장 여부")
 
@@ -95,7 +97,9 @@ class Stage1Config(BaseModel):
     enabled: bool = Field(default=True, description="Enable Stage 1 pretraining")
     max_steps: int = Field(default=2000, ge=1, description="Stage 1 max steps")
     lr: float = Field(default=1.0e-4, gt=0, description="Stage 1 learning rate")
-    save_value_head: bool = Field(default=True, description="Save value head after Stage 1")
+    save_value_head: bool = Field(
+        default=True, description="Save value head after Stage 1"
+    )
 
 
 class Train(BaseModel):
@@ -116,6 +120,7 @@ class Train(BaseModel):
     stage1: Stage1Config | None = Field(
         default=None, description="Stage 1 configuration for critic-wmtp"
     )
+
 
 class Optim(BaseModel):
     """Optimizer configuration."""
@@ -152,7 +157,9 @@ class DataConfig(BaseModel):
     pack_sequences: bool = Field(
         default=True, description="Pack sequences for efficiency"
     )
-    num_workers: int = Field(default=8, ge=0, description="Number of data loader workers")
+    num_workers: int = Field(
+        default=8, ge=0, description="Number of data loader workers"
+    )
 
     @field_validator("sources")
     @classmethod
@@ -194,7 +201,7 @@ class Loss(BaseModel):
         default=0.7,
         gt=0,
         description="Softmax temperature for weight calculation (not CE logits)",
-        validation_alias="temperature"  # backward compatibility
+        validation_alias="temperature",  # backward compatibility
     )
     epsilon: float = Field(default=0.05, gt=0, description="Minimum weight value")
     max_weight: float = Field(default=3.0, gt=1, description="Maximum weight value")
@@ -219,20 +226,29 @@ class Critic(BaseModel):
     )
     # Phase 2.1: TD error discount parameter (previously hardcoded)
     discount_lambda: float = Field(
-        default=0.95, ge=0, le=1,
-        description="TD error discount for delta computation (short-term discount)"
+        default=0.95,
+        ge=0,
+        le=1,
+        description="TD error discount for delta computation (short-term discount)",
     )
     # GAE parameters for value function (long-term discount)
-    gamma: float = Field(default=0.99, ge=0, le=1, description="Discount factor for rewards")
-    gae_lambda: float = Field(default=0.95, ge=0, le=1, description="GAE lambda parameter")
+    gamma: float = Field(
+        default=0.99, ge=0, le=1, description="Discount factor for rewards"
+    )
+    gae_lambda: float = Field(
+        default=0.95, ge=0, le=1, description="GAE lambda parameter"
+    )
     # Phase 2.2: Loss structure improvement - main loss fixed at 1.0
     auxiliary_loss_coef: float = Field(
-        default=0.1, ge=0,
+        default=0.1,
+        ge=0,
         description="Auxiliary value loss coefficient (main WMTP loss is always 1.0)",
-        validation_alias="value_coef"  # backward compatibility for parsing
+        validation_alias="value_coef",  # backward compatibility for parsing
     )
     value_lr: float = Field(default=5e-5, gt=0, description="Value head learning rate")
-    use_pseudo_rewards: bool = Field(default=True, description="Use pseudo rewards when RM is unavailable")
+    use_pseudo_rewards: bool = Field(
+        default=True, description="Use pseudo rewards when RM is unavailable"
+    )
 
 
 class Rho1(BaseModel):
@@ -245,12 +261,17 @@ class Rho1(BaseModel):
 
     # Token skip mode parameters
     skip_threshold_percentile: float = Field(
-        default=0.3, ge=0, le=1, description="Bottom percentile to skip in token_skip mode"
+        default=0.3,
+        ge=0,
+        le=1,
+        description="Bottom percentile to skip in token_skip mode",
     )
 
     # CE difference threshold for noise filtering (Phase 1.2)
     min_ce_diff: float = Field(
-        default=0.01, ge=0, description="Minimum CE difference threshold for noise filtering"
+        default=0.01,
+        ge=0,
+        description="Minimum CE difference threshold for noise filtering",
     )
 
 

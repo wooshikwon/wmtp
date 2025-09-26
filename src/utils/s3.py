@@ -91,8 +91,6 @@ class S3Manager:
             self.connected = False
             self.s3_client = None
 
-
-
     def upload_from_bytes(
         self,
         data: bytes,
@@ -319,10 +317,6 @@ class S3Manager:
             return False
 
 
-
-
-
-
 def create_s3_manager(config: dict[str, Any]) -> S3Manager | None:
     """
     Phase 2 리팩토링: S3 매니저 생성 (storage 의존성 제거)
@@ -378,10 +372,6 @@ def create_s3_manager(config: dict[str, Any]) -> S3Manager | None:
 
     # S3 설정이 없으면 None 반환
     return None
-
-
-
-
 
 
 # Export main functions

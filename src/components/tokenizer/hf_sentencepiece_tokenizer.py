@@ -14,7 +14,7 @@ ComponentFactory 패턴 호환 토크나이저입니다.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Union
+from typing import Any
 
 from datasets import Dataset
 
@@ -88,7 +88,7 @@ class HfSentencePieceTokenizer(BaseComponent):
             f"  - UNK ID: {self.unk_id}"
         )
 
-    def run(self, ctx: dict[str, Any]) -> dict[str, Any]:
+    def run(self, ctx: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG002
         """ComponentFactory 패턴 실행 메서드
 
         Args:
@@ -113,14 +113,14 @@ class HfSentencePieceTokenizer(BaseComponent):
 
     def __call__(
         self,
-        text: Union[str, List[str]],
+        text: str | list[str],
         truncation: bool = True,
         max_length: int = 512,
-        padding: Union[bool, str] = False,
+        padding: bool | str = False,  # noqa: ARG002
         return_attention_mask: bool = True,
-        return_tensors: str = None,
-        **kwargs
-    ) -> Dict[str, List[int]]:
+        return_tensors: str = None,  # noqa: ARG002
+        **kwargs,  # noqa: ARG002
+    ) -> dict[str, list[int]]:
         """HuggingFace 스타일 토크나이징 메서드
 
         기존 파이프라인에서 사용하던 tokenizer() 호출과 완전 호환되도록
@@ -160,12 +160,8 @@ class HfSentencePieceTokenizer(BaseComponent):
         return self._merge_batch_results(results)
 
     def _encode_single(
-        self,
-        text: str,
-        truncation: bool,
-        max_length: int,
-        return_attention_mask: bool
-    ) -> Dict[str, List[int]]:
+        self, text: str, truncation: bool, max_length: int, return_attention_mask: bool
+    ) -> dict[str, list[int]]:
         """단일 텍스트 인코딩"""
         # SentencePiece로 토큰화
         tokens = self.sp.encode(text, out_type=int)
@@ -183,7 +179,9 @@ class HfSentencePieceTokenizer(BaseComponent):
 
         return result
 
-    def _merge_batch_results(self, results: List[Dict[str, List[int]]]) -> Dict[str, List[List[int]]]:
+    def _merge_batch_results(
+        self, results: list[dict[str, list[int]]]
+    ) -> dict[str, list[list[int]]]:
         """배치 결과 병합"""
         merged = {}
         for key in results[0].keys():
@@ -195,8 +193,8 @@ class HfSentencePieceTokenizer(BaseComponent):
         dataset: Dataset,
         max_length: int,
         text_column: str = None,
-        remove_columns: List[str] = None,
-        **kwargs
+        remove_columns: list[str] = None,
+        **kwargs,
     ) -> Dataset:
         """Dataset 전체를 토크나이징하는 유틸리티 메서드
 
@@ -213,7 +211,8 @@ class HfSentencePieceTokenizer(BaseComponent):
         Returns:
             토크나이징된 Dataset
         """
-        def tokenize_function(example: Dict[str, Any]) -> Dict[str, Any]:
+
+        def tokenize_function(example: dict[str, Any]) -> dict[str, Any]:
             """개별 샘플 토크나이징 함수"""
             # 텍스트 추출 - 다양한 데이터셋 형식 지원
             if text_column:
@@ -221,11 +220,11 @@ class HfSentencePieceTokenizer(BaseComponent):
             else:
                 # 자동 감지: 일반적인 텍스트 컬럼명들 시도
                 text = (
-                    example.get("full_text") or
-                    example.get("prompt") or
-                    example.get("text") or
-                    example.get("content") or
-                    ""
+                    example.get("full_text")
+                    or example.get("prompt")
+                    or example.get("text")
+                    or example.get("content")
+                    or ""
                 )
 
             # HuggingFace 스타일로 토크나이징
@@ -234,7 +233,7 @@ class HfSentencePieceTokenizer(BaseComponent):
                 truncation=True,
                 max_length=max_length,
                 padding=False,
-                return_attention_mask=True
+                return_attention_mask=True,
             )
 
             # 언어모델용 labels 생성 (input_ids와 동일)
@@ -251,7 +250,7 @@ class HfSentencePieceTokenizer(BaseComponent):
             remove_columns=remove_columns,
             desc="HF호환 토크나이저로 데이터셋 토크나이징",
             load_from_cache_file=kwargs.get("load_from_cache_file", True),
-            **{k: v for k, v in kwargs.items() if k != "load_from_cache_file"}
+            **{k: v for k, v in kwargs.items() if k != "load_from_cache_file"},
         )
 
         logger.info(
@@ -264,11 +263,11 @@ class HfSentencePieceTokenizer(BaseComponent):
 
         return tokenized_dataset
 
-    def decode(self, token_ids: List[int], **kwargs) -> str:
+    def decode(self, token_ids: list[int], **kwargs) -> str:  # noqa: ARG002
         """토큰 ID를 텍스트로 디코딩"""
         return self.sp.decode(token_ids)
 
-    def batch_decode(self, batch_token_ids: List[List[int]], **kwargs) -> List[str]:
+    def batch_decode(self, batch_token_ids: list[list[int]], **kwargs) -> list[str]:
         """배치 토큰 ID들을 텍스트 리스트로 디코딩"""
         return [self.decode(token_ids, **kwargs) for token_ids in batch_token_ids]
 

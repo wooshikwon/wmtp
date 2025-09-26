@@ -21,7 +21,6 @@
 이를 통해 연구자는 알고리즘 간 공정한 성능 비교가 가능합니다.
 """
 
-from pathlib import Path  # 경로 조작용
 from typing import Any  # 범용 타입 힌트
 
 # WMTP 컴포넌트 베이스 클래스들 - 모든 구현체가 상속받는 추상 인터페이스
@@ -38,8 +37,6 @@ from src.components.registry import (
     evaluator_registry,  # 평가기 구현체들 (meta-mtp, mbpp-v1 등)
     loader_registry,  # 로더 구현체들 (hf-model, mtp-native 등)
     optimizer_registry,  # 옵티마이저 구현체들 (adamw-bf16-fused 등)
-    registry,  # 통합 레지스트리 (직접 접근용)
-    # scorer_registry 제거됨 (v2.1.0) - 모든 scorer 로직이 trainer로 통합
     tokenizer_registry,  # 토크나이저 구현체들 (unified-sentencepiece 등)
     trainer_registry,  # 트레이너 구현체들 (mtp-weighted-ce-trainer 등)
 )
@@ -60,7 +57,7 @@ class ComponentFactory:
 
         각 WMTP 알고리즘마다 독립된 트레이너 클래스를 사용합니다.
         - BaselineMtpTrainer: 균등 가중치
-        - CriticWmtpTrainer: Critic 기반 가중치  
+        - CriticWmtpTrainer: Critic 기반 가중치
         - Rho1WmtpTrainer: Reference 모델 기반 가중치
 
     설계 원칙:
@@ -116,7 +113,7 @@ class ComponentFactory:
             "loss_config": {
                 "weight_norm": recipe.loss.weight_norm,  # 가중치 정규화 방식
                 "lambda": recipe.loss.lambda_weight,  # 정규화 강도 λ
-                "temperature": recipe.loss.temperature,  # 소프트맥스 온도
+                "temperature": recipe.loss.weight_temperature,  # 소프트맥스 온도
                 "epsilon": recipe.loss.epsilon,  # 수치 안정성용 엡실론
                 "max_weight": recipe.loss.max_weight,  # 최대 가중치 제한
             },
@@ -127,7 +124,7 @@ class ComponentFactory:
             # FSDP (Fully Sharded Data Parallel) 설정
             "fsdp_config": config.devices.fsdp.model_dump()
             if config.devices.fsdp.enabled
-            else None
+            else None,
         }
 
         # 알고리즘별 특화 설정 추가
@@ -234,39 +231,54 @@ class ComponentFactory:
             loader_config["s3_auth"] = config.s3_auth.model_dump()
 
         # 하위 호환성을 위한 storage 정보 생성 (deprecated)
-        if hasattr(config, 'storage') and config.storage:  # 마이그레이션된 old config인 경우
+        if (
+            hasattr(config, "storage") and config.storage
+        ):  # 마이그레이션된 old config인 경우
             loader_config["storage"] = config.storage
 
         # 4. UnifiedDataLoader 생성
         return loader_registry.create("unified-data-loader", loader_config)
 
     @staticmethod
-    def create_model_loader(config: Config, recipe: Recipe = None) -> Loader:
-        """통합 모델 로더만 반환.
+    def create_model_loader(config: Config, recipe: Recipe = None) -> Loader:  # noqa: ARG004
+        """표준화된 메타데이터 기반 모델 로더 생성.
 
-        WMTP는 Facebook의 native MTP 모델을 기본으로 사용하되,
-        다양한 모델 소스와 포맷을 지원합니다:
-            - mtp-native: Facebook native MTP (consolidated.pth)
-            - hf-model: HuggingFace 변환된 모델
-            - checkpoint: 훈련 중단점 파일 (.pt/.pth)
-            - sheared-llama: Princeton 경량화 모델
-            - starling-rm: Berkeley 보상 모델
-            - test-mtp: 테스트용 MTP wrapper (distilgpt2 with MTP heads)
-            - tiny-mtp: 테스트용 작은 MTP wrapper
+        Phase 2 핵심 개선사항:
+        - metadata.json 기반 정확한 타입 감지
+        - Config/Recipe 연동으로 알고리즘별 최적화된 모델 선택
+        - 확장자 기반의 취약한 추론 로직 완전 제거
+        - S3/로컬 투명한 통합 지원
+
+        지원하는 모델 타입 (metadata.json wmtp_type 기준):
+            - base_model: MTP 확장 모델 (우리의 핵심 모델, config.paths.models.base)
+            - reference_model: 일반 언어 모델 (Rho1-WMTP용, config.paths.models.ref)
+            - reward_model: RLHF용 보상 모델 (Critic-WMTP용, config.paths.models.rm)
+
+        모델 경로 자동 선택 (Recipe 알고리즘 기반):
+            - baseline-mtp: config.paths.models.base (기본 MTP 모델)
+            - critic-wmtp: config.paths.models.base + rm (보상 모델 추가)
+            - rho1-wmtp: config.paths.models.base + ref (참조 모델 추가)
 
         Args:
-            config: 환경 설정 (모델 경로, GPU 설정 등)
-            recipe: 훈련 레시피 (선택)
+            config: 환경 설정 (모델 경로, GPU 설정, S3 인증 등)
+            recipe: 훈련 레시피 (알고리즘별 모델 요구사항 결정)
 
         Returns:
-            적절한 ModelLoader 인스턴스 (UnifiedModelLoader, TestMTPLoader 등)
+            StandardizedModelLoader 인스턴스 (메타데이터 기반 스마트 로더)
         """
-        # 로더 설정
+        # 로더 설정에 Recipe 정보 추가
         loader_config = config.model_dump()
 
-        # UnifiedModelLoader 생성 - 모든 모델 타입을 하나의 로더로 처리
-        # distilgpt2-mtp 같은 로컬 모델도 UnifiedModelLoader가 처리
-        return loader_registry.create("unified-model-loader", loader_config)
+        # Recipe 정보가 있으면 알고리즘별 추가 설정 주입
+        if recipe:
+            loader_config["algorithm"] = recipe.train.algo
+            loader_config["mtp_config"] = {
+                "n_heads": MTP_CONFIG["n_heads"],
+                "horizon": MTP_CONFIG["horizon"],
+            }
+
+        # StandardizedModelLoader 생성 - 메타데이터 기반 정확한 타입 감지
+        return loader_registry.create("standardized-model-loader", loader_config)
 
     @staticmethod
     def create_checkpoint_loader(config: Config) -> Loader:
@@ -309,7 +321,7 @@ class ComponentFactory:
         return loader_registry.create("checkpoint-loader", loader_config)
 
     @staticmethod
-    def create_evaluator(recipe: Recipe, config: Config) -> Evaluator:
+    def create_evaluator(recipe: Recipe, config: Config) -> Evaluator:  # noqa: ARG004
         """평가 프로토콜별 특화된 평가기 생성.
 
         각 벤치마크마다 다른 평가 방식과 메트릭이 필요합니다:
@@ -374,7 +386,9 @@ class ComponentFactory:
                 "normalize": recipe.critic.normalize,  # "zscore"
                 "temperature": recipe.loss.temperature,  # 소프트맥스 온도
                 # Stage1 전용 학습률 (recipe에서 가져오기)
-                "lr": recipe.train.stage1.lr if hasattr(recipe.train, "stage1") else 1e-4,
+                "lr": recipe.train.stage1.lr
+                if hasattr(recipe.train, "stage1")
+                else 1e-4,
                 # GAE 파라미터도 recipe에서 가져오기
                 "gamma": recipe.critic.gamma,  # 0.99
                 "gae_lambda": recipe.critic.gae_lambda,  # 0.95
@@ -383,7 +397,10 @@ class ComponentFactory:
 
             # Registry에서 Stage1 Pretrainer 인스턴스 생성 및 반환
             from src.components.registry import pretrainer_registry
-            return pretrainer_registry.create("critic-head-pretrainer", pretrainer_config)
+
+            return pretrainer_registry.create(
+                "critic-head-pretrainer", pretrainer_config
+            )
 
         else:
             # 다른 알고리즘들은 단일 스테이지이므로 pretrainer 불필요
@@ -393,7 +410,9 @@ class ComponentFactory:
             )
 
     @staticmethod
-    def create_aux_model_loader(recipe: Recipe, config: Config, aux_type: str) -> Loader:
+    def create_aux_model_loader(
+        recipe: Recipe, config: Config, aux_type: str
+    ) -> Loader:
         """알고리즘별 보조 모델 로더 생성 - ref/rm 모델 전용.
 
         WMTP 알고리즘별 보조 모델 처리를 위한 특화된 로더:
@@ -482,7 +501,7 @@ class ComponentFactory:
         return loader_registry.create("unified-model-loader", loader_config)
 
     @staticmethod
-    def create_tokenizer(recipe: Recipe, config: Config) -> Any:
+    def create_tokenizer(recipe: Recipe, config: Config) -> Any:  # noqa: ARG004
         """토크나이저 생성 - 환경 기반 자동 선택.
 
         환경(test/production)에 따라 토크나이저 자동 선택:
@@ -508,12 +527,12 @@ class ComponentFactory:
             # 테스트 환경: HuggingFace transformers 토크나이저
             # distilgpt2 등 HuggingFace 모델과 호환
             registry_key = "hf-transformers"
-            print(f"[환경 자동 감지] 테스트 환경 → hf-transformers 토크나이저 사용")
+            print("[환경 자동 감지] 테스트 환경 → hf-transformers 토크나이저 사용")
         else:
             # 프로덕션 환경: Facebook MTP 모델용 SentencePiece
             # 7B MTP 모델 등 native MTP 모델과 호환
             registry_key = "hf-sentencepiece"
-            print(f"[환경 자동 감지] 프로덕션 환경 → hf-sentencepiece 토크나이저 사용")
+            print("[환경 자동 감지] 프로덕션 환경 → hf-sentencepiece 토크나이저 사용")
 
         # 4. 설정 구성 - config 값 직접 사용
         tokenizer_config = config.model_dump()
@@ -522,7 +541,11 @@ class ComponentFactory:
         return tokenizer_registry.create(registry_key, tokenizer_config)
 
     @staticmethod
-    def create_evaluator_by_type(eval_type: str, recipe: Recipe, config: Config) -> Evaluator:
+    def create_evaluator_by_type(
+        eval_type: str,
+        recipe: Recipe,
+        config: Config,  # noqa: ARG004
+    ) -> Evaluator:
         """평가 타입별 특화된 평가기 생성 (Meta 논문 지원).
 
         Meta 2024 MTP 논문의 모든 평가 항목을 재현하기 위한
@@ -552,14 +575,14 @@ class ComponentFactory:
                 "metrics": recipe.eval.metrics,
                 "sampling": recipe.eval.sampling.model_dump(),
                 "batch_size": recipe.data.eval.batch_size,
-                "device": "cuda" if torch.cuda.is_available() else "cpu"
+                "device": "cuda" if torch.cuda.is_available() else "cpu",
             },
             "inference-speed": {
                 "batch_sizes": [1, 4, 8, 16],
                 "sequence_lengths": [512, 1024, 2048],
                 "num_trials": 10,
                 "warmup_steps": 3,
-                "device": "cuda" if torch.cuda.is_available() else "cpu"
+                "device": "cuda" if torch.cuda.is_available() else "cpu",
             },
             "per-head-analysis": {
                 "analyze_positions": True,
@@ -567,7 +590,7 @@ class ComponentFactory:
                 "head_comparison": True,
                 "position_buckets": [(0, 128), (128, 512), (512, 1024), (1024, 2048)],
                 "batch_size": recipe.data.eval.batch_size,
-                "device": "cuda" if torch.cuda.is_available() else "cpu"
+                "device": "cuda" if torch.cuda.is_available() else "cpu",
             },
             "token-accuracy": {
                 "position_range": (0, 100),
@@ -576,15 +599,19 @@ class ComponentFactory:
                 "granularity": 10,
                 "analyze_token_types": True,
                 "batch_size": recipe.data.eval.batch_size,
-                "device": "cuda" if torch.cuda.is_available() else "cpu"
+                "device": "cuda" if torch.cuda.is_available() else "cpu",
             },
             "self-speculative": {
                 "num_sequences": 100,
                 "max_tokens": 512,
-                "temperature": recipe.eval.sampling.temperature if hasattr(recipe.eval.sampling, 'temperature') else 0.8,
-                "top_p": recipe.eval.sampling.top_p if hasattr(recipe.eval.sampling, 'top_p') else 0.95,
+                "temperature": recipe.eval.sampling.temperature
+                if hasattr(recipe.eval.sampling, "temperature")
+                else 0.8,
+                "top_p": recipe.eval.sampling.top_p
+                if hasattr(recipe.eval.sampling, "top_p")
+                else 0.95,
                 "measure_speedup": True,
-                "device": "cuda" if torch.cuda.is_available() else "cpu"
+                "device": "cuda" if torch.cuda.is_available() else "cpu",
             },
             "perplexity-measurer": {
                 "batch_size": recipe.data.eval.batch_size,
@@ -592,15 +619,15 @@ class ComponentFactory:
                 "position_buckets": [[0, 128], [128, 512], [512, 1024], [1024, 2048]],
                 "analyze_token_types": True,
                 "compute_head_perplexity": True,
-                "device": "cuda" if torch.cuda.is_available() else "cpu"
+                "device": "cuda" if torch.cuda.is_available() else "cpu",
             },
             "metrics-visualizer": {
                 "output_dir": "./figures",
                 "save_formats": ["png", "pdf"],
                 "use_plotly": True,
                 "upload_to_mlflow": True,
-                "figure_size": [10, 6]
-            }
+                "figure_size": [10, 6],
+            },
         }
 
         if eval_type not in eval_configs:

@@ -21,7 +21,6 @@ MLflow와 통합하여 모든 차트를 자동으로 추적합니다.
 
 from __future__ import annotations
 
-import io
 import json
 from pathlib import Path
 from typing import Any
@@ -34,8 +33,8 @@ from rich.console import Console
 # Plotly imports (optional, for interactive charts)
 try:
     import plotly.graph_objects as go
-    import plotly.express as px
     from plotly.subplots import make_subplots
+
     PLOTLY_AVAILABLE = True
 except ImportError:
     PLOTLY_AVAILABLE = False
@@ -48,12 +47,12 @@ console = Console()
 
 # Meta 논문 스타일 색상 팔레트
 META_COLORS = {
-    "mtp": "#1f77b4",      # 파란색 (MTP)
-    "ntp": "#ff7f0e",      # 주황색 (NTP)
-    "wmtp": "#2ca02c",     # 초록색 (WMTP)
+    "mtp": "#1f77b4",  # 파란색 (MTP)
+    "ntp": "#ff7f0e",  # 주황색 (NTP)
+    "wmtp": "#2ca02c",  # 초록색 (WMTP)
     "baseline": "#d62728",  # 빨간색 (Baseline)
-    "critic": "#9467bd",    # 보라색 (Critic)
-    "rho1": "#8c564b",     # 갈색 (Rho1)
+    "critic": "#9467bd",  # 보라색 (Critic)
+    "rho1": "#8c564b",  # 갈색 (Rho1)
 }
 
 # 논문 스타일 설정
@@ -70,7 +69,9 @@ PAPER_STYLE = {
 }
 
 
-@evaluator_registry.register("metrics-visualizer", category="evaluator", version="1.0.0")
+@evaluator_registry.register(
+    "metrics-visualizer", category="evaluator", version="1.0.0"
+)
 class MetricsVisualizer(BaseComponent):
     """
     Meta 논문 스타일 메트릭 시각화 도구.
@@ -113,7 +114,7 @@ class MetricsVisualizer(BaseComponent):
     def create_inference_speed_chart(
         self,
         metrics: dict[str, Any],
-        title: str = "Inference Speed Comparison (MTP vs NTP)"
+        title: str = "Inference Speed Comparison (MTP vs NTP)",
     ) -> Path:
         """
         Figure S10 스타일 추론 속도 비교 차트 생성.
@@ -131,9 +132,7 @@ class MetricsVisualizer(BaseComponent):
             return self._create_matplotlib_speed_chart(metrics, title)
 
     def _create_matplotlib_speed_chart(
-        self,
-        metrics: dict[str, Any],
-        title: str
+        self, metrics: dict[str, Any], title: str
     ) -> Path:
         """Matplotlib을 사용한 속도 차트 생성."""
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=self.figure_size)
@@ -146,24 +145,35 @@ class MetricsVisualizer(BaseComponent):
         x = np.arange(len(batch_sizes))
         width = 0.35
 
-        bars1 = ax1.bar(x - width/2, mtp_speeds, width, label='MTP', color=META_COLORS["mtp"])
-        bars2 = ax1.bar(x + width/2, ntp_speeds, width, label='NTP', color=META_COLORS["ntp"])
+        ax1.bar(
+            x - width / 2, mtp_speeds, width, label="MTP", color=META_COLORS["mtp"]
+        )
+        ax1.bar(
+            x + width / 2, ntp_speeds, width, label="NTP", color=META_COLORS["ntp"]
+        )
 
-        ax1.set_xlabel('Batch Size')
-        ax1.set_ylabel('Tokens/Second')
-        ax1.set_title('Throughput by Batch Size')
+        ax1.set_xlabel("Batch Size")
+        ax1.set_ylabel("Tokens/Second")
+        ax1.set_title("Throughput by Batch Size")
         ax1.set_xticks(x)
         ax1.set_xticklabels(batch_sizes)
         ax1.legend()
         ax1.grid(True, alpha=0.3)
 
         # Speedup ratio
-        speedup_ratios = [m/n if n > 0 else 0 for m, n in zip(mtp_speeds, ntp_speeds)]
-        ax2.plot(batch_sizes, speedup_ratios, 'o-', color=META_COLORS["wmtp"], linewidth=2, markersize=8)
-        ax2.axhline(y=1.0, color='gray', linestyle='--', alpha=0.5)
-        ax2.set_xlabel('Batch Size')
-        ax2.set_ylabel('Speedup (MTP/NTP)')
-        ax2.set_title('MTP Speedup Factor')
+        speedup_ratios = [m / n if n > 0 else 0 for m, n in zip(mtp_speeds, ntp_speeds)]
+        ax2.plot(
+            batch_sizes,
+            speedup_ratios,
+            "o-",
+            color=META_COLORS["wmtp"],
+            linewidth=2,
+            markersize=8,
+        )
+        ax2.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
+        ax2.set_xlabel("Batch Size")
+        ax2.set_ylabel("Speedup (MTP/NTP)")
+        ax2.set_title("MTP Speedup Factor")
         ax2.grid(True, alpha=0.3)
         ax2.set_ylim([0, max(speedup_ratios) * 1.2])
 
@@ -172,21 +182,18 @@ class MetricsVisualizer(BaseComponent):
 
         # 저장
         output_path = self.output_dir / "inference_speed_comparison.png"
-        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        plt.savefig(output_path, dpi=300, bbox_inches="tight")
         plt.close()
 
         console.print(f"[green]Speed chart saved to: {output_path}[/green]")
         return output_path
 
-    def _create_plotly_speed_chart(
-        self,
-        metrics: dict[str, Any],
-        title: str
-    ) -> Path:
+    def _create_plotly_speed_chart(self, metrics: dict[str, Any], title: str) -> Path:
         """Plotly를 사용한 인터랙티브 속도 차트 생성."""
         fig = make_subplots(
-            rows=1, cols=2,
-            subplot_titles=("Throughput by Batch Size", "MTP Speedup Factor")
+            rows=1,
+            cols=2,
+            subplot_titles=("Throughput by Batch Size", "MTP Speedup Factor"),
         )
 
         batch_sizes = metrics.get("batch_sizes", [1, 4, 8, 16])
@@ -195,41 +202,46 @@ class MetricsVisualizer(BaseComponent):
 
         # 속도 비교 바 차트
         fig.add_trace(
-            go.Bar(name='MTP', x=batch_sizes, y=mtp_speeds, marker_color=META_COLORS["mtp"]),
-            row=1, col=1
+            go.Bar(
+                name="MTP", x=batch_sizes, y=mtp_speeds, marker_color=META_COLORS["mtp"]
+            ),
+            row=1,
+            col=1,
         )
         fig.add_trace(
-            go.Bar(name='NTP', x=batch_sizes, y=ntp_speeds, marker_color=META_COLORS["ntp"]),
-            row=1, col=1
+            go.Bar(
+                name="NTP", x=batch_sizes, y=ntp_speeds, marker_color=META_COLORS["ntp"]
+            ),
+            row=1,
+            col=1,
         )
 
         # Speedup 라인 차트
-        speedup_ratios = [m/n if n > 0 else 0 for m, n in zip(mtp_speeds, ntp_speeds)]
+        speedup_ratios = [m / n if n > 0 else 0 for m, n in zip(mtp_speeds, ntp_speeds)]
         fig.add_trace(
             go.Scatter(
-                x=batch_sizes, y=speedup_ratios,
-                mode='lines+markers',
-                name='Speedup',
-                line=dict(color=META_COLORS["wmtp"], width=3),
-                marker=dict(size=10)
+                x=batch_sizes,
+                y=speedup_ratios,
+                mode="lines+markers",
+                name="Speedup",
+                line={"color": META_COLORS["wmtp"], "width": 3},
+                marker={"size": 10},
             ),
-            row=1, col=2
+            row=1,
+            col=2,
         )
 
         # 기준선 추가
-        fig.add_hline(y=1.0, line_dash="dash", line_color="gray", opacity=0.5, row=1, col=2)
+        fig.add_hline(
+            y=1.0, line_dash="dash", line_color="gray", opacity=0.5, row=1, col=2
+        )
 
         fig.update_xaxes(title_text="Batch Size", row=1, col=1)
         fig.update_yaxes(title_text="Tokens/Second", row=1, col=1)
         fig.update_xaxes(title_text="Batch Size", row=1, col=2)
         fig.update_yaxes(title_text="Speedup (MTP/NTP)", row=1, col=2)
 
-        fig.update_layout(
-            title_text=title,
-            showlegend=True,
-            height=500,
-            width=1000
-        )
+        fig.update_layout(title_text=title, showlegend=True, height=500, width=1000)
 
         # 저장
         output_path = self.output_dir / "inference_speed_comparison.html"
@@ -239,9 +251,7 @@ class MetricsVisualizer(BaseComponent):
         return output_path
 
     def create_perplexity_heatmap(
-        self,
-        metrics: dict[str, Any],
-        title: str = "Perplexity by Position and Head"
+        self, metrics: dict[str, Any], title: str = "Perplexity by Position and Head"
     ) -> Path:
         """
         헤드별, 위치별 Perplexity 히트맵 생성.
@@ -258,12 +268,15 @@ class MetricsVisualizer(BaseComponent):
         positions = ["0-128", "128-512", "512-1024", "1024-2048"]
 
         # 더미 데이터 (실제로는 metrics에서 추출)
-        perplexity_matrix = metrics.get("perplexity_matrix", [
-            [15.2, 16.8, 18.5, 22.3],
-            [16.1, 17.2, 19.1, 23.8],
-            [17.5, 18.9, 20.7, 25.2],
-            [19.2, 21.3, 23.5, 28.1]
-        ])
+        perplexity_matrix = metrics.get(
+            "perplexity_matrix",
+            [
+                [15.2, 16.8, 18.5, 22.3],
+                [16.1, 17.2, 19.1, 23.8],
+                [17.5, 18.9, 20.7, 25.2],
+                [19.2, 21.3, 23.5, 28.1],
+            ],
+        )
 
         plt.figure(figsize=(10, 8))
 
@@ -271,22 +284,22 @@ class MetricsVisualizer(BaseComponent):
         sns.heatmap(
             perplexity_matrix,
             annot=True,
-            fmt='.1f',
-            cmap='YlOrRd',
+            fmt=".1f",
+            cmap="YlOrRd",
             xticklabels=positions,
             yticklabels=heads,
-            cbar_kws={'label': 'Perplexity'},
+            cbar_kws={"label": "Perplexity"},
             vmin=10,
-            vmax=30
+            vmax=30,
         )
 
         plt.title(title, fontsize=14, pad=20)
-        plt.xlabel('Position Range', fontsize=12)
-        plt.ylabel('MTP Head', fontsize=12)
+        plt.xlabel("Position Range", fontsize=12)
+        plt.ylabel("MTP Head", fontsize=12)
 
         # 저장
         output_path = self.output_dir / "perplexity_heatmap.png"
-        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        plt.savefig(output_path, dpi=300, bbox_inches="tight")
         plt.close()
 
         console.print(f"[green]Perplexity heatmap saved to: {output_path}[/green]")
@@ -295,7 +308,7 @@ class MetricsVisualizer(BaseComponent):
     def create_acceptance_rate_chart(
         self,
         metrics: dict[str, Any],
-        title: str = "Self-Speculative Decoding Acceptance Rates"
+        title: str = "Self-Speculative Decoding Acceptance Rates",
     ) -> Path:
         """
         Self-speculative decoding 수락률 차트 생성.
@@ -311,32 +324,50 @@ class MetricsVisualizer(BaseComponent):
 
         # 헤드별 수락률
         heads = ["t+1", "t+2", "t+3", "t+4"]
-        acceptance_rates = metrics.get("position_acceptance_rates", [0.85, 0.72, 0.58, 0.41])
+        acceptance_rates = metrics.get(
+            "position_acceptance_rates", [0.85, 0.72, 0.58, 0.41]
+        )
 
         colors = plt.cm.Blues(np.linspace(0.5, 0.9, len(heads)))
-        bars = ax1.bar(heads, acceptance_rates, color=colors, edgecolor='navy', linewidth=2)
+        bars = ax1.bar(
+            heads, acceptance_rates, color=colors, edgecolor="navy", linewidth=2
+        )
 
         # 값 표시
         for bar, rate in zip(bars, acceptance_rates):
             height = bar.get_height()
-            ax1.text(bar.get_x() + bar.get_width()/2., height,
-                    f'{rate:.1%}',
-                    ha='center', va='bottom', fontweight='bold')
+            ax1.text(
+                bar.get_x() + bar.get_width() / 2.0,
+                height,
+                f"{rate:.1%}",
+                ha="center",
+                va="bottom",
+                fontweight="bold",
+            )
 
-        ax1.set_ylabel('Acceptance Rate', fontsize=12)
-        ax1.set_xlabel('Prediction Head', fontsize=12)
-        ax1.set_title('Acceptance Rate by Head', fontsize=12)
+        ax1.set_ylabel("Acceptance Rate", fontsize=12)
+        ax1.set_xlabel("Prediction Head", fontsize=12)
+        ax1.set_title("Acceptance Rate by Head", fontsize=12)
         ax1.set_ylim([0, 1])
-        ax1.grid(True, alpha=0.3, axis='y')
+        ax1.grid(True, alpha=0.3, axis="y")
 
         # 누적 분포
         cumulative = np.cumsum(acceptance_rates) / np.sum(acceptance_rates)
-        ax2.plot(heads, cumulative, 'o-', color=META_COLORS["wmtp"], linewidth=3, markersize=10)
-        ax2.fill_between(range(len(heads)), 0, cumulative, alpha=0.3, color=META_COLORS["wmtp"])
+        ax2.plot(
+            heads,
+            cumulative,
+            "o-",
+            color=META_COLORS["wmtp"],
+            linewidth=3,
+            markersize=10,
+        )
+        ax2.fill_between(
+            range(len(heads)), 0, cumulative, alpha=0.3, color=META_COLORS["wmtp"]
+        )
 
-        ax2.set_ylabel('Cumulative Proportion', fontsize=12)
-        ax2.set_xlabel('Prediction Head', fontsize=12)
-        ax2.set_title('Cumulative Acceptance Distribution', fontsize=12)
+        ax2.set_ylabel("Cumulative Proportion", fontsize=12)
+        ax2.set_xlabel("Prediction Head", fontsize=12)
+        ax2.set_title("Cumulative Acceptance Distribution", fontsize=12)
         ax2.set_ylim([0, 1.05])
         ax2.grid(True, alpha=0.3)
 
@@ -345,16 +376,14 @@ class MetricsVisualizer(BaseComponent):
 
         # 저장
         output_path = self.output_dir / "acceptance_rate_chart.png"
-        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        plt.savefig(output_path, dpi=300, bbox_inches="tight")
         plt.close()
 
         console.print(f"[green]Acceptance rate chart saved to: {output_path}[/green]")
         return output_path
 
     def create_algorithm_comparison(
-        self,
-        metrics: dict[str, Any],
-        title: str = "WMTP Algorithm Comparison"
+        self, metrics: dict[str, Any], title: str = "WMTP Algorithm Comparison"
     ) -> Path:
         """
         세 가지 WMTP 알고리즘 비교 차트 생성.
@@ -373,53 +402,68 @@ class MetricsVisualizer(BaseComponent):
 
         # Pass@1 비교
         pass_at_1 = metrics.get("pass_at_1", [35.2, 37.1, 39.5])
-        axes[0, 0].bar(algorithms, pass_at_1, color=colors, edgecolor='black', linewidth=2)
-        axes[0, 0].set_ylabel('Pass@1 (%)', fontsize=11)
-        axes[0, 0].set_title('Code Generation Accuracy', fontsize=12)
+        axes[0, 0].bar(
+            algorithms, pass_at_1, color=colors, edgecolor="black", linewidth=2
+        )
+        axes[0, 0].set_ylabel("Pass@1 (%)", fontsize=11)
+        axes[0, 0].set_title("Code Generation Accuracy", fontsize=12)
         axes[0, 0].set_ylim([30, 45])
-        axes[0, 0].grid(True, alpha=0.3, axis='y')
+        axes[0, 0].grid(True, alpha=0.3, axis="y")
 
         # Perplexity 비교
         perplexity = metrics.get("perplexity", [22.5, 20.8, 19.2])
-        axes[0, 1].bar(algorithms, perplexity, color=colors, edgecolor='black', linewidth=2)
-        axes[0, 1].set_ylabel('Perplexity', fontsize=11)
-        axes[0, 1].set_title('Language Modeling Performance', fontsize=12)
+        axes[0, 1].bar(
+            algorithms, perplexity, color=colors, edgecolor="black", linewidth=2
+        )
+        axes[0, 1].set_ylabel("Perplexity", fontsize=11)
+        axes[0, 1].set_title("Language Modeling Performance", fontsize=12)
         axes[0, 1].set_ylim([15, 25])
-        axes[0, 1].grid(True, alpha=0.3, axis='y')
+        axes[0, 1].grid(True, alpha=0.3, axis="y")
 
         # 추론 속도 비교
         inference_speed = metrics.get("inference_speed", [380, 365, 375])
-        axes[1, 0].bar(algorithms, inference_speed, color=colors, edgecolor='black', linewidth=2)
-        axes[1, 0].set_ylabel('Tokens/Second', fontsize=11)
-        axes[1, 0].set_title('Inference Speed', fontsize=12)
+        axes[1, 0].bar(
+            algorithms, inference_speed, color=colors, edgecolor="black", linewidth=2
+        )
+        axes[1, 0].set_ylabel("Tokens/Second", fontsize=11)
+        axes[1, 0].set_title("Inference Speed", fontsize=12)
         axes[1, 0].set_ylim([300, 400])
-        axes[1, 0].grid(True, alpha=0.3, axis='y')
+        axes[1, 0].grid(True, alpha=0.3, axis="y")
 
         # 메모리 사용량 비교
         memory_usage = metrics.get("memory_gb", [12.5, 14.8, 13.2])
-        axes[1, 1].bar(algorithms, memory_usage, color=colors, edgecolor='black', linewidth=2)
-        axes[1, 1].set_ylabel('Memory (GB)', fontsize=11)
-        axes[1, 1].set_title('Memory Usage', fontsize=12)
+        axes[1, 1].bar(
+            algorithms, memory_usage, color=colors, edgecolor="black", linewidth=2
+        )
+        axes[1, 1].set_ylabel("Memory (GB)", fontsize=11)
+        axes[1, 1].set_title("Memory Usage", fontsize=12)
         axes[1, 1].set_ylim([10, 16])
-        axes[1, 1].grid(True, alpha=0.3, axis='y')
+        axes[1, 1].grid(True, alpha=0.3, axis="y")
 
         # 각 차트에 값 표시
         for ax in axes.flat:
             for bar in ax.patches:
                 height = bar.get_height()
-                ax.text(bar.get_x() + bar.get_width()/2., height,
-                       f'{height:.1f}',
-                       ha='center', va='bottom', fontsize=9)
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2.0,
+                    height,
+                    f"{height:.1f}",
+                    ha="center",
+                    va="bottom",
+                    fontsize=9,
+                )
 
         plt.suptitle(title, fontsize=14, y=1.02)
         plt.tight_layout()
 
         # 저장
         output_path = self.output_dir / "algorithm_comparison.png"
-        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        plt.savefig(output_path, dpi=300, bbox_inches="tight")
         plt.close()
 
-        console.print(f"[green]Algorithm comparison chart saved to: {output_path}[/green]")
+        console.print(
+            f"[green]Algorithm comparison chart saved to: {output_path}[/green]"
+        )
         return output_path
 
     def run(self, ctx: dict[str, Any]) -> dict[str, Any]:
@@ -442,7 +486,9 @@ class MetricsVisualizer(BaseComponent):
         chart_types = ctx.get("chart_types", ["all"])
 
         if not metrics:
-            console.print("[yellow]Warning: No metrics provided for visualization[/yellow]")
+            console.print(
+                "[yellow]Warning: No metrics provided for visualization[/yellow]"
+            )
             return {"charts": []}
 
         console.print("[bold cyan]Starting Metrics Visualization[/bold cyan]")
@@ -450,23 +496,26 @@ class MetricsVisualizer(BaseComponent):
         generated_charts = []
 
         # 차트 생성
-        if "all" in chart_types or "inference_speed" in chart_types:
-            if "inference" in metrics or "mtp_speeds" in metrics:
-                console.print("[cyan]Creating inference speed chart...[/cyan]")
-                chart_path = self.create_inference_speed_chart(metrics)
-                generated_charts.append(chart_path)
+        if ("all" in chart_types or "inference_speed" in chart_types) and (
+            "inference" in metrics or "mtp_speeds" in metrics
+        ):
+            console.print("[cyan]Creating inference speed chart...[/cyan]")
+            chart_path = self.create_inference_speed_chart(metrics)
+            generated_charts.append(chart_path)
 
-        if "all" in chart_types or "perplexity" in chart_types:
-            if "perplexity" in metrics or "perplexity_matrix" in metrics:
-                console.print("[cyan]Creating perplexity heatmap...[/cyan]")
-                chart_path = self.create_perplexity_heatmap(metrics)
-                generated_charts.append(chart_path)
+        if ("all" in chart_types or "perplexity" in chart_types) and (
+            "perplexity" in metrics or "perplexity_matrix" in metrics
+        ):
+            console.print("[cyan]Creating perplexity heatmap...[/cyan]")
+            chart_path = self.create_perplexity_heatmap(metrics)
+            generated_charts.append(chart_path)
 
-        if "all" in chart_types or "acceptance" in chart_types:
-            if "position_acceptance_rates" in metrics:
-                console.print("[cyan]Creating acceptance rate chart...[/cyan]")
-                chart_path = self.create_acceptance_rate_chart(metrics)
-                generated_charts.append(chart_path)
+        if ("all" in chart_types or "acceptance" in chart_types) and (
+            "position_acceptance_rates" in metrics
+        ):
+            console.print("[cyan]Creating acceptance rate chart...[/cyan]")
+            chart_path = self.create_acceptance_rate_chart(metrics)
+            generated_charts.append(chart_path)
 
         if "all" in chart_types or "comparison" in chart_types:
             console.print("[cyan]Creating algorithm comparison chart...[/cyan]")
@@ -488,19 +537,22 @@ class MetricsVisualizer(BaseComponent):
         metadata = {
             "generated_charts": [str(p) for p in generated_charts],
             "metrics_summary": {
-                key: value for key, value in metrics.items()
+                key: value
+                for key, value in metrics.items()
                 if isinstance(value, (int, float, str))
             },
-            "config": self.config
+            "config": self.config,
         }
 
-        with open(metadata_path, 'w') as f:
+        with open(metadata_path, "w") as f:
             json.dump(metadata, f, indent=2)
 
-        console.print(f"\n[bold green]Visualization complete! Generated {len(generated_charts)} charts[/bold green]")
+        console.print(
+            f"\n[bold green]Visualization complete! Generated {len(generated_charts)} charts[/bold green]"
+        )
 
         return {
             "charts": generated_charts,
             "metadata": metadata_path,
-            "output_dir": self.output_dir
+            "output_dir": self.output_dir,
         }

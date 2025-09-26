@@ -57,12 +57,18 @@ def compute_sequence_rewards(
                 if isinstance(vals, torch.Tensor):
                     return vals.detach().float().view(-1)  # [batch_size] 형태로 변환
                 try:
-                    return torch.tensor([float(v) for v in vals], device=input_ids.device)
+                    return torch.tensor(
+                        [float(v) for v in vals], device=input_ids.device
+                    )
                 except Exception:
                     pass
 
     # 2단계: 명시적 보상이 없으면 logits 해석
-    logits = outputs.get("logits") if isinstance(outputs, dict) else getattr(outputs, "logits", None)
+    logits = (
+        outputs.get("logits")
+        if isinstance(outputs, dict)
+        else getattr(outputs, "logits", None)
+    )
     if isinstance(logits, torch.Tensor):
         # SequenceClassification/Regression: [B] or [B,1] or [B,C]
         if logits.ndim == 1:
@@ -91,7 +97,7 @@ def compute_sequence_rewards(
             else:
                 ce_mean = ce.mean(dim=1)
 
-            return (-ce_mean.detach().float())
+            return -ce_mean.detach().float()
 
     # 출력 형태를 해석할 수 없는 경우 0 보상
     return torch.zeros(input_ids.shape[0], device=input_ids.device, dtype=torch.float32)

@@ -63,10 +63,12 @@ class PerHeadAnalyzer(BaseComponent):
         self.analyze_positions = self.config.get("analyze_positions", True)
         self.compute_confidence = self.config.get("compute_confidence", True)
         self.head_comparison = self.config.get("head_comparison", True)
-        self.position_buckets = self.config.get("position_buckets", [
-            (0, 128), (128, 512), (512, 1024), (1024, 2048)
-        ])
-        self.device = self.config.get("device", "cuda" if torch.cuda.is_available() else "cpu")
+        self.position_buckets = self.config.get(
+            "position_buckets", [(0, 128), (128, 512), (512, 1024), (1024, 2048)]
+        )
+        self.device = self.config.get(
+            "device", "cuda" if torch.cuda.is_available() else "cpu"
+        )
         self.batch_size = self.config.get("batch_size", 8)
 
     def run(self, ctx: dict[str, Any]) -> dict[str, Any]:
@@ -106,7 +108,7 @@ class PerHeadAnalyzer(BaseComponent):
                 "accuracies": [],
                 "perplexities": [],
                 "confidences": [],
-                "position_accuracies": defaultdict(list)
+                "position_accuracies": defaultdict(list),
             }
             for i in range(4)
         }
@@ -134,15 +136,22 @@ class PerHeadAnalyzer(BaseComponent):
                         )
 
                     # Confidence 수집
-                    if self.compute_confidence and batch_results[head_key]["confidence"] is not None:
+                    if (
+                        self.compute_confidence
+                        and batch_results[head_key]["confidence"] is not None
+                    ):
                         head_metrics[head_key]["confidences"].extend(
                             batch_results[head_key]["confidence"]
                         )
 
                     # 위치별 정확도 수집
                     if self.analyze_positions:
-                        for pos_key, acc in batch_results[head_key]["position_accuracies"].items():
-                            head_metrics[head_key]["position_accuracies"][pos_key].append(acc)
+                        for pos_key, acc in batch_results[head_key][
+                            "position_accuracies"
+                        ].items():
+                            head_metrics[head_key]["position_accuracies"][
+                                pos_key
+                            ].append(acc)
 
                 total_samples += batch["input_ids"].size(0)
 
@@ -159,12 +168,11 @@ class PerHeadAnalyzer(BaseComponent):
 
         console.print(f"[green]Analyzed {total_samples} samples across 4 heads[/green]")
 
-        return {
-            "metrics": self._extract_metrics(results),
-            "detailed_results": results
-        }
+        return {"metrics": self._extract_metrics(results), "detailed_results": results}
 
-    def _analyze_batch(self, model: nn.Module, batch: dict[str, torch.Tensor]) -> dict[str, Any]:
+    def _analyze_batch(
+        self, model: nn.Module, batch: dict[str, torch.Tensor]
+    ) -> dict[str, Any]:
         """
         단일 배치에 대한 헤드별 분석 수행.
 
@@ -183,7 +191,7 @@ class PerHeadAnalyzer(BaseComponent):
 
         batch_results = {}
 
-        if hasattr(outputs, 'prediction_logits'):
+        if hasattr(outputs, "prediction_logits"):
             # 각 헤드별 분석
             for head_idx in range(4):
                 head_key = f"head_{head_idx+1}"
@@ -202,13 +210,15 @@ class PerHeadAnalyzer(BaseComponent):
 
                         # 정확도 계산
                         predictions = head_logits_valid.argmax(dim=-1)
-                        accuracy = (predictions == target_labels_valid).float().mean().item()
+                        accuracy = (
+                            (predictions == target_labels_valid).float().mean().item()
+                        )
 
                         # Perplexity 계산
                         loss = nn.functional.cross_entropy(
                             head_logits_valid.reshape(-1, head_logits_valid.size(-1)),
                             target_labels_valid.reshape(-1),
-                            reduction='mean'
+                            reduction="mean",
                         )
                         perplexity = torch.exp(loss).item()
 
@@ -224,30 +234,35 @@ class PerHeadAnalyzer(BaseComponent):
                         if self.analyze_positions:
                             for start, end in self.position_buckets:
                                 mask = torch.zeros_like(predictions, dtype=torch.bool)
-                                mask[:, start:min(end, valid_length)] = True
+                                mask[:, start : min(end, valid_length)] = True
                                 if mask.any():
-                                    pos_acc = (predictions[mask] == target_labels_valid[mask]).float().mean().item()
+                                    pos_acc = (
+                                        (predictions[mask] == target_labels_valid[mask])
+                                        .float()
+                                        .mean()
+                                        .item()
+                                    )
                                     position_accuracies[f"pos_{start}_{end}"] = pos_acc
 
                         batch_results[head_key] = {
                             "accuracy": accuracy,
                             "perplexity": perplexity,
                             "confidence": confidence_scores,
-                            "position_accuracies": position_accuracies
+                            "position_accuracies": position_accuracies,
                         }
                     else:
                         batch_results[head_key] = {
                             "accuracy": None,
                             "perplexity": None,
                             "confidence": None,
-                            "position_accuracies": {}
+                            "position_accuracies": {},
                         }
                 else:
                     batch_results[head_key] = {
                         "accuracy": None,
                         "perplexity": None,
                         "confidence": None,
-                        "position_accuracies": {}
+                        "position_accuracies": {},
                     }
         else:
             # MTP 출력이 아닌 경우
@@ -256,7 +271,7 @@ class PerHeadAnalyzer(BaseComponent):
                     "accuracy": None,
                     "perplexity": None,
                     "confidence": None,
-                    "position_accuracies": {}
+                    "position_accuracies": {},
                 }
 
         return batch_results
@@ -287,7 +302,7 @@ class PerHeadAnalyzer(BaseComponent):
                 avg_perplexity = float(np.mean(metrics["perplexities"]))
                 std_perplexity = float(np.std(metrics["perplexities"]))
             else:
-                avg_perplexity = float('inf')
+                avg_perplexity = float("inf")
                 std_perplexity = 0.0
 
             # Confidence 분포
@@ -301,8 +316,8 @@ class PerHeadAnalyzer(BaseComponent):
                     "percentiles": {
                         "p25": float(np.percentile(metrics["confidences"], 25)),
                         "p50": float(np.percentile(metrics["confidences"], 50)),
-                        "p75": float(np.percentile(metrics["confidences"], 75))
-                    }
+                        "p75": float(np.percentile(metrics["confidences"], 75)),
+                    },
                 }
 
             # 위치별 정확도 평균
@@ -312,16 +327,10 @@ class PerHeadAnalyzer(BaseComponent):
                     position_accuracy_avg[pos_key] = float(np.mean(accs))
 
             results[head_key] = {
-                "accuracy": {
-                    "mean": avg_accuracy,
-                    "std": std_accuracy
-                },
-                "perplexity": {
-                    "mean": avg_perplexity,
-                    "std": std_perplexity
-                },
+                "accuracy": {"mean": avg_accuracy, "std": std_accuracy},
+                "perplexity": {"mean": avg_perplexity, "std": std_perplexity},
                 "confidence": confidence_stats,
-                "position_accuracies": position_accuracy_avg
+                "position_accuracies": position_accuracy_avg,
             }
 
         return results
@@ -340,32 +349,48 @@ class PerHeadAnalyzer(BaseComponent):
             "accuracy_trend": [],
             "perplexity_trend": [],
             "confidence_trend": [],
-            "relative_performance": {}
+            "relative_performance": {},
         }
 
         # 헤드별 트렌드 추출
         for i in range(4):
             head_key = f"head_{i+1}"
             if head_key in results:
-                comparison["accuracy_trend"].append(results[head_key]["accuracy"]["mean"])
-                comparison["perplexity_trend"].append(results[head_key]["perplexity"]["mean"])
+                comparison["accuracy_trend"].append(
+                    results[head_key]["accuracy"]["mean"]
+                )
+                comparison["perplexity_trend"].append(
+                    results[head_key]["perplexity"]["mean"]
+                )
                 if results[head_key]["confidence"]:
-                    comparison["confidence_trend"].append(results[head_key]["confidence"]["mean"])
+                    comparison["confidence_trend"].append(
+                        results[head_key]["confidence"]["mean"]
+                    )
 
         # 상대적 성능 계산 (head_1 대비)
         if comparison["accuracy_trend"]:
             base_accuracy = comparison["accuracy_trend"][0]
             for i in range(1, 4):
                 if i < len(comparison["accuracy_trend"]):
-                    relative = comparison["accuracy_trend"][i] / base_accuracy if base_accuracy > 0 else 0
-                    comparison["relative_performance"][f"head_{i+1}_vs_head_1"] = float(relative)
+                    relative = (
+                        comparison["accuracy_trend"][i] / base_accuracy
+                        if base_accuracy > 0
+                        else 0
+                    )
+                    comparison["relative_performance"][f"head_{i+1}_vs_head_1"] = float(
+                        relative
+                    )
 
         # 성능 감소율 계산
         if len(comparison["accuracy_trend"]) > 1:
             decay_rates = []
             for i in range(1, len(comparison["accuracy_trend"])):
-                decay = 1 - (comparison["accuracy_trend"][i] / comparison["accuracy_trend"][i-1]
-                           if comparison["accuracy_trend"][i-1] > 0 else 0)
+                decay = 1 - (
+                    comparison["accuracy_trend"][i]
+                    / comparison["accuracy_trend"][i - 1]
+                    if comparison["accuracy_trend"][i - 1] > 0
+                    else 0
+                )
                 decay_rates.append(float(decay))
             comparison["accuracy_decay_rates"] = decay_rates
 
@@ -379,21 +404,32 @@ class PerHeadAnalyzer(BaseComponent):
         - 가까운 헤드(t+1)가 먼 헤드(t+4)보다 정확해야 함
         - 성능 감소가 단조적이어야 함
         """
-        if "head_comparison" in results and results["head_comparison"]["accuracy_trend"]:
+        if (
+            "head_comparison" in results
+            and results["head_comparison"]["accuracy_trend"]
+        ):
             trend = results["head_comparison"]["accuracy_trend"]
 
             # 패턴 1: head_1이 가장 정확해야 함
             if trend[0] == max(trend):
-                console.print("[green]✓ Pattern confirmed: Head 1 (t+1) has highest accuracy[/green]")
+                console.print(
+                    "[green]✓ Pattern confirmed: Head 1 (t+1) has highest accuracy[/green]"
+                )
             else:
-                console.print("[yellow]⚠ Warning: Head 1 is not the most accurate[/yellow]")
+                console.print(
+                    "[yellow]⚠ Warning: Head 1 is not the most accurate[/yellow]"
+                )
 
             # 패턴 2: 단조 감소 패턴이어야 함
-            is_monotonic = all(trend[i] >= trend[i+1] for i in range(len(trend)-1))
+            is_monotonic = all(trend[i] >= trend[i + 1] for i in range(len(trend) - 1))
             if is_monotonic:
-                console.print("[green]✓ Pattern confirmed: Monotonic accuracy decrease[/green]")
+                console.print(
+                    "[green]✓ Pattern confirmed: Monotonic accuracy decrease[/green]"
+                )
             else:
-                console.print("[yellow]⚠ Warning: Non-monotonic accuracy pattern[/yellow]")
+                console.print(
+                    "[yellow]⚠ Warning: Non-monotonic accuracy pattern[/yellow]"
+                )
 
     def _extract_metrics(self, results: dict[str, Any]) -> dict[str, float]:
         """
@@ -412,17 +448,22 @@ class PerHeadAnalyzer(BaseComponent):
             head_key = f"head_{i+1}"
             if head_key in results:
                 metrics[f"head_{i+1}_accuracy"] = results[head_key]["accuracy"]["mean"]
-                metrics[f"head_{i+1}_perplexity"] = results[head_key]["perplexity"]["mean"]
+                metrics[f"head_{i+1}_perplexity"] = results[head_key]["perplexity"][
+                    "mean"
+                ]
 
         # 비교 메트릭
         if "head_comparison" in results:
             comparison = results["head_comparison"]
             if comparison["accuracy_trend"]:
                 metrics["head_accuracy_range"] = float(
-                    max(comparison["accuracy_trend"]) - min(comparison["accuracy_trend"])
+                    max(comparison["accuracy_trend"])
+                    - min(comparison["accuracy_trend"])
                 )
             if "accuracy_decay_rates" in comparison:
-                metrics["avg_accuracy_decay"] = float(np.mean(comparison["accuracy_decay_rates"]))
+                metrics["avg_accuracy_decay"] = float(
+                    np.mean(comparison["accuracy_decay_rates"])
+                )
 
         return metrics
 
@@ -441,12 +482,14 @@ class PerHeadAnalyzer(BaseComponent):
 
         if isinstance(dataset, list):
             for i in range(0, len(dataset), self.batch_size):
-                batch_data = dataset[i:i+self.batch_size]
+                batch_data = dataset[i : i + self.batch_size]
                 # 텐서로 변환
                 if batch_data and isinstance(batch_data[0], dict):
                     batch = {
                         "input_ids": torch.stack([d["input_ids"] for d in batch_data]),
-                        "labels": torch.stack([d.get("labels", d["input_ids"]) for d in batch_data])
+                        "labels": torch.stack(
+                            [d.get("labels", d["input_ids"]) for d in batch_data]
+                        ),
                     }
                     batches.append(batch)
 
@@ -462,14 +505,13 @@ class PerHeadAnalyzer(BaseComponent):
         Returns:
             더미 데이터셋
         """
-        console.print("[yellow]No dataset provided, using dummy data for testing[/yellow]")
+        console.print(
+            "[yellow]No dataset provided, using dummy data for testing[/yellow]"
+        )
 
         dataset = []
         for _ in range(10):  # 10개 샘플
             input_ids = torch.randint(0, tokenizer.vocab_size, (512,))
-            dataset.append({
-                "input_ids": input_ids,
-                "labels": input_ids.clone()
-            })
+            dataset.append({"input_ids": input_ids, "labels": input_ids.clone()})
 
         return dataset

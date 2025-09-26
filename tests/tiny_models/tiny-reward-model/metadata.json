@@ -1,0 +1,13 @@
+{
+  "wmtp_type": "reward_model",
+  "training_algorithm": "reward_modeling",
+  "horizon": 4,
+  "n_heads": 4,
+  "base_architecture": "gpt2",
+  "model_size": "120m",
+  "storage_version": "2.0",
+  "created_by": "wmtp_local_standardizer",
+  "standardization_date": "2025-09-26T18:58:41.878251",
+  "original_format": "huggingface_safetensors",
+  "source_path": "tests/tiny_models/tiny-reward-model"
+}
