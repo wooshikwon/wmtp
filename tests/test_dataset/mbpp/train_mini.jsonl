@@ -1,0 +1,2 @@
+{"task_id": 11, "text": "Write a function to calculate the sum of a list.", "code": "def sum_list(lst):\n    return sum(lst)", "test_list": ["assert sum_list([1, 2, 3]) == 6", "assert sum_list([]) == 0", "assert sum_list([5]) == 5"]}
+{"task_id": 12, "text": "Write a function to find the maximum in a list.", "code": "def max_list(lst):\n    return max(lst) if lst else None", "test_list": ["assert max_list([1, 5, 3]) == 5", "assert max_list([10]) == 10", "assert max_list([]) == None"]}

@@ -309,7 +309,7 @@ class DistributedManager:
 
     def save_checkpoint(
         self,
-        model: Union[FSDP, torch.nn.Module],
+        model: FSDP | torch.nn.Module,
         optimizer: torch.optim.Optimizer,
         checkpoint_path: str,
         epoch: int,
@@ -356,7 +356,7 @@ class DistributedManager:
                 # 일반 모델 처리 (신규 추가)
                 state_dict = model.state_dict()
                 # CPU로 이동 (메모리 효율성)
-                if hasattr(model, 'device') and str(model.device) != 'cpu':
+                if hasattr(model, "device") and str(model.device) != "cpu":
                     state_dict = {k: v.cpu() for k, v in state_dict.items()}
 
             # 공통 체크포인트 구성 (기존 로직 유지)
@@ -419,7 +419,7 @@ class DistributedManager:
 
     def load_checkpoint(
         self,
-        model: Union[FSDP, torch.nn.Module],
+        model: FSDP | torch.nn.Module,
         optimizer: torch.optim.Optimizer,
         checkpoint_path: str,
     ) -> dict[str, Any]:
@@ -461,7 +461,9 @@ class DistributedManager:
                 rank0_only=False,
             )
 
-            with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, load_policy):
+            with FSDP.state_dict_type(
+                model, StateDictType.FULL_STATE_DICT, load_policy
+            ):
                 model.load_state_dict(checkpoint["model"])
         else:
             # 일반 모델 처리 (신규 추가)

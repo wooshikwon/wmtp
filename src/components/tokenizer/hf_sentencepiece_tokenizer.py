@@ -282,6 +282,52 @@ class HfSentencePieceTokenizer(BaseComponent):
         """모델 최대 길이 (기본값)"""
         return 512
 
+    def get_hf_tokenizer(self):
+        """DataCollator에서 사용할 HuggingFace 호환 tokenizer 반환.
+
+        HfSentencePieceTokenizer는 내부적으로 SentencePiece를 사용하므로
+        PreTrainedTokenizer 인스턴스가 없습니다. 대신 자기 자신을 반환하여
+        HuggingFace 호환 인터페이스를 제공합니다.
+
+        Returns:
+            self: HuggingFace 호환 메서드들을 구현한 자기 자신
+
+        Note:
+            이 tokenizer는 이미 HuggingFace 호환 속성들을 구현하고 있어
+            DataCollatorForLanguageModeling과 직접 호환됩니다:
+            - pad_token_id (self.pad_id)
+            - eos_token_id (self.eos_id)
+            - bos_token_id (self.bos_id)
+            - unk_token_id (self.unk_id)
+        """
+        if self.sp is None:
+            raise RuntimeError(
+                "토크나이저가 초기화되지 않았습니다. setup()을 먼저 호출하세요."
+            )
+
+        return self
+
+    # DataCollatorForLanguageModeling 호환을 위한 속성들
+    @property
+    def pad_token_id(self) -> int:
+        """패딩 토큰 ID"""
+        return self.pad_id
+
+    @property
+    def eos_token_id(self) -> int:
+        """문장 끝 토큰 ID"""
+        return self.eos_id
+
+    @property
+    def bos_token_id(self) -> int:
+        """문장 시작 토큰 ID"""
+        return self.bos_id
+
+    @property
+    def unk_token_id(self) -> int:
+        """알 수 없는 토큰 ID"""
+        return self.unk_id
+
     def __repr__(self) -> str:
         return (
             f"HfSentencePieceTokenizer("

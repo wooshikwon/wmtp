@@ -4,7 +4,10 @@ from transformers import AutoModelForCausalLM
 
 
 class DistilGPT2MTP(nn.Module):
-    """DistilGPT2 with Multi-Token Prediction heads."""
+    """DistilGPT2 with Multi-Token Prediction heads.
+
+    Enhanced version with proper hidden_states support for Critic-WMTP training.
+    """
 
     def __init__(self, config=None):
         super().__init__()
@@ -31,21 +34,124 @@ class DistilGPT2MTP(nn.Module):
             ]
         )
 
-    def forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
+    def forward(
+        self,
+        input_ids=None,
+        attention_mask=None,
+        labels=None,
+        output_hidden_states=None,
+        output_attentions=None,
+        return_dict=None,
+        **kwargs,
+    ):
+        """
+        Enhanced forward method with proper hidden_states support.
+
+        Args:
+            input_ids: Input token IDs
+            attention_mask: Attention mask
+            labels: Labels for training (optional)
+            output_hidden_states: Whether to return hidden states
+            output_attentions: Whether to return attention weights
+            return_dict: Whether to return ModelOutput object
+            **kwargs: Additional arguments
+
+        Returns:
+            dict or CausalLMOutputWithCrossAttentions containing:
+            - logits: MTP logits of shape [B, S, n_future_tokens, V]
+            - hidden_states: Hidden states (if requested)
+            - attentions: Attention weights (if requested)
+            - last_hidden_state: Last layer hidden states (if requested)
+        """
+        # Handle default values for output flags
+        if output_hidden_states is None:
+            output_hidden_states = getattr(self.config, "output_hidden_states", False)
+        if output_attentions is None:
+            output_attentions = getattr(self.config, "output_attentions", False)
+        if return_dict is None:
+            return_dict = getattr(self.config, "use_return_dict", True)
+
+        # Forward through base transformer with proper flags
         outputs = self.base_model.transformer(
-            input_ids=input_ids, attention_mask=attention_mask, **kwargs
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            output_hidden_states=output_hidden_states,
+            output_attentions=output_attentions,
+            return_dict=True,  # Always use return_dict for internal processing
+            **kwargs,
         )
 
-        hidden_states = outputs.last_hidden_state
+        # Extract hidden states
+        last_hidden_state = outputs.last_hidden_state
 
+        # Build MTP logits
         all_logits = []
-        main_logits = self.base_model.lm_head(hidden_states)
+
+        # Main head (reuse base model's lm_head)
+        main_logits = self.base_model.lm_head(last_hidden_state)
         all_logits.append(main_logits)
 
+        # Additional MTP heads
         for head in self.extra_heads:
-            logits = head(hidden_states)
+            logits = head(last_hidden_state)
             all_logits.append(logits)
 
+        # Stack to create MTP logits: [B, S, n_future_tokens, V]
         mtp_logits = torch.stack(all_logits, dim=2)
 
-        return {"logits": mtp_logits}
+        # Prepare output
+        if return_dict:
+            # Return dict with all necessary fields
+            result = {
+                "logits": mtp_logits,
+                "last_hidden_state": last_hidden_state,
+            }
+            if output_hidden_states:
+                result["hidden_states"] = outputs.hidden_states
+            if output_attentions:
+                result["attentions"] = outputs.attentions
+
+            # Create a simple namespace object for attribute access
+            class OutputNamespace:
+                def __init__(self, **kwargs):
+                    for k, v in kwargs.items():
+                        setattr(self, k, v)
+
+                def __getitem__(self, key):
+                    return getattr(self, key)
+
+                def __contains__(self, key):
+                    return hasattr(self, key)
+
+                def keys(self):
+                    return [k for k in dir(self) if not k.startswith("_")]
+
+            return OutputNamespace(**result)
+        else:
+            # Legacy tuple format
+            result = (mtp_logits,)
+            if output_hidden_states:
+                result += (outputs.hidden_states,)
+            if output_attentions:
+                result += (outputs.attentions,)
+            return result
+
+    def generate(self, *args, **kwargs):
+        """Delegate generation to base model for compatibility."""
+        return self.base_model.generate(*args, **kwargs)
+
+    def get_input_embeddings(self):
+        """Get input embeddings for compatibility."""
+        return self.base_model.get_input_embeddings()
+
+    def set_input_embeddings(self, value):
+        """Set input embeddings for compatibility."""
+        self.base_model.set_input_embeddings(value)
+
+    def get_output_embeddings(self):
+        """Get output embeddings for compatibility."""
+        return self.base_model.get_output_embeddings()
+
+    def set_output_embeddings(self, value):
+        """Set output embeddings for compatibility."""
+        self.base_model.set_output_embeddings(value)

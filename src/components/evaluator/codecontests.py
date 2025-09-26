@@ -29,7 +29,7 @@ from typing import Any
 from rich.console import Console
 from tqdm import tqdm
 
-from ...utils.eval import EvaluationProtocol
+from ...utils.evaluation_protocol import EvaluationProtocol
 from ..registry import evaluator_registry
 
 console = Console()

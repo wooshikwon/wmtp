@@ -1,0 +1,1 @@
+{"task_id": 1, "text": "Write a function to find the minimum of two numbers.", "code": "def min_two(a, b):\n    return min(a, b)", "test_list": ["assert min_two(3, 5) == 3", "assert min_two(10, 2) == 2", "assert min_two(7, 7) == 7"]}

@@ -29,8 +29,8 @@ from torch.utils.data import DataLoader  # 데이터셋을 배치로 로드하�
 from torch.utils.data.distributed import (
     DistributedSampler,  # 분산 훈련을 위한 데이터 분배기
 )
-from transformers import default_data_collator  # HuggingFace의 기본 데이터 배치 생성기
 
+# from transformers import default_data_collator  # ← utils MTP collator로 대체됨
 from src.factory.component_factory import (
     ComponentFactory,  # 알고리즘별 컴포넌트 생성 팩토리
 )
@@ -40,6 +40,7 @@ from src.utils import (  # MLflow 추적과 재현성 보장 유틸
     get_dist_manager,
     set_seed,
 )
+from src.utils.mtp_collator import create_mtp_collator  # WMTP 전용 단순화된 collator
 
 console = Console()
 
@@ -214,15 +215,30 @@ def run_training_pipeline(
         f"[dim]🔍 분산 훈련용 데이터 샘플러 설정 완료: {recipe.train.algo}[/dim]"
     )
 
-    # Step 9: PyTorch DataLoader 생성
-    # 토큰화된 데이터를 배치 단위로 모델에 공급하기 위한 데이터 로더 구성
+    # Step 9-1: Data Collator 생성 (구조적 해결)
+    # 모든 WMTP 알고리즘이 MTPDataCollator 사용하므로 직접 생성
+
+    # 구조적 해결: tokenizer component의 명확한 인터페이스 사용
+    # 복잡한 추출 로직 대신 get_hf_tokenizer() 메서드 활용
+    hf_tokenizer = tokenizer.get_hf_tokenizer()
+
+    # 모든 WMTP 알고리즘에 MTP collator 사용 (horizon=4)
+    collator = create_mtp_collator(
+        tokenizer=hf_tokenizer,
+        horizon=4,  # Meta 논문 기준
+        pad_to_multiple_of=8,  # GPU 효율성 최적화
+    )
+
+    console.print(f"[dim]🔍 Data Collator 생성 완료: {type(collator).__name__}[/dim]")
+
+    # Step 9-2: PyTorch DataLoader 생성 (단순화된 utils collator 사용)
     train_dl = DataLoader(
         tokenized,
         batch_size=recipe.data.train.batch_size or 1,
         shuffle=(sampler is None),
         sampler=sampler,
-        collate_fn=default_data_collator,
-        num_workers=2,
+        collate_fn=collator,  # ← Factory에서 생성된 collator
+        num_workers=recipe.data.train.num_workers or 2,
         pin_memory=torch.cuda.is_available(),
     )
 

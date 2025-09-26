@@ -141,7 +141,6 @@ class _CompatibilityAdapter:
 
 # 기존 인터페이스 유지 - 코드 변경 없이 작동
 loader_registry = _CompatibilityAdapter("loader")
-# scorer_registry 제거됨 - v2.1.0부터 Trainer에 통합
 trainer_registry = _CompatibilityAdapter("trainer")
 optimizer_registry = _CompatibilityAdapter("optimizer")
 evaluator_registry = _CompatibilityAdapter("evaluator")
@@ -156,7 +155,6 @@ __all__ = [
     "UnifiedRegistry",
     "registry",
     "loader_registry",
-    # "scorer_registry",  # v2.1.0부터 제거됨
     "trainer_registry",
     "optimizer_registry",
     "evaluator_registry",

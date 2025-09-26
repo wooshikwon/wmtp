@@ -426,6 +426,27 @@ class HfTransformersTokenizer(BaseComponent):
             raise RuntimeError(f"토크나이저가 초기화되지 않았습니다: {self.model_id}")
         return tokenizer.batch_decode(sequences, **kwargs)
 
+    def get_hf_tokenizer(self) -> PreTrainedTokenizer:
+        """DataCollator에서 사용할 순수 HuggingFace tokenizer 반환.
+
+        Pipeline의 복잡한 추출 로직을 대체하는 명확한 인터페이스.
+        DataCollatorForLanguageModeling이 기대하는 PreTrainedTokenizer 인스턴스를 직접 제공.
+
+        Returns:
+            PreTrainedTokenizer: 순수 HuggingFace tokenizer 인스턴스
+
+        Raises:
+            RuntimeError: tokenizer가 초기화되지 않은 경우
+        """
+        if self.model_id not in HfTransformersTokenizer._tokenizers:
+            self._ensure_tokenizer_loaded()
+
+        tokenizer = HfTransformersTokenizer._tokenizers.get(self.model_id)
+        if tokenizer is None:
+            raise RuntimeError(f"토크나이저가 초기화되지 않았습니다: {self.model_id}")
+
+        return tokenizer
+
     @classmethod
     def reset(cls, model_id: str | None = None):
         """

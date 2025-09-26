@@ -215,11 +215,10 @@ class CriticHeadPretrainer(BaseComponent):
                             attention_mask=attention_mask,
                             output_hidden_states=True,
                         )
-                        hidden_states = (
-                            outputs.hidden_states[-1]
-                            if hasattr(outputs, "hidden_states")
-                            else outputs["hidden_states"][-1]
-                        )
+                        # 안전한 hidden_states 추출
+                        from src.utils.model_utils import extract_hidden_states
+
+                        hidden_states = extract_hidden_states(outputs)
 
                 # 🎁 RM으로부터 시퀀스 보상 계산 (공통 유틸리티 사용)
                 reward_tensor = compute_sequence_rewards(
