@@ -35,10 +35,7 @@ train:
   max_steps: 10000
   eval_interval: 500
   save_interval: 1000
-  checkpointing:
-    save_interval: 1000
-    keep_last: 5
-    save_final: true
+  # checkpointing moved to config.paths.checkpoints in Phase 2
 
 # Optimizer configuration
 optim:

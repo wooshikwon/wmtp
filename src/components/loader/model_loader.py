@@ -1,0 +1,326 @@
+"""
+ModelLoader V2: 순차적이고 직관적인 모델 로더
+
+4단계 순차 프로세스:
+1. 메타데이터 로드
+2. S3 다운로드 (필요시)
+3. 로딩 전략 결정
+4. 모델 로드 (양자화 및 state dict 매핑 포함)
+"""
+
+from __future__ import annotations
+
+import json
+import tempfile
+import importlib.util
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
+
+import torch
+from safetensors.torch import load_file
+from transformers import AutoConfig, AutoModelForCausalLM, AutoModel, BitsAndBytesConfig
+
+from src.components.loader.base_loader import ModelLoader as BaseModelLoader
+from src.components.registry import loader_registry
+from src.utils.optimized_s3_transfer import OptimizedS3Transfer
+from src.utils.path_resolver import PathResolver
+from src.utils.s3 import create_s3_manager
+
+
+@loader_registry.register(
+    "standardized-model-loader",
+    version="4.0.0",
+    description="Sequential and intuitive model loader",
+)
+class ModelLoader(BaseModelLoader):
+    """4단계 프로세스로 모델을 로드합니다.
+    각 단계는 독립적이며 순차적으로 실행됩니다.
+    """
+
+    def __init__(self, config: dict[str, Any]):
+        """초기화: 필수 설정만 저장"""
+        super().__init__(config)
+
+        # 경로와 S3 설정
+        self.model_path = config.get("model_path")
+        self.path_resolver = PathResolver()
+        self.s3_manager = create_s3_manager(config)
+
+        # 양자화 설정
+        self.use_4bit = config.get("use_4bit", False)
+        self.use_8bit = config.get("use_8bit", False)
+        devices_config = config.get("devices", {})
+        self.mixed_precision = devices_config.get("mixed_precision", "fp32")
+
+    def run(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        """메인 실행 메서드"""
+        model_path = inputs.get("model_path", self.model_path)
+        if not model_path:
+            raise ValueError("model_path is required")
+
+        # 순차적 4단계 실행
+        model = self.load_model(model_path)
+
+        return {
+            "model": model,
+            "path": model_path,
+            "loader": self.__class__.__name__,
+        }
+
+    def load_model(self, model_path: str, **kwargs) -> Any:
+        """
+        모델 로딩의 전체 흐름을 관리하는 메인 메서드
+        4단계를 순차적으로 실행
+        """
+        print(f"\n🚀 모델 로딩 시작: {model_path}")
+
+        # Step 1: 메타데이터 로드
+        metadata, local_path = self.step1_load_metadata(model_path)
+
+        # Step 2: S3 다운로드 (필요시)
+        local_path = self.step2_download_if_needed(model_path, local_path, metadata)
+
+        # Step 3: 로딩 전략 결정
+        strategy = self.step3_determine_strategy(metadata)
+
+        # Step 4: 모델 로드 (전략에 따라)
+        if strategy["loader_type"] == "custom_mtp":
+            model = self.step4_load_custom_model(local_path, strategy)
+        else:
+            model = self.step4_load_huggingface_model(local_path, strategy)
+
+        print(f"✅ 모델 로딩 완료\n")
+        return model
+
+    # ============= STEP 1: 메타데이터 로드 =============
+    def step1_load_metadata(self, model_path: str) -> Tuple[Dict, Optional[Path]]:
+        """Step 1: 메타데이터를 로드하고 경로 타입 확인"""
+        print(f"  [1/4] 메타데이터 로드 중...")
+
+        path_type, resolved = self.path_resolver.resolve(model_path)
+        metadata = {}
+        local_path = None
+
+        if path_type == "s3":
+            # S3에서 메타데이터만 먼저 로드
+            metadata = self._load_metadata_from_s3(resolved)
+        else:
+            # 로컬에서 메타데이터 로드
+            local_path = Path(resolved)
+            metadata_file = local_path / "metadata.json"
+            if metadata_file.exists():
+                with open(metadata_file) as f:
+                    metadata = json.load(f)
+
+        # 메타데이터가 없으면 기본값 추론
+        if not metadata.get("loading_strategy"):
+            metadata["loading_strategy"] = self._infer_strategy(metadata)
+
+        return metadata, local_path
+
+    # ============= STEP 2: S3 다운로드 =============
+    def step2_download_if_needed(
+        self, model_path: str, local_path: Optional[Path], metadata: Dict
+    ) -> Path:
+        """Step 2: S3 경로인 경우 필요한 파일들을 다운로드"""
+        path_type, resolved = self.path_resolver.resolve(model_path)
+
+        if path_type != "s3":
+            print(f"  [2/4] 로컬 모델 사용 (다운로드 스킵)")
+            return local_path
+
+        print(f"  [2/4] S3에서 모델 다운로드 중...")
+
+        # 임시 디렉토리에 다운로드
+        temp_dir = tempfile.mkdtemp()
+        local_path = Path(temp_dir) / "model"
+        local_path.mkdir(parents=True)
+
+        # 필요한 파일 목록 결정
+        strategy = metadata.get("loading_strategy", {})
+        required_files = strategy.get("required_files", [
+            "config.json",
+            "model.safetensors",
+            "modeling.py",
+            "metadata.json"
+        ])
+
+        # S3에서 다운로드
+        bucket, key_prefix = self.path_resolver.extract_bucket_and_key(resolved)
+        for filename in required_files:
+            self._download_file_from_s3(bucket, key_prefix, filename, local_path)
+
+        return local_path
+
+    # ============= STEP 3: 전략 결정 =============
+    def step3_determine_strategy(self, metadata: Dict) -> Dict:
+        """Step 3: 메타데이터를 기반으로 로딩 전략 결정"""
+        print(f"  [3/4] 로딩 전략 결정 중...")
+
+        strategy = metadata.get("loading_strategy", {})
+
+        # 기본값 설정
+        strategy.setdefault("loader_type", "huggingface")
+        strategy.setdefault("state_dict_mapping", {})
+
+        print(f"      → {strategy['loader_type']} 전략 사용")
+        return strategy
+
+    # ============= STEP 4: 모델 로드 =============
+    def step4_load_custom_model(self, local_path: Path, strategy: Dict) -> Any:
+        """Step 4-A: 커스텀 MTP 모델 로드"""
+        print(f"  [4/4] 커스텀 MTP 모델 로드 중...")
+
+        # 4.1: modeling.py 동적 임포트
+        module_file = strategy.get("custom_module_file", "modeling.py")
+        modeling_path = local_path / module_file
+
+        spec = importlib.util.spec_from_file_location("custom_modeling", modeling_path)
+        custom_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(custom_module)
+
+        # 4.2: 모델 클래스 찾기
+        model_class_name = strategy.get("model_class_name")
+        model_class = getattr(custom_module, model_class_name, None)
+
+        if not model_class:
+            # MTP 클래스 자동 탐색
+            for name in dir(custom_module):
+                if "MTP" in name and isinstance(getattr(custom_module, name), type):
+                    model_class = getattr(custom_module, name)
+                    break
+
+        # 4.3: 모델 인스턴스 생성
+        config = AutoConfig.from_pretrained(str(local_path), trust_remote_code=True)
+        model = model_class(config)
+
+        # 4.4: State dict 로드 및 매핑
+        safetensors_path = local_path / "model.safetensors"
+        if safetensors_path.exists():
+            state_dict = load_file(str(safetensors_path))
+
+            # State dict 매핑 적용
+            mapping = strategy.get("state_dict_mapping", {})
+            if mapping:
+                state_dict = self.apply_state_dict_mapping(state_dict, mapping)
+
+            model.load_state_dict(state_dict, strict=False)
+
+        return model
+
+    def step4_load_huggingface_model(self, local_path: Path, strategy: Dict) -> Any:
+        """Step 4-B: HuggingFace 모델 로드"""
+        print(f"  [4/4] HuggingFace 모델 로드 중...")
+
+        # 4.1: 모델 클래스 결정
+        transformers_class = strategy.get("transformers_class", "AutoModelForCausalLM")
+        model_class = AutoModel if transformers_class == "AutoModel" else AutoModelForCausalLM
+
+        # 4.2: 양자화 설정
+        quantization_config = None
+        if self.use_4bit or self.use_8bit:
+            quantization_config = BitsAndBytesConfig(
+                load_in_4bit=self.use_4bit,
+                load_in_8bit=self.use_8bit,
+                bnb_4bit_compute_dtype=self.get_compute_dtype(),
+            )
+            print(f"      → 양자화 적용: 4bit={self.use_4bit}, 8bit={self.use_8bit}")
+
+        # 4.3: 모델 로드
+        model = model_class.from_pretrained(
+            str(local_path),
+            quantization_config=quantization_config,
+            device_map=None,  # Trainer가 담당
+            torch_dtype=self.get_torch_dtype(),
+            trust_remote_code=True,
+        )
+
+        return model
+
+    # ============= 유틸리티 메서드 =============
+    def apply_state_dict_mapping(self, state_dict: Dict, mapping: Dict) -> Dict:
+        """State dict 키 매핑 적용"""
+        if not mapping:
+            return state_dict
+
+        result = {}
+        remove_prefix = mapping.get("remove_prefix", "")
+        add_prefix = mapping.get("add_prefix", "")
+
+        for key, value in state_dict.items():
+            new_key = key
+
+            if remove_prefix and new_key.startswith(remove_prefix):
+                new_key = new_key[len(remove_prefix):]
+
+            if add_prefix:
+                new_key = f"{add_prefix}{new_key}"
+
+            result[new_key] = value
+
+        return result
+
+    def get_torch_dtype(self):
+        """Torch dtype 결정"""
+        if self.mixed_precision == "bf16":
+            return torch.bfloat16
+        elif self.mixed_precision == "fp16":
+            return torch.float16
+        return torch.float32
+
+    def get_compute_dtype(self):
+        """양자화 compute dtype 결정"""
+        return torch.bfloat16 if self.mixed_precision == "bf16" else torch.float16
+
+    def _infer_strategy(self, metadata: Dict) -> Dict:
+        """메타데이터가 없을 때 전략 추론"""
+        wmtp_type = metadata.get("wmtp_type", "base_model")
+
+        if wmtp_type == "base_model":
+            return {
+                "loader_type": "custom_mtp",
+                "model_class_name": "GPTMTPForCausalLM",
+                "custom_module_file": "modeling.py",
+            }
+        else:
+            return {
+                "loader_type": "huggingface",
+                "transformers_class": "AutoModelForCausalLM",
+            }
+
+    def _load_metadata_from_s3(self, s3_path: str) -> Dict:
+        """S3에서 metadata.json만 로드"""
+        if not self.s3_manager:
+            return {}
+
+        try:
+            bucket, key_prefix = self.path_resolver.extract_bucket_and_key(s3_path)
+            metadata_key = f"{key_prefix.rstrip('/')}/metadata.json"
+            stream = self.s3_manager.stream_dataset(metadata_key)
+            return json.load(stream)
+        except Exception:
+            return {}
+
+    def _download_file_from_s3(
+        self, bucket: str, key_prefix: str, filename: str, local_path: Path
+    ):
+        """S3에서 단일 파일 다운로드"""
+        if not self.s3_manager:
+            return
+
+        try:
+            file_key = f"{key_prefix.rstrip('/')}/{filename}"
+
+            # 파일 타입에 따라 적절한 스트림 메서드 사용
+            if filename.endswith((".json", ".py")):
+                stream = self.s3_manager.stream_dataset(file_key)
+            else:
+                stream = self.s3_manager.stream_model(file_key)
+
+            with open(local_path / filename, "wb") as f:
+                f.write(stream.read())
+        except Exception as e:
+            # 필수 파일이 아니면 경고만
+            if filename in ["config.json", "model.safetensors"]:
+                raise RuntimeError(f"Required file {filename} not found: {e}")
+            print(f"      → {filename} 스킵 (옵션)")

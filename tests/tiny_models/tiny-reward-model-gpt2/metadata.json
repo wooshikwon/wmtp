@@ -7,14 +7,14 @@
   "model_size": "120m",
   "storage_version": "2.0",
   "created_by": "wmtp_local_standardizer",
-  "standardization_date": "2025-09-26T18:58:41.878251",
+  "standardization_date": "2025-09-27T12:52:00.000000",
   "original_format": "huggingface_safetensors",
-  "source_path": "tests/tiny_models/tiny-reward-model",
+  "source_path": "tests/tiny_models/distilgpt2",
   "loading_strategy": {
     "loader_type": "huggingface",
     "model_class_name": null,
     "custom_module_file": null,
-    "transformers_class": "AutoModel",
+    "transformers_class": "AutoModelForCausalLM",
     "state_dict_mapping": {
       "remove_prefix": null,
       "add_prefix": null,

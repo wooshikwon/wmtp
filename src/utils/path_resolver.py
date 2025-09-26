@@ -153,3 +153,45 @@ def create_path_resolver() -> PathResolver:
         새로운 PathResolver 인스턴스
     """
     return PathResolver()
+
+
+def resolve_checkpoint_path(base_path: str, run_identifier: str) -> tuple[str, bool]:
+    """
+    체크포인트 경로 해석
+
+    WMTP Phase 3 기능:
+    CheckpointConfig의 base_path와 run_identifier를 결합하여
+    실제 체크포인트 저장 경로를 생성합니다.
+
+    Args:
+        base_path: 체크포인트 기본 경로 (프로토콜 포함)
+        run_identifier: 실행 식별자 (MLflow run_id 또는 run_name)
+
+    Returns:
+        (resolved_path, is_s3): 해석된 경로와 S3 여부
+
+    Examples:
+        >>> resolve_checkpoint_path("file://./checkpoints", "a1b2c3d4e5f6")
+        ("./checkpoints/a1b2c3d4e5f6", False)
+
+        >>> resolve_checkpoint_path("s3://wmtp/checkpoints", "a1b2c3d4e5f6")
+        ("s3://wmtp/checkpoints/a1b2c3d4e5f6", True)
+
+        >>> resolve_checkpoint_path("./checkpoints", "experiment_1")
+        ("./checkpoints/experiment_1", False)
+    """
+    resolver = PathResolver()
+    path_type, resolved_base = resolver.resolve(base_path)
+
+    if path_type == "s3":
+        # S3 경로: 슬래시 정규화 후 run_identifier 추가
+        resolved_path = f"{resolved_base.rstrip('/')}/{run_identifier}"
+        return resolved_path, True
+    elif path_type in ["file", "local"]:
+        # 로컬 경로: resolved_base는 이미 정규화됨
+        resolved_path = f"{resolved_base.rstrip('/')}/{run_identifier}"
+        return resolved_path, False
+    else:
+        # 기본값 처리 (하위 호환성)
+        resolved_path = f"{base_path.rstrip('/')}/{run_identifier}"
+        return resolved_path, False

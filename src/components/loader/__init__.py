@@ -6,24 +6,25 @@ of datasets and models through a single interface.
 """
 
 # Import base classes
-from .base_loader import BaseLoader, DatasetLoader, ModelLoader
+from .base_loader import BaseLoader, DatasetLoader
+from .base_loader import ModelLoader as BaseModelLoader
 
 # Import specialized loaders
 from .checkpoint_loader import CheckpointLoader
 
 # Import unified loaders (Phase 2)
-from .standardized_model_loader import StandardizedModelLoader
-from .unified_data_loader import UnifiedDataLoader
+from .model_loader import ModelLoader  # Phase 2 리팩토링: 단순화된 모델 로더
+from .data_loader import DataLoader  # Phase 2 리팩토링: 단순화된 데이터 로더
 
 # Export loaders
 __all__ = [
     # Base classes
     "BaseLoader",
     "DatasetLoader",
-    "ModelLoader",
+    "BaseModelLoader",
     # Unified loaders (Phase 2)
-    "StandardizedModelLoader",
-    "UnifiedDataLoader",
+    "ModelLoader",  # Phase 2: 단순화된 버전
+    "DataLoader",  # Phase 2: 단순화된 버전
     # Specialized loaders
     "CheckpointLoader",
 ]

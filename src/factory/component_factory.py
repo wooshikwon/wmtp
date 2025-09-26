@@ -203,7 +203,7 @@ class ComponentFactory:
             config: 환경 설정
 
         Returns:
-            UnifiedDataLoader 인스턴스
+            DataLoader 인스턴스
         """
         # 1. source를 recipe에서 자동 추출 (더 이상 별도 인자 불필요)
         source = recipe.data.train.sources[0]  # 첫 번째 훈련 소스 사용
@@ -236,49 +236,63 @@ class ComponentFactory:
         ):  # 마이그레이션된 old config인 경우
             loader_config["storage"] = config.storage
 
-        # 4. UnifiedDataLoader 생성
+        # 4. DataLoader 생성
         return loader_registry.create("unified-data-loader", loader_config)
 
     @staticmethod
-    def create_model_loader(config: Config, recipe: Recipe = None) -> Loader:  # noqa: ARG004
-        """표준화된 메타데이터 기반 모델 로더 생성.
+    def create_model_loader(
+        config: Config,
+        recipe: Recipe,
+        model_type: str = "base"
+    ) -> Loader:
+        """통합된 모델 로더 생성 - 최대한 단순화된 인터페이스.
 
-        Phase 2 핵심 개선사항:
-        - metadata.json 기반 정확한 타입 감지
-        - Config/Recipe 연동으로 알고리즘별 최적화된 모델 선택
-        - 확장자 기반의 취약한 추론 로직 완전 제거
-        - S3/로컬 투명한 통합 지원
-
-        지원하는 모델 타입 (metadata.json wmtp_type 기준):
-            - base_model: MTP 확장 모델 (우리의 핵심 모델, config.paths.models.base)
-            - reference_model: 일반 언어 모델 (Rho1-WMTP용, config.paths.models.ref)
-            - reward_model: RLHF용 보상 모델 (Critic-WMTP용, config.paths.models.rm)
-
-        모델 경로 자동 선택 (Recipe 알고리즘 기반):
-            - baseline-mtp: config.paths.models.base (기본 MTP 모델)
-            - critic-wmtp: config.paths.models.base + rm (보상 모델 추가)
-            - rho1-wmtp: config.paths.models.base + ref (참조 모델 추가)
+        모든 모델을 일관된 방식으로 로드:
+        - "base": Base 모델
+        - "aux": 알고리즘에 따라 자동 선택 (ref 또는 rm)
 
         Args:
-            config: 환경 설정 (모델 경로, GPU 설정, S3 인증 등)
-            recipe: 훈련 레시피 (알고리즘별 모델 요구사항 결정)
+            config: 환경 설정 (모델 경로들)
+            recipe: 훈련 레시피 (알고리즘 정보)
+            model_type: 모델 타입 ("base" 또는 "aux")
 
         Returns:
-            StandardizedModelLoader 인스턴스 (메타데이터 기반 스마트 로더)
+            ModelLoader 인스턴스 또는 None (baseline-mtp의 aux인 경우)
+
+        Usage:
+            # 일관된 호출 방식
+            base_loader = ComponentFactory.create_model_loader(config, recipe, "base")
+            aux_loader = ComponentFactory.create_model_loader(config, recipe, "aux")
         """
-        # 로더 설정에 Recipe 정보 추가
         loader_config = config.model_dump()
 
-        # Recipe 정보가 있으면 알고리즘별 추가 설정 주입
-        if recipe:
-            loader_config["algorithm"] = recipe.train.algo
-            loader_config["mtp_config"] = {
-                "n_heads": MTP_CONFIG["n_heads"],
-                "horizon": MTP_CONFIG["horizon"],
-            }
+        # 모델 경로 결정
+        if model_type == "base":
+            model_path = str(config.paths.models.base)
+        elif model_type == "aux":
+            # aux는 알고리즘에 따라 자동 결정
+            algorithm = recipe.train.algo
+            if algorithm == "rho1-wmtp":
+                model_path = str(config.paths.models.ref)
+            elif algorithm == "critic-wmtp":
+                model_path = str(config.paths.models.rm)
+            elif algorithm in ["baseline-mtp", "mtp-baseline"]:
+                # baseline은 aux 모델 불필요
+                return None
+            else:
+                raise ValueError(f"Unknown algorithm for aux model: {algorithm}")
+        else:
+            raise ValueError(f"model_type must be 'base' or 'aux', got: {model_type}")
 
-        # StandardizedModelLoader 생성 - 메타데이터 기반 정확한 타입 감지
+        loader_config["model_path"] = model_path
+        loader_config["algorithm"] = recipe.train.algo
+        loader_config["mtp_config"] = {
+            "n_heads": MTP_CONFIG["n_heads"],
+            "horizon": MTP_CONFIG["horizon"],
+        }
+
         return loader_registry.create("standardized-model-loader", loader_config)
+
 
     @staticmethod
     def create_checkpoint_loader(config: Config) -> Loader:
@@ -384,15 +398,16 @@ class ComponentFactory:
                 "token_spread": recipe.critic.token_spread,  # "gae"
                 "delta_mode": recipe.critic.delta_mode,  # "td"
                 "normalize": recipe.critic.normalize,  # "zscore"
-                "temperature": recipe.loss.temperature,  # 소프트맥스 온도
+                "temperature": recipe.loss.weight_temperature,  # 소프트맥스 온도
                 # Stage1 전용 학습률 (recipe에서 가져오기)
-                "lr": recipe.train.stage1.lr
-                if hasattr(recipe.train, "stage1")
-                else 1e-4,
+                "lr": (recipe.train.stage1.lr
+                       if hasattr(recipe.train, "stage1") and recipe.train.stage1
+                       else recipe.critic.value_lr if hasattr(recipe.critic, "value_lr")
+                       else 1e-4),
                 # GAE 파라미터도 recipe에서 가져오기
                 "gamma": recipe.critic.gamma,  # 0.99
                 "gae_lambda": recipe.critic.gae_lambda,  # 0.95
-                "value_coef": recipe.critic.value_coef,  # 0.1
+                "value_coef": recipe.critic.auxiliary_loss_coef,  # 0.1
             }
 
             # Registry에서 Stage1 Pretrainer 인스턴스 생성 및 반환
@@ -409,96 +424,13 @@ class ComponentFactory:
                 f"Only 'critic-wmtp' currently requires pretrainer."
             )
 
-    @staticmethod
-    def create_aux_model_loader(
-        recipe: Recipe, config: Config, aux_type: str
-    ) -> Loader:
-        """알고리즘별 보조 모델 로더 생성 - ref/rm 모델 전용.
+    # Phase 3: create_aux_model_loader 메서드 제거됨
+    # 모든 모델 로딩은 create_model_loader로 통합되었습니다.
+    # Usage:
+    #   - Base 모델: create_model_loader(config, recipe, "base")
+    #   - Reference 모델: create_model_loader(config, recipe, "ref")
+    #   - Reward 모델: create_model_loader(config, recipe, "rm")
 
-        WMTP 알고리즘별 보조 모델 처리를 위한 특화된 로더:
-            - rho1-wmtp: Reference Model 로딩 (CE 차이 계산용)
-            - critic-wmtp: Reward Model 로딩 (Value Head 훈련용)
-            - mtp-baseline: 보조 모델 불필요 (에러 발생)
-
-        create_model_loader와의 차이점:
-            1. 알고리즘별 특화: recipe.train.algo에 따른 검증
-            2. 보조 모델 전용: base 모델과 구분된 처리
-            3. 경로 자동 매핑: aux_type에 따른 config 경로 자동 선택
-            4. 타입 안전성: 잘못된 알고리즘-모델 조합 차단
-
-        Args:
-            recipe: 훈련 레시피 (알고리즘 타입 확인용)
-            config: 환경 설정 (모델 경로들 포함)
-            aux_type: 보조 모델 타입 ("ref" | "rm")
-
-        Returns:
-            알고리즘에 맞는 UnifiedModelLoader 인스턴스
-
-        Raises:
-            ValueError: 잘못된 알고리즘-보조모델 조합
-
-        Usage:
-            ```python
-            # Rho1 알고리즘의 참조 모델
-            ref_loader = ComponentFactory.create_aux_model_loader(
-                recipe, config, "ref"
-            )
-
-            # Critic 알고리즘의 보상 모델
-            rm_loader = ComponentFactory.create_aux_model_loader(
-                recipe, config, "rm"
-            )
-            ```
-        """
-        algo = recipe.train.algo
-
-        # 알고리즘별 보조 모델 필요성 검증
-        if algo == "baseline-mtp":
-            raise ValueError(
-                f"Algorithm '{algo}' does not require auxiliary models. "
-                f"Use create_model_loader() for base model only."
-            )
-        elif algo == "rho1-wmtp" and aux_type != "ref":
-            raise ValueError(
-                f"Algorithm '{algo}' only supports aux_type='ref' for reference model. "
-                f"Got aux_type='{aux_type}'"
-            )
-        elif algo == "critic-wmtp" and aux_type != "rm":
-            raise ValueError(
-                f"Algorithm '{algo}' only supports aux_type='rm' for reward model. "
-                f"Got aux_type='{aux_type}'"
-            )
-        elif algo not in ["rho1-wmtp", "critic-wmtp"]:
-            raise ValueError(
-                f"Algorithm '{algo}' is not supported for auxiliary model loading. "
-                f"Supported algorithms: 'rho1-wmtp', 'critic-wmtp'"
-            )
-
-        # aux_type에 따른 모델 경로 자동 매핑
-        aux_model_paths = {
-            "ref": config.paths.models.ref,
-            "rm": config.paths.models.rm,
-        }
-
-        if aux_type not in aux_model_paths:
-            raise ValueError(
-                f"Invalid aux_type '{aux_type}'. "
-                f"Supported types: {list(aux_model_paths.keys())}"
-            )
-
-        # UnifiedModelLoader 설정 - base loader와 동일하나 경로 및 메타데이터 차별화
-        loader_config = config.model_dump()
-
-        # 보조 모델 메타데이터 추가
-        loader_config["_aux_model_info"] = {
-            "algorithm": algo,
-            "aux_type": aux_type,
-            "model_path": str(aux_model_paths[aux_type]),
-            "description": f"{algo} auxiliary {aux_type} model loader",
-        }
-
-        # UnifiedModelLoader 생성 - 동일한 로더 클래스 사용
-        return loader_registry.create("unified-model-loader", loader_config)
 
     @staticmethod
     def create_tokenizer(recipe: Recipe, config: Config) -> Any:  # noqa: ARG004

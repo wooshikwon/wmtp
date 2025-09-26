@@ -16,10 +16,7 @@ train:
   algo: "rho1-wmtp"  # Reference CE comparison based weighting
   full_finetune: true
   max_steps: 10
-  checkpointing:
-    save_interval: 5
-    keep_last: 1
-    save_final: true
+  # checkpointing moved to config.paths.checkpoints in Phase 2
 
 # Optimizer configuration
 optim:
