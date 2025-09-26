@@ -10,14 +10,10 @@ run:
     - "baseline"
     - "mtp"
 
-# Model configuration
-model:
-  base_id: "test-mtp"  # Special ID for test loader
-  tokenizer_type: "hf"
-  tokenizer_pad_side: "right"
-  mtp:
-    n_heads: 4
-    horizon: 4
+# Phase 2: Model configuration 제거됨
+# - 모델 경로는 config.mtp_baseline.yaml에서 관리
+# - MTP 설정은 고정값 사용 (n_heads=4, horizon=4)
+# - 토크나이저는 환경 기반 자동 선택
 
 # Training configuration
 train:
@@ -56,7 +52,7 @@ data:
 loss:
   weight_norm: "none"
   lambda: 0.001
-  temperature: 1.0
+  weight_temperature: 1.0
   epsilon: 1.0e-8
   max_weight: 1.01
 

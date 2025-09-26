@@ -1,26 +1,20 @@
 # VESSL GPU Production Configuration for Critic WMTP Algorithm
-# Optimized for VESSL cluster with A100 x2 GPUs
+# Optimized for VESSL cluster with A100 x4 GPUs
 
 # Project metadata
 project: "wmtp_prod_critic"
 seed: 42
 
-# Storage configuration - S3 for VESSL
-storage:
-  mode: "s3"
-  bucket: "wmtp"
-  prefix: "checkpoints/critic"
-
 # Path configurations - Production models
 paths:
   models:
-    base: "models/7b_1t_4"  # Facebook MTP 7B model with 4 heads
-    rm: "models/Starling-RM-7B-alpha"  # Reward model for Stage 1
-    ref: "models/Sheared-LLaMA-2.7B"  # Reference model (consistency)
+    base: "s3://wmtp/models/7b_1t_4/"
+    rm: "s3://wmtp/models/Starling-RM-7B-alpha/"
+    ref: "s3://wmtp/models/Sheared-LLaMA-2.7B/"
   datasets:
-    mbpp: "dataset/mbpp"
-    contest: "dataset/contest"
-    humaneval: "dataset/humaneval"
+    mbpp: "s3://wmtp/dataset/mbpp"
+    contest: "s3://wmtp/dataset/contest"
+    humaneval: "s3://wmtp/dataset/humaneval"
 
 # MLflow configuration - Production tracking
 mlflow:
@@ -28,11 +22,11 @@ mlflow:
   tracking_uri: "s3://wmtp/mlflow"
   registry_uri: "s3://wmtp/mlflow"
 
-# Launcher configuration - VESSL A100x2
+# Launcher configuration - VESSL A100x4
 launcher:
   target: "vessl"
   resources:
-    gpus: 2
+    gpus: 4
     gpu_type: "A100"
     cpu_limit: "32"
     memory_limit: "256Gi"
@@ -42,6 +36,14 @@ launcher:
 devices:
   compute_backend: "cuda"
   mixed_precision: "bf16"  # A100 supports bfloat16
+  distributed:
+    enabled: true                 # 분산 학습 활성화
+    backend: "nccl"               # GPU 간 고속 통신
+    init_method: "env://"         # torchrun 환경변수 사용
+    timeout: 1800                 # NCCL 타임아웃 (30분)
+    find_unused_parameters: false # FSDP와 함께 사용 시 False
+
+  # 기존 FSDP 설정 유지
   fsdp:
     enabled: true
     auto_wrap: true

@@ -19,18 +19,24 @@ from src.components.registry import optimizer_registry
 
 
 @optimizer_registry.register("adamw", category="optimizer", version="1.0.0")
-class AdamWBF16FusedOptimizer(BaseComponent):
+class AdamWFusedOptimizer(BaseComponent):
     """
-    AdamW optimizer component with optional fused kernel and LR scheduler.
+    AdamW optimizer with CUDA fused kernel optimization and LR scheduler.
+    
+    Mixed precision (BF16/FP16) is handled by trainer autocast context,
+    not by this optimizer. This component focuses on:
+    - Fused kernel optimization for CUDA acceleration
+    - Learning rate scheduling
+    - Gradient clipping support
 
     Expected configuration keys:
       - params: Iterable[Tensor] (model parameters)
-      - lr: float
-      - weight_decay: float
-      - betas: list[float] of length 2
+      - lr: float (learning rate)
+      - weight_decay: float (L2 regularization)
+      - betas: list[float] of length 2 (Adam momentum coefficients)
       - scheduler: str in {"cosine","linear","constant"}
       - warmup_ratio: float in [0, 0.5]
-      - grad_clip: float (stored for trainer usage)
+      - grad_clip: float (gradient clipping threshold)
     """
 
     def __init__(self, config: dict[str, Any] | None = None):
@@ -46,9 +52,10 @@ class AdamWBF16FusedOptimizer(BaseComponent):
         if params is None:
             raise ValueError("'params' must be provided to optimizer config")
 
-        lr: float = float(self.config.get("lr", 1e-5))
-        weight_decay: float = float(self.config.get("weight_decay", 0.0))
-        betas = self.config.get("betas", [0.9, 0.95])
+        # Recipe에서 검증된 값들을 사용 (Pydantic으로 이미 검증됨)
+        lr: float = float(self.config["lr"])  # Recipe optim.lr에서 제공
+        weight_decay: float = float(self.config["weight_decay"])  # Recipe optim.weight_decay에서 제공
+        betas = self.config["betas"]  # Recipe optim.betas에서 제공
 
         # Enable fused AdamW when available (PyTorch CUDA build)
         fused_supported = hasattr(AdamW, "__init__") and torch.cuda.is_available()
@@ -73,9 +80,9 @@ class AdamWBF16FusedOptimizer(BaseComponent):
                 params, lr=lr, betas=(betas[0], betas[1]), weight_decay=weight_decay
             )
 
-        # Scheduler setup via transformers
-        scheduler_type: str = self.config.get("scheduler", "cosine")
-        warmup_ratio: float = float(self.config.get("warmup_ratio", 0.0))
+        # Scheduler setup via transformers (Recipe에서 값 제공)
+        scheduler_type: str = self.config["scheduler"]  # Recipe optim.scheduler에서 제공
+        warmup_ratio: float = float(self.config["warmup_ratio"])  # Recipe optim.warmup_ratio에서 제공
         num_training_steps: int = int(ctx.get("num_training_steps", 0))
         num_warmup_steps = int(num_training_steps * warmup_ratio) if num_training_steps > 0 else 0
 
@@ -93,7 +100,7 @@ class AdamWBF16FusedOptimizer(BaseComponent):
 
         # Store fused flag and grad clip for trainer reference
         self.fused = fused_flag
-        self.grad_clip = float(self.config.get("grad_clip", 1.0))
+        self.grad_clip = float(self.config["grad_clip"])  # Recipe optim.grad_clip에서 제공
 
     def step(self) -> None:
         if self.optimizer is None:

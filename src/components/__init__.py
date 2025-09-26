@@ -8,7 +8,7 @@ from .loader import (
 )
 
 # Import all optimizers to register them
-from .optimizer import AdamWBF16FusedOptimizer
+from .optimizer import AdamWFusedOptimizer
 from .registry import (
     loader_registry,
     optimizer_registry,
@@ -56,5 +56,5 @@ __all__ = [
     "Rho1WmtpTrainer",
     "CriticHeadPretrainer",
     # Optimizers
-    "AdamWBF16FusedOptimizer",
+    "AdamWFusedOptimizer",
 ]

@@ -48,71 +48,59 @@ WMTP 알고리즘과의 연결:
 """
 
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from src.utils.path_resolver import PathResolver
 
-class S3Config(BaseModel):
-    """S3 스토리지 설정: WMTP 대규모 실험을 위한 클라우드 스토리지
 
-    WMTP 연구 맥락:
-    7B 모델의 체크포인트는 약 14GB이며, 학습 중 다수의 체크포인트가 생성됩니다.
-    S3를 사용하면 팀원 간 모델 공유와 실험 결과 보존이 용이합니다.
-    특히 Critic-WMTP는 value_head.pt 등 추가 파일이 생성되어 S3 관리가 중요합니다.
+class S3AuthConfig(BaseModel):
+    """S3 인증 설정: AWS S3 접근을 위한 인증 정보
 
-    구체적 활용:
-    - 체크포인트 저장: checkpoint_epoch_*.pt (각 14GB)
-    - MLflow 아티팩트: 메트릭, 그래프, 로그 파일
-    - 평가 결과: MBPP/CodeContests 생성 코드 및 점수
-    - Value Head 파일: critic-wmtp의 stage1 학습 결과
+    Phase 2 리팩토링:
+    storage.mode를 제거하고 경로에 직접 프로토콜을 포함하도록 변경했습니다.
+    이제 S3AuthConfig는 S3 접근을 위한 인증 정보만 담당합니다.
+
+    사용 예시:
+    - s3://wmtp/models/7b_1t_4 경로 사용 시 자동으로 S3 접근
+    - 기본 버킷과 리전 정보만 제공 (경로별 버킷은 URI에서 추출)
 
     Attributes:
-        bucket: S3 버킷 이름 (필수)
-            예: "wmtp-models", "ml-experiments"
-            권장: 프로젝트별 전용 버킷 사용
-        region: AWS 리전 (기본값: ap-northeast-2 서울)
-            다른 리전: "us-east-1", "eu-west-1"
-            팁: 학습 서버와 같은 리전 선택 시 전송 속도 향상
-        prefix: 모든 객체에 적용할 접두사 (선택)
-            예: "experiments/2024/" → s3://bucket/experiments/2024/...
-            권장: "algo/date/" 형식 (예: "rho1/20241225/")
-
-    WMTP 알고리즘별 활용:
-        - Baseline: 표준 체크포인트만 저장
-        - Critic: value_head.pt 추가 저장 필요
-        - Rho1: 참조 모델 CE 점수 캐시 저장 권장
+        default_bucket: 기본 S3 버킷 이름 (선택)
+            경로에 버킷이 명시되지 않은 경우 사용
+            예: "wmtp-models"
+        region: AWS 리전 (기본값: ap-northeast-2)
+            서울 리전이 기본값
+        profile: AWS 프로파일 이름 (선택)
+            ~/.aws/credentials의 프로파일 사용
 
     Example:
-        # 개발 환경
-        s3:
-          bucket: wmtp-dev
+        # S3 인증 정보만 설정 (경로는 직접 s3:// 사용)
+        s3_auth:
+          default_bucket: wmtp
           region: ap-northeast-2
-          prefix: dev/rho1/
 
-        # 프로덕션
-        s3:
-          bucket: wmtp-prod
-          region: ap-northeast-2
-          prefix: prod/critic/20241225/
-
-    디버깅 팁:
-        - boto3 ImportError: pip install boto3
-        - AccessDenied: AWS IAM 정책에 s3:PutObject 권한 확인
-        - NoSuchBucket: 버킷 생성 필요 (aws s3 mb s3://버킷명)
+    Note:
+        환경변수 AWS_PROFILE, AWS_REGION도 자동으로 인식됩니다.
     """
 
-    bucket: str = Field(..., description="S3 버킷 이름")
+    default_bucket: str | None = Field(
+        default=None,
+        description="기본 S3 버킷 (경로에 버킷이 없을 때 사용)"
+    )
     region: str = Field(default="ap-northeast-2", description="AWS 리전")
-    prefix: str = Field(default="", description="모든 S3 객체의 접두사")
+    profile: str | None = Field(
+        default=None,
+        description="AWS 프로파일 이름 (None이면 기본 프로파일)"
+    )
 
-    @field_validator("bucket")
+    @field_validator("default_bucket")
     @classmethod
-    def validate_bucket(cls, v: str) -> str:
+    def validate_bucket(cls, v: str | None) -> str | None:
         """S3 버킷 이름 검증.
 
         AWS S3 버킷 명명 규칙을 검증합니다:
-        - 비어있으면 안됨
         - 최대 63자
         - 소문자로 자동 변환
 
@@ -120,72 +108,19 @@ class S3Config(BaseModel):
             v: 입력된 버킷 이름
 
         Returns:
-            str: 검증되고 정규화된 버킷 이름 (소문자)
-
-        Raises:
-            ValueError: 버킷 이름이 규칙에 맞지 않을 때
+            str | None: 검증되고 정규화된 버킷 이름 (소문자) 또는 None
         """
-        if not v:
-            raise ValueError("S3 버킷 이름은 비어있을 수 없습니다")
+        if v is None:
+            return None
         if len(v) > 63:
             raise ValueError("S3 버킷 이름은 63자 이하여야 합니다")
         # AWS는 버킷 이름을 소문자로 요구
         return v.lower()
 
 
-class Storage(BaseModel):
-    """스토리지 설정.
-
-    WMTP 학습 결과물 저장 방식을 설정합니다.
-    'auto' 모드는 경로에 따라 자동으로 로컬/S3를 판별합니다.
-
-    Attributes:
-        mode: 스토리지 모드
-            - "auto": 경로에 따라 자동 판별 (s3:// 프리픽스 확인)
-            - "local": 로컬 파일시스템 사용 (개발/테스트용)
-            - "s3": AWS S3 사용 (프로덕션/협업용)
-        s3: S3 설정 (S3 경로 사용 시 필요)
-
-    Example:
-        # 자동 판별 (권장)
-        storage:
-          mode: auto
-          s3:
-            bucket: wmtp
-
-        # 로컬 전용
-        storage:
-          mode: local
-
-        # S3 전용
-        storage:
-          mode: s3
-          s3:
-            bucket: wmtp-prod
-    """
-
-    mode: Literal["auto", "local", "s3"] = Field(..., description="스토리지 모드")
-    s3: S3Config | None = None
-
-    @model_validator(mode="after")
-    def validate_s3_required(self):
-        """S3 모드 시 S3 설정 필수 검증.
-
-        storage.mode가 's3'로 설정되었을 때
-        s3 설정이 제공되었는지 확인합니다.
-
-        Raises:
-            ValueError: s3 모드인데 s3 설정이 없을 때
-        """
-        if self.mode == "s3" and not self.s3:
-            raise ValueError(
-                "storage.mode가 's3'일 때는 s3 설정이 필요합니다\n"
-                "예: storage:\n"
-                "      mode: s3\n"
-                "      s3:\n"
-                "        bucket: my-bucket"
-            )
-        return self
+# Storage 클래스 제거됨 - Phase 2 리팩토링
+# 경로에 직접 프로토콜(s3://, file://)을 포함하는 방식으로 변경
+# S3 인증 정보는 Config.s3_auth로 이동
 
 
 class ModelPaths(BaseModel):
@@ -316,19 +251,80 @@ class DatasetPaths(BaseModel):
 class Paths(BaseModel):
     """전체 경로 설정 통합.
 
-    WMTP 프로젝트에서 사용하는 모든 경로를 한 곳에서 관리합니다.
-    PathResolver를 통해 로컬 경로와 S3 URI를 자동으로 구분합니다.
+    Phase 2 리팩토링:
+    모든 경로에 프로토콜을 직접 포함할 수 있습니다:
+    - s3://bucket/key: S3 경로
+    - file:///absolute/path: 명시적 로컬 절대 경로
+    - file://./relative/path: 명시적 로컬 상대 경로
+    - ./path 또는 /path: 암시적 로컬 경로
 
     Attributes:
-        models: 모델 파일 경로들 (로컬 또는 S3)
-        datasets: 데이터셋 경로들 (로컬 또는 S3)
+        models: 모델 파일 경로들 (프로토콜 포함 가능)
+        datasets: 데이터셋 경로들 (프로토콜 포함 가능)
 
-    Note:
-        S3 체크포인트 전략 사용 - 모든 중간 결과는 S3에 직접 저장됩니다.
+    Example:
+        paths:
+          models:
+            base: s3://wmtp/models/7b_1t_4/
+            rm: s3://wmtp/models/Llama_3_8B_RM/
+            ref: file://./local_models/sheared_llama/
+          datasets:
+            mbpp: s3://wmtp/dataset/mbpp
+            contest: file://./dataset/contest
     """
 
     models: ModelPaths = Field(default_factory=ModelPaths)
     datasets: DatasetPaths = Field(default_factory=DatasetPaths)
+
+    @field_validator("models", "datasets")
+    @classmethod
+    def validate_paths(cls, v: ModelPaths | DatasetPaths, info) -> ModelPaths | DatasetPaths:
+        """경로 프로토콜 검증 및 정규화.
+
+        Phase 2 핵심 기능:
+        PathResolver를 사용하여 모든 경로의 프로토콜을 검증합니다.
+        잘못된 프로토콜이나 형식은 에러를 발생시킵니다.
+
+        Args:
+            v: ModelPaths 또는 DatasetPaths 인스턴스
+            info: Pydantic validation context
+
+        Returns:
+            검증된 경로 객체
+
+        Raises:
+            ValueError: 잘못된 경로 형식
+        """
+        resolver = PathResolver()
+        field_name = info.field_name
+
+        # 각 경로 검증 (빈 문자열은 허용)
+        for attr_name in v.model_fields:
+            path = getattr(v, attr_name)
+            if path and path.strip():  # 빈 경로가 아닌 경우만 검증
+                try:
+                    # 경로 해석 시도 (프로토콜 검증)
+                    path_type, resolved = resolver.resolve(path)
+
+                    # S3 경로의 경우 버킷과 키 검증
+                    if path_type == "s3":
+                        bucket, key = resolver.extract_bucket_and_key(path)
+                        if not bucket:
+                            raise ValueError(
+                                f"{field_name}.{attr_name}: S3 경로에 버킷이 없습니다: {path}"
+                            )
+                        # S3 경로는 최소한 버킷과 키 구조를 가져야 함 (s3://bucket/key)
+                        if not path.endswith('/') and not key:
+                            raise ValueError(
+                                f"{field_name}.{attr_name}: S3 경로가 잘못된 형식입니다. s3://bucket/key 또는 s3://bucket/ 형태여야 합니다: {path}"
+                            )
+                except Exception as e:
+                    raise ValueError(
+                        f"{field_name}.{attr_name}: 잘못된 경로 형식: {path}\n"
+                        f"오류: {str(e)}"
+                    )
+
+        return v
 
 
 class MLflow(BaseModel):
@@ -507,6 +503,64 @@ class Launcher(BaseModel):
     resources: LauncherResources = Field(default_factory=LauncherResources)
 
 
+class DistributedConfig(BaseModel):
+    """분산 학습 환경 설정.
+
+    분산 훈련의 정책 설정만 관리합니다.
+    실제 rank/world_size/local_rank는 torchrun이 환경변수로 제공합니다.
+
+    torchrun 사용 예시:
+        torchrun --nproc_per_node=4 --nnodes=1 -m src.cli train --config config.yaml
+
+    torchrun이 자동 설정하는 환경변수:
+        - RANK: 전체 프로세스 중 순번 (0, 1, 2, 3)
+        - WORLD_SIZE: 총 프로세스 수 (4)
+        - LOCAL_RANK: 노드 내 GPU 순번 (0, 1, 2, 3)
+        - MASTER_ADDR, MASTER_PORT: 마스터 노드 정보
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="분산 학습 활성화 (True: 멀티 GPU, False: 단일 GPU)"
+    )
+
+    backend: Literal["nccl", "gloo", "auto"] = Field(
+        default="auto",
+        description="분산 통신 백엔드 (nccl: GPU, gloo: CPU, auto: 자동감지)"
+    )
+
+    init_method: str = Field(
+        default="env://",
+        description="분산 초기화 방법 (env:// 권장, torchrun 환경변수 사용)"
+    )
+
+    timeout: int = Field(
+        default=1800,
+        description="분산 통신 타임아웃 (초, NCCL 기본값)"
+    )
+
+    find_unused_parameters: bool = Field(
+        default=False,
+        description="사용되지 않는 파라미터 검색 (FSDP 환경에서 False 권장)"
+    )
+
+    @field_validator("backend")
+    @classmethod
+    def validate_backend(cls, v: str) -> str:
+        """분산 백엔드 호환성 검증."""
+        if v == "auto":
+            # 런타임에 자동 감지: cuda 사용가능하면 nccl, 아니면 gloo
+            return v
+        elif v == "nccl":
+            # NVIDIA GPU 전용, 가장 빠른 통신
+            return v
+        elif v == "gloo":
+            # CPU/GPU 범용, 느리지만 안정적
+            return v
+        else:
+            raise ValueError(f"지원하지 않는 백엔드: {v}. nccl, gloo, auto 중 선택")
+
+
 class FSDPConfig(BaseModel):
     """FSDP(Fully Sharded Data Parallel) 설정.
 
@@ -629,6 +683,13 @@ class Devices(BaseModel):
     mixed_precision: Literal["bf16", "fp16", "fp32"] = Field(
         default="bf16", description="혼합 정밀도 모드"
     )
+
+    # 🆕 분산 학습 설정 추가
+    distributed: DistributedConfig = Field(
+        default_factory=DistributedConfig,
+        description="분산 학습 설정"
+    )
+
     fsdp: FSDPConfig = Field(default_factory=FSDPConfig)
 
     @field_validator("mixed_precision")
@@ -718,6 +779,18 @@ class Devices(BaseModel):
             print("정보: CPU 모드에서는 fp32 정밀도를 사용합니다.")
             self.mixed_precision = "fp32"
 
+        # 🆕 분산 설정과 FSDP 설정 간 일관성 검증
+        from rich.console import Console
+        console = Console()
+
+        # 분산이 활성화되지 않으면 FSDP도 단일 GPU 모드로 조정
+        if not self.distributed.enabled and self.fsdp.enabled:
+            console.print("[yellow]단일 GPU 환경에서 FSDP는 효과가 제한적입니다.[/yellow]")
+
+        # FSDP가 활성화되면 분산도 활성화하는 것이 일반적
+        if self.fsdp.enabled and not self.distributed.enabled:
+            console.print("[yellow]FSDP 사용 시 분산 학습을 함께 활성화하는 것을 권장합니다.[/yellow]")
+
         return self
 
 
@@ -769,11 +842,20 @@ class Config(BaseModel):
 
     project: str = Field(default="mtp_ft", description="프로젝트 이름")
     seed: int = Field(default=42, description="재현성을 위한 난수 시드")
-    storage: Storage = Field(..., description="스토리지 설정")
+    s3_auth: S3AuthConfig | None = Field(
+        default=None,
+        description="S3 인증 설정 (S3 경로 사용 시 필요)"
+    )
     paths: Paths = Field(default_factory=Paths, description="경로 설정")
     mlflow: MLflow = Field(..., description="MLflow 설정")
     launcher: Launcher = Field(..., description="런처 설정")
     devices: Devices = Field(default_factory=Devices, description="디바이스 설정")
+
+    # 하위 호환성을 위한 storage 필드 (deprecated)
+    storage: Any | None = Field(
+        default=None,
+        description="[Deprecated] Phase 2에서 제거됨. s3_auth와 경로 프로토콜 사용"
+    )
 
     model_config = ConfigDict(
         extra="forbid",  # 정의되지 않은 필드 금지 (오타 방지)

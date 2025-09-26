@@ -39,12 +39,15 @@ def compute_weighted_mtp_loss(
     head_weights: torch.Tensor,  # [B, S, H] - 새로운 헤드별 가중치!
     horizon: int,
     ignore_index: int = -100,
+    selection_mask: torch.Tensor = None,  # [B, S, H] - 토큰 선택 마스크 (token_skip mode용)
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     연구제안서 정확 구현: L_WMTP = Σ(k=0 to H-1) w_{t+k} × CE_k
 
     각 헤드별 CE에 해당 헤드의 가중치를 직접 적용하여
     토큰 중요도가 손실에 정확히 반영되도록 함.
+    
+    Token skip mode에서는 selection_mask가 0인 토큰들을 손실 계산에서 완전히 제외.
 
     Args:
         logits: [batch, seq_len, horizon, vocab] - MTP 모델 출력
@@ -52,6 +55,7 @@ def compute_weighted_mtp_loss(
         head_weights: [batch, seq_len, horizon] - 헤드별 가중치 매트릭스
         horizon: 예측 헤드 수 (4)
         ignore_index: 무시할 라벨 값
+        selection_mask: [batch, seq_len, horizon] - 토큰 선택 마스크 (None이면 모두 1로 간주)
 
     Returns:
         weighted_loss: 가중 평균 손실 (scalar)
@@ -94,6 +98,16 @@ def compute_weighted_mtp_loss(
 
     device = logits.device
     dtype = logits.dtype
+    
+    # selection_mask가 없으면 모두 1로 초기화
+    if selection_mask is None:
+        selection_mask = torch.ones((bsz, seqlen, H), device=device, dtype=dtype)
+    else:
+        # selection_mask 형태 검증
+        if selection_mask.shape != (bsz, seqlen, H):
+            raise ValueError(
+                f"selection_mask shape mismatch: expected {(bsz, seqlen, H)}, got {selection_mask.shape}"
+            )
 
     # 헤드별 가중 CE 누적용
     weighted_ce_sum = torch.zeros((bsz, seqlen), device=device, dtype=dtype)
@@ -113,6 +127,7 @@ def compute_weighted_mtp_loss(
         logits_k = logits[:, :valid_len, k, :]  # [B, valid_len, V]
         labels_k = target_ids[:, shift : shift + valid_len]  # [B, valid_len]
         weights_k = head_weights[:, :valid_len, k]  # [B, valid_len]
+        mask_k = selection_mask[:, :valid_len, k]  # [B, valid_len] - 토큰 선택 마스크
 
         # 헤드별 CE 계산
         ce_k = F.cross_entropy(
@@ -124,13 +139,16 @@ def compute_weighted_mtp_loss(
 
         # 유효 위치 마스킹 (ignore_index 제외)
         valid_k_mask = (labels_k != ignore_index).to(dtype)  # [B, valid_len]
+        
+        # Token skip mask 적용 (selection_mask가 0인 토큰은 완전 제외)
+        combined_mask = valid_k_mask * mask_k  # [B, valid_len]
 
         # Rho-1을 위한 헤드별 CE 저장 (마스킹 적용)
-        ce_per_head[:, :valid_len, k] = ce_k * valid_k_mask
+        ce_per_head[:, :valid_len, k] = ce_k * combined_mask
 
-        # 가중 CE: w_{t+k} × CE_k (연구제안서 공식!)
-        weighted_ce_k = weights_k * ce_k * valid_k_mask  # [B, valid_len]
-        effective_weights_k = weights_k * valid_k_mask  # [B, valid_len]
+        # 가중 CE: w_{t+k} × CE_k (연구제안서 공식!) + selection mask 적용
+        weighted_ce_k = weights_k * ce_k * combined_mask  # [B, valid_len]
+        effective_weights_k = weights_k * combined_mask  # [B, valid_len]
 
         # 전체 시퀀스에 누적 ([B, S] 형태로 맞춤)
         weighted_ce_sum[:, :valid_len] += weighted_ce_k

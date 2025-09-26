@@ -1,18 +1,19 @@
-# M3 Test Recipe - Critic WMTP Algorithm
-# Value function based dynamic weighting for Multi-Token Prediction
+# M3 Test Recipe - Rho1 WMTP Algorithm (Token Skip Mode)
+# Reference CE comparison based dynamic weighting for Multi-Token Prediction
 
 # Run metadata
 run:
-  name: "m3_test_critic_wmtp"
+  name: "m3_test_rho1_tokenskip"
   tags:
     - "test"
     - "m3"
-    - "critic"
+    - "rho1"
+    - "token_skip"
     - "wmtp"
 
 # Training configuration
 train:
-  algo: "critic-wmtp"  # Value-based dynamic weighting
+  algo: "rho1-wmtp"  # Reference CE comparison based weighting
   full_finetune: true
   max_steps: 10
   checkpointing:
@@ -37,38 +38,27 @@ data:
     max_length: 128
     batch_size: 1
     pack_sequences: false
+    num_workers: 4
   eval:
     sources: ["mbpp"]
     max_length: 128
     batch_size: 1
     pack_sequences: false
+    num_workers: 4
 
-# Loss configuration - critic settings
+# Loss configuration (Phase 1 integration)
 loss:
   weight_norm: "mean1.0_clip"
   lambda: 0.3
-  weight_temperature: 0.7
+  weight_temperature: 0.7  # Weight softmax temperature (formerly temperature)
   epsilon: 0.05
   max_weight: 3.0
 
-# Critic-specific configuration
-critic:
-  # Phase 2.2: Clean loss structure (main loss always 1.0)
-  auxiliary_loss_coef: 0.1
-  value_lr: 5e-5
-  use_pseudo_rewards: true
-
-  # Phase 2.1: TD error discount (previously hardcoded)
-  discount_lambda: 0.95  # Short-term discount for delta computation
-  # GAE parameters
-  gamma: 0.99           # Long-term reward discount
-  gae_lambda: 0.95      # GAE lambda parameter
-
-  # Other parameters
-  target: "rm_sequence"
-  token_spread: "gae"
-  delta_mode: "td"
-  normalize: "zscore"
+# Rho-1 specific configuration (Token Skip Mode)
+rho1:
+  selection_mode: "token_skip"
+  skip_threshold_percentile: 0.3  # Drop bottom 30% tokens
+  min_ce_diff: 0.01  # Phase 1.2: CE difference threshold for noise filtering
 
 # Evaluation configuration
 eval:

@@ -3,23 +3,30 @@
 
 # Run metadata
 run:
-  name: "prod_rho1_wmtp"
+  name: "prod_rho1_weighted"
   tags:
     - "production"
     - "vessl"
     - "rho1"
+    - "weighted"
     - "wmtp"
     - "a100"
     - "reference-ce"
 
-# Model configuration
-model:
-  base_id: "mtp-7b-1t-4"  # Facebook MTP 7B model
-  tokenizer_type: "hf"
-  tokenizer_pad_side: "right"
-  mtp:
-    n_heads: 4
-    horizon: 4
+# Data configuration
+data:
+  train:
+    sources: ["mbpp", "contest"]
+    max_length: 2048
+    batch_size: 4  # Per GPU: 4 x 2 = 8 total
+    pack_sequences: true
+    num_workers: 8
+  eval:
+    sources: ["mbpp", "humaneval"]
+    max_length: 2048
+    batch_size: 4
+    pack_sequences: false
+    num_workers: 4
 
 # Training configuration
 train:
@@ -43,32 +50,19 @@ optim:
   scheduler: "cosine"
   warmup_ratio: 0.03
 
-# Data configuration
-data:
-  train:
-    sources: ["mbpp", "contest"]
-    max_length: 2048
-    batch_size: 4  # Per GPU: 4 x 2 = 8 total
-    pack_sequences: true
-    num_workers: 8
-  eval:
-    sources: ["mbpp", "humaneval"]
-    max_length: 2048
-    batch_size: 4
-    pack_sequences: false
-    num_workers: 4
-
-# Loss configuration - rho1 with reference comparison
+# Loss configuration (Phase 1 integration)
 loss:
-  weight_norm: "softmax"
-  lambda: 0.01
-  temperature: 1.0
-  epsilon: 1.0e-8
-  max_weight: 10.0
-  # Rho1 specific parameters
-  rho_alpha: 0.1    # Weight for reference CE difference
-  rho_beta: 1.0     # Scale factor for CE difference
-  min_ce_diff: 0.01 # Minimum CE difference threshold
+  weight_norm: "mean1.0_clip"
+  lambda: 0.3
+  weight_temperature: 0.7  # Weight softmax temperature (used in Rho1 weighted mode)
+  epsilon: 0.05
+  max_weight: 3.0
+
+# Rho-1 specific configuration (Weighted Mode)
+rho1:
+  selection_mode: "weighted"  # Continuous weights for all tokens
+  skip_threshold_percentile: 0.3  # Token skip 임계값 (weighted mode에서는 참고용)
+  min_ce_diff: 0.01  # Phase 1.2: CE difference threshold for noise filtering
 
 # Evaluation configuration
 eval:

@@ -37,7 +37,7 @@ WMTP 실험 시나리오:
 - 에러 핸들링 및 로깅 표준화
 """
 
-import hashlib
+# hashlib import 제거됨 - compute_file_hash 함수 삭제로 불필요
 import io
 import json
 from collections.abc import Iterator
@@ -52,105 +52,8 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 console = Console()
 
 
-class S3Utils:
-    """
-    WMTP 로더를 위한 간소화된 S3 유틸리티 래퍼입니다.
-
-    연구 진행 편의성:
-    복잡한 S3 조작을 간단한 메서드 호출로 추상화하여,
-    WMTP 연구자가 클러스터 인프라 대신 알고리즘 개발에 집중할 수 있게 합니다.
-
-    주요 기능:
-    - download_model(): S3에서 모델 자동 다운로드
-    - upload_checkpoint(): 학습된 모델 중앙 저장
-    - sync_dataset(): 데이터셋 동기화
-    - 메모리 기반 직접 스트리밍
-
-    기본 설정:
-    - 버킷: wmtp-models (WMTP 연구 전용)
-    - 리전: ap-northeast-2 (서울, 낮은 레이턴시)
-    - 스트리밍: 메모리 직접 로드 (캐시 없음)
-
-    사용 예시:
-    >>> s3 = S3Utils()
-    >>> model_path = s3.download_model("s3://wmtp-models/facebook-mtp/consolidated.pth")
-    >>> print(f"Model loaded from: {model_path}")
-    """
-
-    def __init__(self, bucket: str = "wmtp-models", region: str = "ap-northeast-2"):
-        """Initialize S3 utilities with default WMTP bucket."""
-        self.manager = S3Manager(bucket=bucket, region=region)
-
-    def download_model(self, s3_path: str) -> io.BytesIO:
-        """Download model from S3 path like s3://bucket/path/to/model."""
-        if not s3_path.startswith("s3://"):
-            raise ValueError(f"Invalid S3 path: {s3_path}")
-
-        # Parse S3 path
-        parts = s3_path[5:].split("/", 1)
-        bucket = parts[0]
-        key = parts[1] if len(parts) > 1 else ""
-
-        # Update manager if different bucket
-        if bucket != self.manager.bucket:
-            self.manager = S3Manager(bucket=bucket, region=self.manager.region)
-
-        # Determine local path
-        # S3에서 메모리로 직접 스트리밍 (캐시 없음)
-        return self.manager.stream_model(key)
-
-    def download_dataset(self, s3_path: str) -> Iterator[dict]:
-        """Download dataset from S3 path."""
-        if not s3_path.startswith("s3://"):
-            raise ValueError(f"Invalid S3 path: {s3_path}")
-
-        # Parse S3 path
-        parts = s3_path[5:].split("/", 1)
-        bucket = parts[0]
-        key = parts[1] if len(parts) > 1 else ""
-
-        # Update manager if different bucket
-        if bucket != self.manager.bucket:
-            self.manager = S3Manager(bucket=bucket, region=self.manager.region)
-
-        # Determine local path
-        # S3에서 메모리로 직접 스트리밍 (캐시 없음)
-        for sample in self.manager.stream_dataset(key):
-            yield sample
-
-    def download_checkpoint(self, s3_path: str) -> io.BytesIO:
-        """Download checkpoint from S3 path."""
-        if not s3_path.startswith("s3://"):
-            raise ValueError(f"Invalid S3 path: {s3_path}")
-
-        # Parse S3 path
-        parts = s3_path[5:].split("/", 1)
-        bucket = parts[0]
-        key = parts[1] if len(parts) > 1 else ""
-
-        # Update manager if different bucket
-        if bucket != self.manager.bucket:
-            self.manager = S3Manager(bucket=bucket, region=self.manager.region)
-
-        # Determine local path
-        # S3에서 메모리로 직접 스트리밍 (캐시 없음)
-        return self.manager.stream_model(key)
-
-    def upload_checkpoint(self, local_path: Path, s3_path: str) -> None:
-        """Upload checkpoint to S3."""
-        if not s3_path.startswith("s3://"):
-            raise ValueError(f"Invalid S3 path: {s3_path}")
-
-        # Parse S3 path
-        parts = s3_path[5:].split("/", 1)
-        bucket = parts[0]
-        key = parts[1] if len(parts) > 1 else ""
-
-        # Update manager if different bucket
-        if bucket != self.manager.bucket:
-            self.manager = S3Manager(bucket=bucket, region=self.manager.region)
-
-        self.manager.upload_file(str(local_path), key)
+# S3Utils 클래스 제거됨 - 실제로 사용되지 않음
+# 모든 로더는 S3Manager를 직접 사용하여 중간 레이어 불필요
 
 
 class S3Manager:
@@ -180,23 +83,14 @@ class S3Manager:
 
         try:
             self.s3_client = boto3.client("s3", region_name=region)
-            self._test_connection()
+            # 간단한 연결 테스트
+            self.s3_client.head_bucket(Bucket=self.bucket)
             self.connected = True
         except (NoCredentialsError, ClientError) as e:
             console.print(f"[yellow]Warning: S3 not available: {e}[/yellow]")
             self.connected = False
             self.s3_client = None
 
-    def _test_connection(self) -> None:
-        """Test S3 connection by listing bucket."""
-        try:
-            self.s3_client.head_bucket(Bucket=self.bucket)
-        except ClientError as e:
-            error_code = e.response["Error"]["Code"]
-            if error_code == "404":
-                raise ValueError(f"Bucket '{self.bucket}' not found")
-            else:
-                raise
 
 
     def upload_from_bytes(
@@ -424,126 +318,26 @@ class S3Manager:
         except ClientError:
             return False
 
-    def list_objects(
-        self,
-        prefix: str = "",
-        recursive: bool = True,
-    ) -> list[str]:
-        """
-        List objects in S3.
 
-        Args:
-            prefix: Key prefix to filter
-            recursive: List recursively
 
-        Returns:
-            List of S3 keys
-        """
-        if not self.connected:
-            return []
-
-        full_prefix = f"{self.prefix}/{prefix}" if self.prefix else prefix
-
-        try:
-            paginator = self.s3_client.get_paginator("list_objects_v2")
-            pages = paginator.paginate(
-                Bucket=self.bucket,
-                Prefix=full_prefix,
-            )
-
-            keys = []
-            for page in pages:
-                if "Contents" in page:
-                    for obj in page["Contents"]:
-                        key = obj["Key"]
-                        # Remove the base prefix if present
-                        if self.prefix and key.startswith(self.prefix + "/"):
-                            key = key[len(self.prefix) + 1 :]
-                        keys.append(key)
-
-            if not recursive:
-                # Filter to only immediate children
-                keys = [k for k in keys if "/" not in k[len(prefix) :].lstrip("/")]
-
-            return keys
-
-        except ClientError as e:
-            console.print(f"[red]Failed to list S3 objects: {e}[/red]")
-            return []
-
-    def get_etag(self, s3_key: str) -> str | None:
-        """
-        Get ETag for S3 object (for version checking).
-
-        Args:
-            s3_key: S3 object key
-
-        Returns:
-            ETag string or None
-        """
-        if not self.connected:
-            return None
-
-        full_key = f"{self.prefix}/{s3_key}" if self.prefix else s3_key
-
-        try:
-            response = self.s3_client.head_object(Bucket=self.bucket, Key=full_key)
-            return response.get("ETag", "").strip('"')
-        except ClientError:
-            return None
-
-    def sync_directory(
-        self,
-        local_dir: str | Path,
-        s3_prefix: str,
-        direction: str = "download",
-    ) -> None:
-        """
-        Sync entire directory with S3.
-
-        Args:
-            local_dir: Local directory path
-            s3_prefix: S3 key prefix
-            direction: 'download' or 'upload'
-        """
-        if not self.connected:
-            raise RuntimeError("S3 not connected. Cannot sync.")
-
-        local_dir = Path(local_dir)
-
-        if direction == "download":
-            # List all objects with prefix
-            objects = self.list_objects(s3_prefix)
-
-            for s3_key in objects:
-                # Reconstruct local path
-                relative_path = s3_key[len(s3_prefix) :].lstrip("/")
-                local_path = local_dir / relative_path
-
-                # Download if missing
-                self.download_if_missing(s3_key, local_path)
-
-        elif direction == "upload":
-            # Walk local directory
-            for local_path in local_dir.rglob("*"):
-                if local_path.is_file():
-                    # Construct S3 key
-                    relative_path = local_path.relative_to(local_dir)
-                    s3_key = f"{s3_prefix}/{relative_path}".replace("\\", "/")
-
-                    # Upload file
-                    self.upload_artifact(local_path, s3_key)
-
-        else:
-            raise ValueError(
-                f"Invalid direction: {direction}. Use 'download' or 'upload'"
-            )
 
 
 
 def create_s3_manager(config: dict[str, Any]) -> S3Manager | None:
     """
-    Create S3 manager from configuration.
+    Phase 2 리팩토링: S3 매니저 생성 (storage 의존성 제거)
+
+    기존 storage 설정 방식:
+        storage:
+          mode: s3  # 또는 auto
+          s3:
+            bucket: wmtp
+            region: ap-northeast-2
+
+    새로운 방식:
+        s3_auth:
+          default_bucket: wmtp
+          region: ap-northeast-2
 
     Args:
         config: Configuration dictionary with S3 settings
@@ -551,75 +345,47 @@ def create_s3_manager(config: dict[str, Any]) -> S3Manager | None:
     Returns:
         S3Manager instance or None if not configured
     """
-    storage_mode = config.get("storage", {}).get("mode")
-
-    # auto 모드일 때도 S3Manager 생성 (PathResolver가 경로를 판별)
-    if storage_mode not in ["s3", "auto"]:
-        return None
-
-    s3_config = config.get("storage", {}).get("s3", {})
-    if not s3_config:
-        console.print(
-            "[yellow]Warning: S3 mode selected but no S3 config found[/yellow]"
+    # Phase 2: 새로운 s3_auth 방식 우선 사용
+    if "s3_auth" in config:
+        s3_auth = config["s3_auth"]
+        return S3Manager(
+            bucket=s3_auth.get("default_bucket"),
+            region=s3_auth.get("region", "ap-northeast-2"),
+            prefix="",  # 새 방식에서는 prefix 사용 안 함
         )
-        return None
 
-    return S3Manager(
-        bucket=s3_config.get("bucket"),
-        region=s3_config.get("region", "ap-northeast-2"),
-        prefix=s3_config.get("prefix", ""),
-    )
+    # 하위 호환성: 기존 storage 방식 지원
+    storage = config.get("storage", {})
+    if isinstance(storage, dict):
+        storage_mode = storage.get("mode")
 
+        # auto 모드일 때도 S3Manager 생성 (PathResolver가 경로를 판별)
+        if storage_mode not in ["s3", "auto"]:
+            return None
 
-def compute_file_hash(file_path: str | Path, algorithm: str = "md5") -> str:
-    """
-    Compute hash of file for integrity validation.
+        s3_config = storage.get("s3", {})
+        if not s3_config:
+            console.print(
+                "[yellow]Warning: S3 mode selected but no S3 config found[/yellow]"
+            )
+            return None
 
-    Args:
-        file_path: Path to file
-        algorithm: Hash algorithm ('md5' or 'sha256')
+        return S3Manager(
+            bucket=s3_config.get("bucket"),
+            region=s3_config.get("region", "ap-northeast-2"),
+            prefix=s3_config.get("prefix", ""),
+        )
 
-    Returns:
-        Hex digest string
-    """
-    file_path = Path(file_path)
-
-    if not file_path.exists():
-        raise FileNotFoundError(f"File not found: {file_path}")
-
-    hasher = hashlib.md5() if algorithm == "md5" else hashlib.sha256()
-
-    with open(file_path, "rb") as f:
-        while chunk := f.read(8192):
-            hasher.update(chunk)
-
-    return hasher.hexdigest()
+    # S3 설정이 없으면 None 반환
+    return None
 
 
-def ensure_s3_uri(path_or_uri: str, bucket: str, prefix: str = "") -> str:
-    """
-    Ensure path is formatted as S3 URI.
 
-    Args:
-        path_or_uri: Path or S3 URI
-        bucket: S3 bucket name
-        prefix: S3 prefix
 
-    Returns:
-        S3 URI string
-    """
-    if path_or_uri.startswith("s3://"):
-        return path_or_uri
-
-    # Construct S3 URI
-    key = f"{prefix}/{path_or_uri}" if prefix else path_or_uri
-    return f"s3://{bucket}/{key}"
 
 
 # Export main functions
 __all__ = [
     "S3Manager",
     "create_s3_manager",
-    "compute_file_hash",
-    "ensure_s3_uri",
 ]

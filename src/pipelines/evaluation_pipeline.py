@@ -198,11 +198,13 @@ def run_evaluation_pipeline(
         console.print(f"[green]✓ {eval_type} 평가 완료[/green]")
 
     # Step 8: MLflow 파라미터 기록
+    # Phase 3: recipe.model 제거됨 - MTP_CONFIG 사용
+    from src.factory.component_factory import MTP_CONFIG
     mlflow.log_params({
         "checkpoint": str(checkpoint_path),
         "algorithm": recipe.train.algo,
-        "model_id": recipe.model.base_id,
-        "mtp_heads": recipe.model.mtp.n_heads,
+        "mtp_heads": MTP_CONFIG["n_heads"],  # 고정값 4
+        "mtp_horizon": MTP_CONFIG["horizon"],  # 고정값 4
         "eval_protocol": recipe.eval.protocol,
         "eval_types": ",".join(eval_types)
     })

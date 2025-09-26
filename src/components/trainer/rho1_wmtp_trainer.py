@@ -82,12 +82,34 @@ class Rho1WmtpTrainer(BaseWmtpTrainer):
                 "Please provide a reference model for CE comparison."
             )
 
-        # Temperature 파라미터 (softmax 온도)
-        self.temperature = float(self.config.get("temperature", 0.7))
+        # Recipe 기반 설정 로드 (Factory에서 전달)
+        self.rho1_cfg = self.config.get("rho1_config", {})
+        
+        # Dual mode 파라미터 로드 
+        self.selection_mode = self.rho1_cfg.get("selection_mode", "weighted")
+        self.skip_threshold_pct = float(self.rho1_cfg.get("skip_threshold_percentile", 0.3))
+        
+        # Weight softmax temperature (weighted mode에서 사용)
+        # Backward compatibility: temperature → weight_temperature
+        self.temperature = float(
+            self.loss_cfg.get("weight_temperature") or
+            self.loss_cfg.get("temperature", 0.7)
+        )
         if self.temperature <= 0:
-            raise ValueError(f"Temperature must be positive, got {self.temperature}")
+            raise ValueError(f"Weight temperature must be positive, got {self.temperature}")
+            
+        # Phase 1.2: CE Difference Threshold 파라미터 (노이즈 필터링)
+        self.min_ce_diff = float(self.rho1_cfg.get("min_ce_diff", 0.01))
+        if self.min_ce_diff < 0:
+            raise ValueError(f"min_ce_diff must be non-negative, got {self.min_ce_diff}")
 
-        console.print(f"[green]Rho-1 WMTP initialized with temperature={self.temperature}[/green]")
+        console.print(f"[green]Rho-1 WMTP initialized:[/green]")
+        console.print(f"  Mode: {self.selection_mode}")
+        if self.selection_mode == "token_skip":
+            console.print(f"  Skip threshold: {self.skip_threshold_pct:.1%} (bottom)")
+        else:
+            console.print(f"  Weight temperature: {self.temperature}")
+        console.print(f"  Min CE diff threshold: {self.min_ce_diff}")
 
     def compute_reference_ce(self, input_ids: torch.Tensor, target_ids: torch.Tensor) -> torch.Tensor:
         """효율적 Reference CE 계산 (한 번의 forward pass).
@@ -161,7 +183,7 @@ class Rho1WmtpTrainer(BaseWmtpTrainer):
 
         return aligned_ref_ce
 
-    def compute_head_weights(self, logits: torch.Tensor, target_ids: torch.Tensor, ce_per_head: torch.Tensor, **kwargs) -> torch.Tensor:
+    def compute_head_weights(self, logits: torch.Tensor, target_ids: torch.Tensor, ce_per_head: torch.Tensor, **kwargs) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         """Rho-1 방식: |CE^ref - CE^base| 기반 가중치 계산.
 
         Reference 모델과 Base 모델의 CE 차이를 계산하여 토큰 중요도를 측정하고,
@@ -174,7 +196,8 @@ class Rho1WmtpTrainer(BaseWmtpTrainer):
             **kwargs: input_ids 등 추가 정보
 
         Returns:
-            head_weights: Rho-1 기반 가중치 [B, S, H]
+            - Weighted mode: head_weights만 반환 [B, S, H]
+            - Token skip mode: (head_weights, selection_mask) 튜플 반환
 
         Raises:
             ValueError: input_ids가 제공되지 않은 경우
@@ -196,12 +219,117 @@ class Rho1WmtpTrainer(BaseWmtpTrainer):
         # 3. Excess loss 계산: |CE^ref - CE^base|
         # 큰 차이 = 두 모델 모두 어려워함 = 중요한 토큰
         excess_loss = torch.abs(ce_per_head - aligned_ref_ce)  # [B, S, H]
+        
+        # Phase 1.2: CE Difference Threshold 적용 (노이즈 필터링)
+        excess_loss = self._apply_ce_threshold(excess_loss)
 
-        # 4. Rho-1 가중치 변환 (softmax with temperature)
-        # 각 위치에서 헤드별 excess loss를 가중치로 변환
+        # 4. Selection mode에 따라 분기
+        if self.selection_mode == "token_skip":
+            return self._compute_token_skip_weights(excess_loss)
+        else:
+            return self._compute_weighted_weights(excess_loss)
+
+    def _compute_token_skip_weights(
+        self, 
+        excess_loss: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Rho-1 Original: 상위 토큰만 선택, 나머지 제외.
+        
+        Args:
+            excess_loss: [B, S, H] - 각 토큰-헤드의 excess loss
+            
+        Returns:
+            head_weights: [B, S, H] - 선택된 토큰은 1.0, 제외는 0.0
+            selection_mask: [B, S, H] - 동일 (바이너리 마스크)
+        """
+        B, S, H = excess_loss.shape
+        
+        # 배치별로 threshold 계산
+        flat_loss = excess_loss.view(B, -1)  # [B, S*H]
+        
+        # 하위 k% percentile 값 구하기
+        k_threshold = torch.quantile(
+            flat_loss, 
+            self.skip_threshold_pct,  # 하위 30% 기본값
+            dim=1, 
+            keepdim=True
+        ).view(B, 1, 1)  # [B, 1, 1]
+        
+        # 임계값 이상인 토큰만 선택 (binary mask)
+        selection_mask = (excess_loss >= k_threshold).float()  # [B, S, H]
+        
+        # 선택된 토큰에만 균등 가중치 부여
+        head_weights = selection_mask.clone()
+        
+        # 통계 로깅
+        selected_ratio = selection_mask.mean()
+        console.print(f"[cyan]Token Skip: {selected_ratio:.1%} tokens selected[/cyan]")
+        
+        return head_weights, selection_mask
+    
+    def _compute_weighted_weights(
+        self, 
+        excess_loss: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        WMTP: 모든 토큰에 연속적 가중치 적용 (기존 방식).
+        
+        Args:
+            excess_loss: [B, S, H] - 각 토큰-헤드의 excess loss
+            
+        Returns:
+            weights: [B, S, H] - Softmax 가중치
+        """
+        # Softmax로 연속적 가중치 계산
         weights = F.softmax(excess_loss / self.temperature, dim=-1)  # [B, S, H]
-
-        return weights
+        
+        # 통계 로깅
+        weight_std = weights.std()
+        console.print(f"[cyan]Weighted: std={weight_std:.3f}[/cyan]")
+        
+        return weights  # selection_mask 없이 weights만 반환
+    
+    def _apply_ce_threshold(self, excess_loss: torch.Tensor) -> torch.Tensor:
+        """
+        Phase 1.2: CE Difference Threshold 적용 - 노이즈 필터링.
+        
+        너무 작은 CE 차이는 노이즈로 간주하고 0으로 처리하여
+        가중치 계산에서 제외합니다.
+        
+        Args:
+            excess_loss: [B, S, H] - 원본 excess loss 값
+            
+        Returns:
+            filtered_excess_loss: [B, S, H] - threshold 적용된 excess loss
+        """
+        if self.min_ce_diff <= 0:
+            return excess_loss  # threshold 비활성화 시 원본 값 반환
+            
+        # Threshold 적용: min_ce_diff 미만은 0으로 처리
+        filtered_loss = torch.where(
+            excess_loss >= self.min_ce_diff,
+            excess_loss,
+            torch.zeros_like(excess_loss)
+        )
+        
+        # Edge case 처리: 모든 값이 threshold 미만인 경우
+        B, S, H = filtered_loss.shape
+        
+        # 배치별로 처리
+        for b in range(B):
+            batch_loss = filtered_loss[b]  # [S, H]
+            
+            # 유효한 값이 하나라도 있는지 확인
+            if torch.all(batch_loss == 0):
+                # 모든 값이 0이면 uniform weight fallback
+                console.print(
+                    f"[yellow]⚠️ Batch {b}: All excess_loss < {self.min_ce_diff}, using uniform weights[/yellow]"
+                )
+                # 균등 가중치로 대체 (1/H 대신 1.0 사용 - softmax에서 정규화됨)
+                filtered_loss[b] = torch.ones_like(batch_loss)
+        
+        return filtered_loss
 
     def train_step(self, batch: dict[str, Any]) -> dict[str, Any]:
         """Rho-1 WMTP 훈련 스텝 - Reference CE 비교 기반 동적 가중치 WMTP 손실 계산.
@@ -270,15 +398,23 @@ class Rho1WmtpTrainer(BaseWmtpTrainer):
             )
 
             # 🎯 단계 2: Rho-1 가중치 계산 (Reference CE 비교)
-            head_weights = self.compute_head_weights(
+            result = self.compute_head_weights(
                 logits, target_ids, ce_per_head, input_ids=input_ids
             )
+            
+            # 반환값 타입에 따라 처리
+            if isinstance(result, tuple):
+                head_weights, selection_mask = result
+            else:
+                head_weights = result
+                selection_mask = None  # Weighted mode
 
             # 🎯 단계 3: 최종 가중 WMTP 손실 계산
             weighted_loss, valid_mask, ce_per_head = compute_weighted_mtp_loss(
                 logits=logits,  # [B, S, H, V]
                 target_ids=target_ids,  # [B, S]
                 head_weights=head_weights,  # [B, S, H] - Rho-1 가중치
+                selection_mask=selection_mask,  # [B, S, H] - Token skip mask (새로 추가)
                 horizon=self.horizon,
                 ignore_index=-100,
             )

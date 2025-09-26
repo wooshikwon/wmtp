@@ -164,15 +164,18 @@ def train(
         if rcp.train.algo in algo_descriptions:
             console.print(f"[dim]{algo_descriptions[rcp.train.algo]}[/dim]")
 
+        # run_name과 tags를 recipe에 반영
+        if run_name:
+            rcp.run.name = run_name
+        if tag_list:
+            rcp.run.tags = tag_list
+
         # 통합 훈련 파이프라인 실행
         # 모든 WMTP 알고리즘이 동일한 파이프라인을 사용하되 다른 컴포넌트 조합
         outputs = run_training(
             cfg,  # 환경 설정
             rcp,  # 훈련 레시피
-            run_name=run_name,  # MLflow 실행 이름
-            tags=tag_list,  # 실험 분류 태그
             dry_run=dry_run,  # 검증 모드 여부
-            max_steps=10 if dry_run else None,  # 검증시 10스텝만 실행
             resume_checkpoint=resume,  # 체크포인트에서 재개
         )
 

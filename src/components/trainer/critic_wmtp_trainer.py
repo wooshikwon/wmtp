@@ -79,9 +79,12 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
         """
         super().__init__(config)
 
-        # Critic 특화 하이퍼파라미터
-        self.discount_lambda = self.config.get("discount_lambda", 0.95)  # TD error 할인율
-        self.temperature = self.config.get("temperature", 0.7)  # Softmax 온도
+        # Recipe 기반 설정 로드 (Factory에서 전달)
+        self.critic_cfg = self.config.get("critic_config", {})
+
+        # Phase 2.1: discount_lambda 파라미터 (Recipe에서)
+        self.discount_lambda = float(self.critic_cfg.get("discount_lambda", 0.95))  # TD error 할인율
+        # self.temperature는 setup()에서 설정
 
         # Value Head는 setup()에서 초기화
         self.value_head: nn.Module | None = None
@@ -93,6 +96,13 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
         Stage 1에서 사전학습된 Value Head를 Stage 2에서도 계속 학습합니다.
         """
         super().setup(ctx)
+
+        # Weight temperature 파라미터 설정 (Phase 1 통합: recipe.loss.weight_temperature에서)
+        # Backward compatibility: temperature → weight_temperature
+        self.temperature = float(
+            self.loss_cfg.get("weight_temperature") or
+            self.loss_cfg.get("temperature", 0.7)
+        )
 
         # RM model 저장 (Stage 2에서도 사용)
         self.rm_model = ctx.get("rm_model")  # Value loss 계산용
@@ -478,11 +488,11 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
                     returns[valid_mask.bool()]
                 )
 
-            # Total Loss
-            lambda_w = float(self.loss_cfg.get("lambda", 0.3))
-            value_coef = float(critic_config.get("value_coef", 0.1))
+            # Phase 2.2: Clean loss structure - main loss fixed at 1.0
+            auxiliary_coef = float(critic_config.get("auxiliary_loss_coef", 0.1))
 
-            loss = lambda_w * weighted_loss + value_coef * value_loss
+            # Main WMTP loss (1.0) + auxiliary value loss
+            loss = weighted_loss + auxiliary_coef * value_loss
 
         # 역전파 및 최적화
         loss.backward()

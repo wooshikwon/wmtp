@@ -1,20 +1,16 @@
-# MacBook M3 Test Configuration for Rho1 WMTP Algorithm
+# MacBook M3 Test Configuration for Critic WMTP Algorithm
 # Optimized for Apple Silicon with MPS (Metal Performance Shaders)
 
 # Project metadata
-project: "wmtp_m3_test_rho1"
+project: "wmtp_m3_test_critic"
 seed: 42
-
-# Storage configuration - local only for testing
-storage:
-  mode: "local"
 
 # Path configurations
 paths:
   models:
     base: "tests/tiny_models/distilgpt2"  # Tiny test model
-    # No RM needed for rho1
-    ref: "tests/tiny_models/distilgpt2"  # Reference model for Rho1 CE comparison
+    rm: "tests/tiny_models/tiny-reward-model"  # Tiny RM for value head training
+    ref: "tests/tiny_models/distilgpt2"  # Same for consistency
   datasets:
     mbpp: "tests/test_dataset/mbpp"
     contest: "tests/test_dataset/contest"
@@ -22,7 +18,7 @@ paths:
 
 # MLflow configuration - local tracking
 mlflow:
-  experiment: "wmtp/m3_test_rho1"
+  experiment: "wmtp/m3_test_critic"
   tracking_uri: "file:///tmp/mlflow_m3"
   registry_uri: "file:///tmp/mlflow_m3"
 
