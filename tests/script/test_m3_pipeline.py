@@ -416,13 +416,9 @@ def main():
             for issue in env_issues:
                 console.print(f"  • {issue}")
 
-            if (
-                not console.input("\n계속 진행하시겠습니까? [y/N]: ")
-                .lower()
-                .startswith("y")
-            ):
-                console.print("테스트 중단")
-                return
+            console.print(
+                "\n[yellow]환경 이슈가 있지만 자동으로 계속 진행합니다.[/yellow]"
+            )
 
     # 설정 파일 검증
     console.print("\n[bold]설정 파일 검증 중...[/bold]")
@@ -443,15 +439,11 @@ def main():
     mode_desc = "Dry-run 검증만" if args.dry_run else "Dry-run + 실제 학습"
     console.print(f"\n[cyan]🔧 테스트 모드: {mode_desc}[/cyan]")
 
-    # 사용자 확인
+    # 자동 실행 모드
     if not args.dry_run:
-        if (
-            not console.input("\n실제 학습을 포함한 테스트를 시작하시겠습니까? [y/N]: ")
-            .lower()
-            .startswith("y")
-        ):
-            console.print("테스트 중단")
-            return
+        console.print(
+            "\n[green]실제 학습을 포함한 테스트를 자동으로 시작합니다.[/green]"
+        )
 
     # 테스트 실행
     console.print("\n[bold green]🚀 테스트 시작![/bold green]")

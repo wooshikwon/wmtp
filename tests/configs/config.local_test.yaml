@@ -15,6 +15,11 @@ paths:
     mbpp: "file://tests/test_dataset/mbpp"
     contest: "file://tests/test_dataset/contest"
     humaneval: "file://tests/test_dataset/humaneval"
+  checkpoints:
+    base_path: "file://./test_checkpoints"  # Local test checkpoint storage
+    save_interval: 100                      # 체크포인트 저장 간격 늘림
+    keep_last: 1                           # 1개만 유지
+    save_final: false                      # 최종 모델 저장 비활성화
 
 # MLflow configuration - local tracking
 mlflow:

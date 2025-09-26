@@ -317,7 +317,7 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
         return returns
 
     def compute_head_weights(
-        self, logits: torch.Tensor, target_ids: torch.Tensor, **kwargs
+        self, logits: torch.Tensor, target_labels: torch.Tensor, **kwargs
     ) -> torch.Tensor:
         """Value Head를 사용한 직접 헤드 가중치 계산.
 
@@ -326,7 +326,7 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
 
         Args:
             logits: MTP 모델 출력 [B, S, H, V]
-            target_ids: 타겟 토큰 ID [B, S]
+            target_labels: 3D 타겟 라벨 [B, S, H] - MTPDataCollator 생성
             **kwargs: hidden_states 등 추가 정보
 
         Returns:
@@ -347,7 +347,7 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
                 "Ensure the model returns hidden states."
             )
 
-        B, S = target_ids.shape
+        B, S, H = target_labels.shape
 
         # Hidden states shape 검증
         if hidden_states.ndim != 3:
@@ -374,7 +374,8 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
                 values = values[:B, :S]
 
         # Valid mask 계산 (ignore_index=-100인 토큰 제외)
-        valid_mask = (target_ids != -100).float()
+        # 3D 라벨에서 2D 마스크 생성 (모든 헤드가 동일한 유효성 가정)
+        valid_mask = (target_labels[:, :, 0] != -100).float()  # [B, S]
 
         # 헤드별 가중치 계산
         head_weights = self._compute_head_weights_from_values(values, valid_mask)
@@ -408,7 +409,9 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
         }
 
         input_ids = batch["input_ids"]
-        target_ids: torch.Tensor = batch["labels"]  # [B, S]
+        target_labels: torch.Tensor = batch[
+            "labels"
+        ]  # [B, S, H] - MTPDataCollator 생성
         attention_mask = batch.get("attention_mask")
 
         # autocast 디바이스 타입 결정
@@ -442,26 +445,19 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
                 logits = logits.detach().requires_grad_(True)
 
             # hidden_states 추출 (CriticScorer에 필요)
-            hidden_states = None
-            try:
-                if isinstance(outputs, dict) and "hidden_states" in outputs:
-                    hs = outputs["hidden_states"]
-                    hidden_states = hs[-1] if isinstance(hs, (list, tuple)) else hs
-                elif hasattr(outputs, "hidden_states"):
-                    hs = outputs.hidden_states
-                    hidden_states = hs[-1] if isinstance(hs, (list, tuple)) else hs
-            except Exception:
-                pass
+            from src.utils.model_utils import extract_hidden_states
 
-            if hidden_states is None or hidden_states.ndim != 3:
+            try:
+                hidden_states = extract_hidden_states(outputs)
+            except ValueError as e:
                 raise RuntimeError(
-                    "CriticWmtpTrainer requires valid hidden_states [B,S,D] from model outputs. "
-                    "Ensure your model is configured to return hidden states."
+                    f"CriticWmtpTrainer requires valid hidden_states [B,S,D] from model outputs. "
+                    f"Error: {e}. Ensure your model is configured to return hidden states."
                 )
 
             # 🎯 Critic WMTP: 가치함수 델타 기반 동적 가중치 계산
             head_weights = self.compute_head_weights(
-                logits, target_ids, hidden_states=hidden_states
+                logits, target_labels, hidden_states=hidden_states
             )
 
             # Value prediction (gradient enabled for training)
@@ -470,12 +466,11 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
                 self.value_head(hidden_states.view(B * S, D)).view(B, S).squeeze(-1)
             )  # [B, S]
 
-            # WMTP 손실 계산 (BaseWmtpTrainer의 공통 함수 사용)
+            # WMTP 손실 계산 (간소화된 3D 라벨 기반)
             weighted_loss, valid_mask, ce_per_head = compute_weighted_mtp_loss(
                 logits=logits,  # [B, S, H, V]
-                target_ids=target_ids,  # [B, S]
+                target_labels=target_labels,  # [B, S, H] - MTPDataCollator 생성
                 head_weights=head_weights,  # [B, S, H] - 동적 가중치
-                horizon=self.horizon,
                 ignore_index=-100,
             )
 

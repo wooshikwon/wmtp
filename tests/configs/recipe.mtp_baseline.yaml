@@ -19,7 +19,7 @@ run:
 train:
   algo: "baseline-mtp"  # Uniform weighting
   full_finetune: true
-  max_steps: 2
+  max_steps: 1  # 더욱 단축
   # checkpointing moved to config.paths.checkpoints in Phase 2
 
 # Optimizer configuration

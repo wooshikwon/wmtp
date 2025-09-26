@@ -10,19 +10,18 @@ ModelLoader V2: 순차적이고 직관적인 모델 로더
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import tempfile
-import importlib.util
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 import torch
 from safetensors.torch import load_file
-from transformers import AutoConfig, AutoModelForCausalLM, AutoModel, BitsAndBytesConfig
+from transformers import AutoConfig, AutoModel, AutoModelForCausalLM, BitsAndBytesConfig
 
 from src.components.loader.base_loader import ModelLoader as BaseModelLoader
 from src.components.registry import loader_registry
-from src.utils.optimized_s3_transfer import OptimizedS3Transfer
 from src.utils.path_resolver import PathResolver
 from src.utils.s3 import create_s3_manager
 
@@ -89,13 +88,18 @@ class ModelLoader(BaseModelLoader):
         else:
             model = self.step4_load_huggingface_model(local_path, strategy)
 
-        print(f"✅ 모델 로딩 완료\n")
+        # Step 5: hidden_states 출력 설정 (Critic-WMTP 지원을 위해)
+        from src.utils.model_utils import ensure_output_hidden_states
+
+        ensure_output_hidden_states(model)
+
+        print("✅ 모델 로딩 완료\n")
         return model
 
     # ============= STEP 1: 메타데이터 로드 =============
-    def step1_load_metadata(self, model_path: str) -> Tuple[Dict, Optional[Path]]:
+    def step1_load_metadata(self, model_path: str) -> tuple[dict, Path | None]:
         """Step 1: 메타데이터를 로드하고 경로 타입 확인"""
-        print(f"  [1/4] 메타데이터 로드 중...")
+        print("  [1/4] 메타데이터 로드 중...")
 
         path_type, resolved = self.path_resolver.resolve(model_path)
         metadata = {}
@@ -120,16 +124,16 @@ class ModelLoader(BaseModelLoader):
 
     # ============= STEP 2: S3 다운로드 =============
     def step2_download_if_needed(
-        self, model_path: str, local_path: Optional[Path], metadata: Dict
+        self, model_path: str, local_path: Path | None, metadata: dict
     ) -> Path:
         """Step 2: S3 경로인 경우 필요한 파일들을 다운로드"""
         path_type, resolved = self.path_resolver.resolve(model_path)
 
         if path_type != "s3":
-            print(f"  [2/4] 로컬 모델 사용 (다운로드 스킵)")
+            print("  [2/4] 로컬 모델 사용 (다운로드 스킵)")
             return local_path
 
-        print(f"  [2/4] S3에서 모델 다운로드 중...")
+        print("  [2/4] S3에서 모델 다운로드 중...")
 
         # 임시 디렉토리에 다운로드
         temp_dir = tempfile.mkdtemp()
@@ -138,12 +142,10 @@ class ModelLoader(BaseModelLoader):
 
         # 필요한 파일 목록 결정
         strategy = metadata.get("loading_strategy", {})
-        required_files = strategy.get("required_files", [
-            "config.json",
-            "model.safetensors",
-            "modeling.py",
-            "metadata.json"
-        ])
+        required_files = strategy.get(
+            "required_files",
+            ["config.json", "model.safetensors", "modeling.py", "metadata.json"],
+        )
 
         # S3에서 다운로드
         bucket, key_prefix = self.path_resolver.extract_bucket_and_key(resolved)
@@ -153,9 +155,9 @@ class ModelLoader(BaseModelLoader):
         return local_path
 
     # ============= STEP 3: 전략 결정 =============
-    def step3_determine_strategy(self, metadata: Dict) -> Dict:
+    def step3_determine_strategy(self, metadata: dict) -> dict:
         """Step 3: 메타데이터를 기반으로 로딩 전략 결정"""
-        print(f"  [3/4] 로딩 전략 결정 중...")
+        print("  [3/4] 로딩 전략 결정 중...")
 
         strategy = metadata.get("loading_strategy", {})
 
@@ -167,9 +169,9 @@ class ModelLoader(BaseModelLoader):
         return strategy
 
     # ============= STEP 4: 모델 로드 =============
-    def step4_load_custom_model(self, local_path: Path, strategy: Dict) -> Any:
+    def step4_load_custom_model(self, local_path: Path, strategy: dict) -> Any:
         """Step 4-A: 커스텀 MTP 모델 로드"""
-        print(f"  [4/4] 커스텀 MTP 모델 로드 중...")
+        print("  [4/4] 커스텀 MTP 모델 로드 중...")
 
         # 4.1: modeling.py 동적 임포트
         module_file = strategy.get("custom_module_file", "modeling.py")
@@ -206,15 +208,22 @@ class ModelLoader(BaseModelLoader):
 
             model.load_state_dict(state_dict, strict=False)
 
+        # 4.5: Meta MTP 모델에 HuggingFace 호환성 패치 적용
+        if "llama" in str(local_path).lower() and hasattr(model, "forward"):
+            self._patch_meta_mtp_forward(model)
+            print("      → Meta MTP 모델에 HF 호환성 패치 적용 완료")
+
         return model
 
-    def step4_load_huggingface_model(self, local_path: Path, strategy: Dict) -> Any:
+    def step4_load_huggingface_model(self, local_path: Path, strategy: dict) -> Any:
         """Step 4-B: HuggingFace 모델 로드"""
-        print(f"  [4/4] HuggingFace 모델 로드 중...")
+        print("  [4/4] HuggingFace 모델 로드 중...")
 
         # 4.1: 모델 클래스 결정
         transformers_class = strategy.get("transformers_class", "AutoModelForCausalLM")
-        model_class = AutoModel if transformers_class == "AutoModel" else AutoModelForCausalLM
+        model_class = (
+            AutoModel if transformers_class == "AutoModel" else AutoModelForCausalLM
+        )
 
         # 4.2: 양자화 설정
         quantization_config = None
@@ -238,7 +247,7 @@ class ModelLoader(BaseModelLoader):
         return model
 
     # ============= 유틸리티 메서드 =============
-    def apply_state_dict_mapping(self, state_dict: Dict, mapping: Dict) -> Dict:
+    def apply_state_dict_mapping(self, state_dict: dict, mapping: dict) -> dict:
         """State dict 키 매핑 적용"""
         if not mapping:
             return state_dict
@@ -251,7 +260,7 @@ class ModelLoader(BaseModelLoader):
             new_key = key
 
             if remove_prefix and new_key.startswith(remove_prefix):
-                new_key = new_key[len(remove_prefix):]
+                new_key = new_key[len(remove_prefix) :]
 
             if add_prefix:
                 new_key = f"{add_prefix}{new_key}"
@@ -272,7 +281,88 @@ class ModelLoader(BaseModelLoader):
         """양자화 compute dtype 결정"""
         return torch.bfloat16 if self.mixed_precision == "bf16" else torch.float16
 
-    def _infer_strategy(self, metadata: Dict) -> Dict:
+    def _patch_meta_mtp_forward(self, model):
+        """Meta MTP 모델에 HuggingFace 호환 forward 메서드 패치
+
+        Meta의 Llama MTP 모델은 다른 인터페이스를 사용:
+        - Meta: forward(tokens, start_pos, return_all_heads)
+        - HF: forward(input_ids, attention_mask, output_hidden_states, ...)
+
+        이 패치는 런타임에 HF 호환성을 추가하여 WMTP 시스템과 통합합니다.
+        """
+        original_forward = model.forward
+        model._original_forward = original_forward  # 원본 보존
+
+        def hf_compatible_forward(
+            input_ids=None,
+            attention_mask=None,
+            tokens=None,
+            start_pos=None,
+            output_hidden_states=False,
+            output_attentions=False,
+            return_dict=True,
+            **kwargs,
+        ):
+            """HuggingFace 호환 forward 인터페이스"""
+
+            # HF 스타일 입력 처리
+            if input_ids is not None:
+                tokens = input_ids
+                start_pos = 0 if start_pos is None else start_pos
+
+                # Meta MTP forward 호출
+                logits = original_forward(
+                    tokens=tokens,
+                    start_pos=start_pos,
+                    return_all_heads=True,  # 모든 MTP 헤드 사용
+                )
+
+                # HF 스타일 출력 형식으로 변환
+                if return_dict:
+                    result = {
+                        "logits": logits,
+                    }
+
+                    # hidden_states 추출 시도 (모델이 저장했다면)
+                    if output_hidden_states and hasattr(model, "_last_hidden_states"):
+                        result["hidden_states"] = model._last_hidden_states
+                        result["last_hidden_state"] = model._last_hidden_states[-1]
+
+                    return type("ModelOutput", (), result)()  # 간단한 namespace 객체
+                else:
+                    return logits
+
+            # Meta 스타일 직접 호출
+            elif tokens is not None:
+                return original_forward(
+                    tokens=tokens,
+                    start_pos=start_pos if start_pos is not None else 0,
+                    **kwargs,
+                )
+            else:
+                raise ValueError("Either input_ids or tokens must be provided")
+
+        # forward 메서드 교체
+        model.forward = hf_compatible_forward
+
+        # HF 호환 속성 추가
+        if hasattr(model, "params"):
+            model.config = type(
+                "Config",
+                (),
+                {
+                    "vocab_size": model.params.vocab_size,
+                    "hidden_size": model.params.dim,
+                    "n_layers": model.params.n_layers,
+                    "n_heads": model.params.n_heads,
+                    "output_hidden_states": False,
+                    "output_attentions": False,
+                },
+            )()
+
+        return model
+
+    def _infer_strategy(self, metadata: dict) -> dict:
         """메타데이터가 없을 때 전략 추론"""
         wmtp_type = metadata.get("wmtp_type", "base_model")
 
@@ -288,7 +378,7 @@ class ModelLoader(BaseModelLoader):
                 "transformers_class": "AutoModelForCausalLM",
             }
 
-    def _load_metadata_from_s3(self, s3_path: str) -> Dict:
+    def _load_metadata_from_s3(self, s3_path: str) -> dict:
         """S3에서 metadata.json만 로드"""
         if not self.s3_manager:
             return {}

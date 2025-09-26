@@ -15,6 +15,11 @@ paths:
     mbpp: "s3://wmtp/dataset/mbpp"
     contest: "s3://wmtp/dataset/contest"
     humaneval: "s3://wmtp/dataset/humaneval"
+  checkpoints:
+    base_path: "s3://wmtp/checkpoints"  # S3 production checkpoint storage
+    save_interval: 500                  # Save every 500 steps for production
+    keep_last: 5                       # Keep last 5 checkpoints for recovery
+    save_final: true                   # Save final production model
 
 # MLflow configuration - Production tracking
 mlflow:

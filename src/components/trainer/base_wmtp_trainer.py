@@ -34,141 +34,84 @@ console = Console()  # 전역 콘솔 객체
 
 def compute_weighted_mtp_loss(
     logits: torch.Tensor,  # [B, S, H, V]
-    target_ids: torch.Tensor,  # [B, S]
-    head_weights: torch.Tensor,  # [B, S, H] - 새로운 헤드별 가중치!
-    horizon: int,
+    target_labels: torch.Tensor,  # [B, S, H] - 3D 라벨 (MTPDataCollator에서 생성)
+    head_weights: torch.Tensor,  # [B, S, H]
     ignore_index: int = -100,
-    selection_mask: torch.Tensor = None,  # [B, S, H] - 토큰 선택 마스크 (token_skip mode용)
+    selection_mask: torch.Tensor | None = None,  # [B, S, H] - 토큰 선택 마스크
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    연구제안서 정확 구현: L_WMTP = Σ(k=0 to H-1) w_{t+k} × CE_k
+    MTPDataCollator 기반 간단화된 WMTP 손실 계산: L_WMTP = Σ(k=0 to H-1) w_{t+k} × CE_k
 
-    각 헤드별 CE에 해당 헤드의 가중치를 직접 적용하여
-    토큰 중요도가 손실에 정확히 반영되도록 함.
-
-    Token skip mode에서는 selection_mask가 0인 토큰들을 손실 계산에서 완전히 제외.
+    3D 라벨을 직접 받아서 헤드별 CE를 계산하고 가중치를 적용합니다.
+    복잡한 shift 연산이 제거되어 성능이 대폭 향상됩니다.
 
     Args:
-        logits: [batch, seq_len, horizon, vocab] - MTP 모델 출력
-        target_ids: [batch, seq_len] - 타겟 라벨
-        head_weights: [batch, seq_len, horizon] - 헤드별 가중치 매트릭스
-        horizon: 예측 헤드 수 (4)
-        ignore_index: 무시할 라벨 값
-        selection_mask: [batch, seq_len, horizon] - 토큰 선택 마스크 (None이면 모두 1로 간주)
+        logits: [B, S, H, V] - MTP 모델 출력
+        target_labels: [B, S, H] - MTPDataCollator에서 생성된 3D 라벨
+        head_weights: [B, S, H] - 헤드별 가중치 매트릭스
+        ignore_index: 무시할 라벨 값 (-100)
+        selection_mask: [B, S, H] - 토큰 선택 마스크 (None이면 모두 1)
 
     Returns:
         weighted_loss: 가중 평균 손실 (scalar)
-        valid_mask: 유효한 위치 마스크 [batch, seq_len]
-        ce_per_head: 헤드별 CE 손실 [batch, seq_len, horizon] - Rho-1을 위한 핵심 반환값
+        valid_mask: 유효한 위치 마스크 [B, S]
+        ce_per_head: 헤드별 CE 손실 [B, S, H]
     """
-    # Input validation
-    if not isinstance(logits, torch.Tensor) or not isinstance(target_ids, torch.Tensor):
-        raise TypeError("logits and target_ids must be torch.Tensor")
+    B, S, H, V = logits.shape
 
-    if not isinstance(head_weights, torch.Tensor):
-        raise TypeError("head_weights must be torch.Tensor")
-
-    if logits.ndim != 4:
-        raise ValueError(f"logits must be 4D [B,S,H,V], got shape {logits.shape}")
-
-    if target_ids.ndim != 2:
-        raise ValueError(f"target_ids must be 2D [B,S], got shape {target_ids.shape}")
-
-    if head_weights.ndim != 3:
+    # Input validation (간소화)
+    if target_labels.shape != (B, S, H):
         raise ValueError(
-            f"head_weights must be 3D [B,S,H], got shape {head_weights.shape}"
+            f"Expected target_labels shape [B,S,H], got {target_labels.shape}"
+        )
+    if head_weights.shape != (B, S, H):
+        raise ValueError(
+            f"Expected head_weights shape [B,S,H], got {head_weights.shape}"
         )
 
-    bsz, seqlen, H, vocab = logits.shape
-    if target_ids.shape != (bsz, seqlen):
-        raise ValueError(
-            f"Shape mismatch: logits {logits.shape} vs target_ids {target_ids.shape}"
-        )
-
-    if head_weights.shape != (bsz, seqlen, H):
-        raise ValueError(
-            f"Shape mismatch: head_weights {head_weights.shape} vs expected {(bsz, seqlen, H)}"
-        )
-
-    if horizon != H:
-        raise ValueError(
-            f"Mismatch between logits heads ({H}) and configured horizon ({horizon})"
-        )
-
-    device = logits.device
-    dtype = logits.dtype
-
-    # selection_mask가 없으면 모두 1로 초기화
+    # Selection mask 기본값
     if selection_mask is None:
-        selection_mask = torch.ones((bsz, seqlen, H), device=device, dtype=dtype)
-    else:
-        # selection_mask 형태 검증
-        if selection_mask.shape != (bsz, seqlen, H):
-            raise ValueError(
-                f"selection_mask shape mismatch: expected {(bsz, seqlen, H)}, got {selection_mask.shape}"
-            )
+        selection_mask = torch.ones_like(target_labels, dtype=torch.float)
 
-    # 헤드별 가중 CE 누적용
-    weighted_ce_sum = torch.zeros((bsz, seqlen), device=device, dtype=dtype)
-    total_weights = torch.zeros((bsz, seqlen), device=device, dtype=dtype)
+    # 유효 라벨 마스크 생성
+    valid_mask = (target_labels != ignore_index).float()  # [B, S, H]
 
-    # Rho-1을 위한 헤드별 CE 저장 [B, S, H]
-    ce_per_head = torch.zeros((bsz, seqlen, H), device=device, dtype=dtype)
+    # 헤드별 CE 계산 (벡터화)
+    # logits: [B, S, H, V] -> [B*S*H, V]
+    # target_labels: [B, S, H] -> [B*S*H]
+    logits_flat = logits.view(B * S * H, V)
+    target_flat = target_labels.view(B * S * H)
 
-    # 각 헤드별로 CE 계산 및 가중치 적용
-    for k in range(H):
-        shift = k + 1  # k번째 헤드는 t+(k+1) 위치 예측
-        valid_len = seqlen - shift
-        if valid_len <= 0:
-            continue
+    ce_flat = F.cross_entropy(
+        logits_flat, target_flat, ignore_index=ignore_index, reduction="none"
+    )  # [B*S*H]
 
-        # 유효 영역 슬라이싱
-        logits_k = logits[:, :valid_len, k, :]  # [B, valid_len, V]
-        labels_k = target_ids[:, shift : shift + valid_len]  # [B, valid_len]
-        weights_k = head_weights[:, :valid_len, k]  # [B, valid_len]
-        mask_k = selection_mask[:, :valid_len, k]  # [B, valid_len] - 토큰 선택 마스크
+    ce_per_head = ce_flat.view(B, S, H)  # [B, S, H]
 
-        # 헤드별 CE 계산
-        ce_k = F.cross_entropy(
-            logits_k.transpose(1, 2),  # [B, V, valid_len]
-            labels_k,
-            ignore_index=ignore_index,
-            reduction="none",
-        )  # [B, valid_len]
+    # 마스킹 적용
+    effective_mask = valid_mask * selection_mask  # [B, S, H]
 
-        # 유효 위치 마스킹 (ignore_index 제외)
-        valid_k_mask = (labels_k != ignore_index).to(dtype)  # [B, valid_len]
+    # 가중 CE 계산
+    weighted_ce = head_weights * ce_per_head * effective_mask  # [B, S, H]
+    effective_weights = head_weights * effective_mask  # [B, S, H]
 
-        # Token skip mask 적용 (selection_mask가 0인 토큰은 완전 제외)
-        combined_mask = valid_k_mask * mask_k  # [B, valid_len]
+    # 토큰별 가중 평균 ([B, S] 차원으로 축약)
+    token_weighted_ce = weighted_ce.sum(dim=2)  # [B, S]
+    token_weights = effective_weights.sum(dim=2).clamp(min=1e-8)  # [B, S]
 
-        # Rho-1을 위한 헤드별 CE 저장 (마스킹 적용)
-        ce_per_head[:, :valid_len, k] = ce_k * combined_mask
+    # 토큰별 유효성 (최소 하나 헤드가 유효한 경우)
+    token_valid_mask = token_weights > 1e-8  # [B, S]
 
-        # 가중 CE: w_{t+k} × CE_k (연구제안서 공식!) + selection mask 적용
-        weighted_ce_k = weights_k * ce_k * combined_mask  # [B, valid_len]
-        effective_weights_k = weights_k * combined_mask  # [B, valid_len]
-
-        # 전체 시퀀스에 누적 ([B, S] 형태로 맞춤)
-        weighted_ce_sum[:, :valid_len] += weighted_ce_k
-        total_weights[:, :valid_len] += effective_weights_k
-
-    # 가중 평균 계산 (분모 0 방지)
-    total_weights_clamped = torch.clamp(total_weights, min=1e-8)
-    weighted_loss_per_token = weighted_ce_sum / total_weights_clamped
-
-    # 유효 마스크: 최소 하나의 헤드에서 유효한 위치
-    valid_mask = total_weights > 1e-8
-
-    # 최종 스칼라 손실: 유효 토큰들의 평균
-    if valid_mask.any():
+    # 최종 스칼라 손실
+    if token_valid_mask.any():
+        weighted_loss_per_token = token_weighted_ce / token_weights
         final_loss = (
-            weighted_loss_per_token * valid_mask.to(dtype)
-        ).sum() / valid_mask.sum().to(dtype)
+            weighted_loss_per_token * token_valid_mask.float()
+        ).sum() / token_valid_mask.sum()
     else:
-        final_loss = torch.tensor(0.0, device=device, dtype=dtype)
+        final_loss = torch.tensor(0.0, device=logits.device, dtype=logits.dtype)
 
-    return final_loss, valid_mask, ce_per_head
+    return final_loss, token_valid_mask, ce_per_head
 
 
 class BaseWmtpTrainer(BaseComponent):
@@ -299,11 +242,7 @@ class BaseWmtpTrainer(BaseComponent):
         config = ctx.get("config")  # Config 객체 가져오기
         recipe = ctx.get("recipe")  # Recipe 객체 가져오기 (알고리즘 정보용)
 
-        if (
-            config
-            and hasattr(config, "paths")
-            and hasattr(config.paths, "checkpoints")
-        ):
+        if config and hasattr(config, "paths") and hasattr(config.paths, "checkpoints"):
             checkpoint_config = config.paths.checkpoints
             self.save_interval = checkpoint_config.save_interval
             self.keep_last = checkpoint_config.keep_last
@@ -381,11 +320,7 @@ class BaseWmtpTrainer(BaseComponent):
             )
 
         # Config에서 체크포인트 설정 가져오기
-        if (
-            config
-            and hasattr(config, "paths")
-            and hasattr(config.paths, "checkpoints")
-        ):
+        if config and hasattr(config, "paths") and hasattr(config.paths, "checkpoints"):
             base_path = config.paths.checkpoints.base_path
             checkpoint_dir, is_s3 = resolve_checkpoint_path(base_path, run_id)
             return checkpoint_dir, is_s3
@@ -541,12 +476,12 @@ class BaseWmtpTrainer(BaseComponent):
         # MLflow 업로드는 분산 매니저에서 수행함 (중복 제거)
 
         storage_type = "S3" if self.is_s3_checkpoint else "로컬"
-        console.print(f"[green]{storage_type} 체크포인트 저장 완료: {checkpoint_path}[/green]")
+        console.print(
+            f"[green]{storage_type} 체크포인트 저장 완료: {checkpoint_path}[/green]"
+        )
         return checkpoint_path
 
-    def _manage_checkpoints(
-        self, saved_checkpoints: list, new_checkpoint: str
-    ) -> list:
+    def _manage_checkpoints(self, saved_checkpoints: list, new_checkpoint: str) -> list:
         """
         체크포인트 파일 개수 관리 (keep_last 개만 유지).
         Phase 3: S3/로컬 자동 판단
@@ -567,6 +502,7 @@ class BaseWmtpTrainer(BaseComponent):
                 if self.is_s3_checkpoint:
                     # S3 체크포인트 삭제
                     from src.utils.s3 import S3Manager
+
                     s3_manager = S3Manager()
                     # S3 경로에서 버킷과 키 분리
                     bucket, key = old_checkpoint_path.replace("s3://", "").split("/", 1)
@@ -585,13 +521,15 @@ class BaseWmtpTrainer(BaseComponent):
                         )
             except Exception as e:
                 storage_type = "S3" if self.is_s3_checkpoint else "로컬"
-                console.print(f"[yellow]{storage_type} 체크포인트 삭제 실패: {e}[/yellow]")
+                console.print(
+                    f"[yellow]{storage_type} 체크포인트 삭제 실패: {e}[/yellow]"
+                )
 
         return saved_checkpoints
 
-    def _save_final_checkpoint(self, epoch: int, step: int, metrics: dict) -> Path:
+    def _save_final_checkpoint(self, epoch: int, step: int, metrics: dict) -> str:
         """
-        최종 모델 저장.
+        최종 모델 저장 (Phase 3: S3/로컬 자동 판단)
 
         Args:
             epoch: 최종 에폭
@@ -599,15 +537,21 @@ class BaseWmtpTrainer(BaseComponent):
             metrics: 최종 메트릭
 
         Returns:
-            저장된 최종 모델 경로
+            저장된 최종 모델 경로 (문자열)
         """
-        final_path = self.checkpoint_dir / "final_model.pt"
+        # S3/로컬 자동 판단하여 최종 모델 경로 생성
+        if self.is_s3_checkpoint:
+            # S3 경로: 문자열 결합
+            final_path = f"{self.checkpoint_dir}/final_model.pt"
+        else:
+            # 로컬 경로: Path 객체 사용
+            final_path = str(self.checkpoint_dir / "final_model.pt")
 
         # 최종 체크포인트 저장 (MLflow 통합)
         self.dist_manager.save_checkpoint(
             model=self.model,
             optimizer=self.optimizer,
-            checkpoint_path=str(final_path),
+            checkpoint_path=final_path,
             epoch=epoch,
             step=step,
             mlflow_manager=self.mlflow,  # MLflow 매니저 전달
@@ -630,10 +574,15 @@ class BaseWmtpTrainer(BaseComponent):
                     registered_model_name=model_name,
                 )
 
-                # 체크포인트 파일 업로드
-                self.mlflow.log_artifact(
-                    local_path=final_path, artifact_path="final_checkpoint"
-                )
+                # 체크포인트 파일 업로드 (로컬 경로만 지원)
+                if not self.is_s3_checkpoint:
+                    self.mlflow.log_artifact(
+                        local_path=final_path, artifact_path="final_checkpoint"
+                    )
+                else:
+                    console.print(
+                        "[blue]S3 체크포인트는 MLflow artifact 업로드 생략[/blue]"
+                    )
 
                 console.print(f"[green]MLflow 모델 등록 완료: {model_name}[/green]")
             except Exception as e:
@@ -641,4 +590,8 @@ class BaseWmtpTrainer(BaseComponent):
                     f"[yellow]MLflow model registration warning: {e}[/yellow]"
                 )
 
+        storage_type = "S3" if self.is_s3_checkpoint else "로컬"
+        console.print(
+            f"[green]{storage_type} 최종 모델 저장 완료: {final_path}[/green]"
+        )
         return final_path

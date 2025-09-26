@@ -58,7 +58,10 @@ class BaselineMtpTrainer(BaseWmtpTrainer):
     """
 
     def compute_head_weights(
-        self, logits: torch.Tensor, target_ids: torch.Tensor, **kwargs  # noqa: ARG002
+        self,
+        logits: torch.Tensor,
+        target_labels: torch.Tensor,
+        **kwargs,  # noqa: ARG002
     ) -> torch.Tensor:
         """균등 헤드 가중치 계산 - 모든 헤드에 1.0 가중치.
 
@@ -66,7 +69,7 @@ class BaselineMtpTrainer(BaseWmtpTrainer):
 
         Args:
             logits: MTP 모델 출력 [B, S, H, V]
-            target_ids: 타겟 토큰 ID [B, S]
+            target_labels: 3D 타겟 라벨 [B, S, H] - MTPDataCollator 생성
             **kwargs: 사용되지 않음 (기준선 알고리즘)
 
         Returns:
@@ -94,7 +97,9 @@ class BaselineMtpTrainer(BaseWmtpTrainer):
             k: v.to(self.device) if torch.is_tensor(v) else v for k, v in batch.items()
         }
 
-        target_ids: torch.Tensor = batch["labels"]  # [B, S]
+        target_labels: torch.Tensor = batch[
+            "labels"
+        ]  # [B, S, H] - MTPDataCollator 생성
 
         # autocast 디바이스 타입 결정
         if torch.cuda.is_available():
@@ -127,14 +132,13 @@ class BaselineMtpTrainer(BaseWmtpTrainer):
                 logits = logits.detach().requires_grad_(True)
 
             # 🎯 MTP Baseline: 균등 가중치로 단순한 손실 계산
-            head_weights = self.compute_head_weights(logits, target_ids)
+            head_weights = self.compute_head_weights(logits, target_labels)
 
-            # WMTP 손실 계산 (BaseWmtpTrainer의 공통 함수 사용)
+            # WMTP 손실 계산 (간소화된 3D 라벨 기반)
             weighted_loss, valid_mask, ce_per_head = compute_weighted_mtp_loss(
                 logits=logits,  # [B, S, H, V]
-                target_ids=target_ids,  # [B, S]
+                target_labels=target_labels,  # [B, S, H] - MTPDataCollator 생성
                 head_weights=head_weights,  # [B, S, H] - 모두 1.0
-                horizon=self.horizon,
                 ignore_index=-100,
             )
 

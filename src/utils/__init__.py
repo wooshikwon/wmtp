@@ -1,12 +1,12 @@
 """Utility modules for S3, MLflow, HuggingFace, distributed training, evaluation, and I/O."""
 
 # Import main utilities to prevent direct external imports
-from .dist import (
+from .distribute_manager import (
     DistributedManager,
     get_dist_manager,
     set_seed,
 )
-from .eval import EvaluationProtocol
+from .evaluation_protocol import EvaluationProtocol
 
 # from .hf import (
 #     get_dtype,

@@ -241,9 +241,7 @@ class ComponentFactory:
 
     @staticmethod
     def create_model_loader(
-        config: Config,
-        recipe: Recipe,
-        model_type: str = "base"
+        config: Config, recipe: Recipe, model_type: str = "base"
     ) -> Loader:
         """통합된 모델 로더 생성 - 최대한 단순화된 인터페이스.
 
@@ -292,7 +290,6 @@ class ComponentFactory:
         }
 
         return loader_registry.create("standardized-model-loader", loader_config)
-
 
     @staticmethod
     def create_checkpoint_loader(config: Config) -> Loader:
@@ -400,10 +397,13 @@ class ComponentFactory:
                 "normalize": recipe.critic.normalize,  # "zscore"
                 "temperature": recipe.loss.weight_temperature,  # 소프트맥스 온도
                 # Stage1 전용 학습률 (recipe에서 가져오기)
-                "lr": (recipe.train.stage1.lr
-                       if hasattr(recipe.train, "stage1") and recipe.train.stage1
-                       else recipe.critic.value_lr if hasattr(recipe.critic, "value_lr")
-                       else 1e-4),
+                "lr": (
+                    recipe.train.stage1.lr
+                    if hasattr(recipe.train, "stage1") and recipe.train.stage1
+                    else recipe.critic.value_lr
+                    if hasattr(recipe.critic, "value_lr")
+                    else 1e-4
+                ),
                 # GAE 파라미터도 recipe에서 가져오기
                 "gamma": recipe.critic.gamma,  # 0.99
                 "gae_lambda": recipe.critic.gae_lambda,  # 0.95
@@ -430,7 +430,6 @@ class ComponentFactory:
     #   - Base 모델: create_model_loader(config, recipe, "base")
     #   - Reference 모델: create_model_loader(config, recipe, "ref")
     #   - Reward 모델: create_model_loader(config, recipe, "rm")
-
 
     @staticmethod
     def create_tokenizer(recipe: Recipe, config: Config) -> Any:  # noqa: ARG004
