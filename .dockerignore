@@ -1,0 +1,57 @@
+# WMTP Docker ignore - Optimize container build
+.git
+.gitignore
+*.md
+docs/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+.env/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# MacOS
+.DS_Store
+
+# Local development
+.env
+.env.local
+checkpoints/
+mlruns/
+logs/
+*.log
+
+# Large model files (should be loaded from S3)
+models/
+*.pt
+*.pth
+*.bin
+*.safetensors
+
+# Test artifacts
+test_output/
+coverage.xml
+.tox/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/

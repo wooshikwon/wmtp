@@ -22,5 +22,5 @@
     },
     "required_files": ["config.json", "model.safetensors", "modeling.py", "metadata.json"]
   },
-  "algorithm_compatibility": ["baseline-mtp", "critic-wmtp"]
+  "algorithm_compatibility": ["baseline-mtp", "critic-wmtp", "rho1-wmtp"]
 }

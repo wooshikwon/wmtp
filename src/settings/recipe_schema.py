@@ -81,14 +81,8 @@ class Run(BaseModel):
 # MTP 설정은 ComponentFactory.MTP_CONFIG 상수로 고정 (n_heads=4, horizon=4)
 
 
-class Checkpointing(BaseModel):
-    """체크포인트 저장 설정."""
-
-    save_interval: int = Field(
-        default=100, ge=1, description="N스텝마다 체크포인트 저장"
-    )
-    keep_last: int = Field(default=3, ge=1, description="최근 N개 체크포인트 유지")
-    save_final: bool = Field(default=True, description="최종 모델 저장 여부")
+# Checkpointing class removed in Phase 2: moved to Config schema
+# All checkpoint settings now managed in config.paths.checkpoints
 
 
 class Stage1Config(BaseModel):
@@ -114,9 +108,7 @@ class Train(BaseModel):
     )
     eval_interval: int = Field(default=500, ge=1, description="Evaluation interval")
     save_interval: int = Field(default=1000, ge=1, description="Save interval")
-    checkpointing: Checkpointing | None = Field(
-        default=None, description="체크포인트 저장 설정 (선택사항)"
-    )
+    # checkpointing field removed in Phase 2: moved to config.paths.checkpoints
     stage1: Stage1Config | None = Field(
         default=None, description="Stage 1 configuration for critic-wmtp"
     )

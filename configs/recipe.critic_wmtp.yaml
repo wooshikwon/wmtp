@@ -34,10 +34,7 @@ train:
   max_steps: 10000
   eval_interval: 500
   save_interval: 1000
-  checkpointing:
-    save_interval: 1000
-    keep_last: 5
-    save_final: true
+  # checkpointing moved to config.paths.checkpoints in Phase 2
 
 # Optimizer configuration
 optim:
@@ -59,14 +56,10 @@ loss:
 
 # Critic-specific configuration (Phase 2: fully parameterized)
 critic:
-  # Phase 2.1: TD error discount (previously hardcoded)
   discount_lambda: 0.95  # Short-term discount for delta computation
-  # GAE parameters
   gamma: 0.99           # Long-term reward discount
   gae_lambda: 0.95      # GAE lambda parameter
-  # Phase 2.2: Clean loss structure (main loss always 1.0)
   auxiliary_loss_coef: 0.1  # Value head auxiliary loss coefficient
-  # Other parameters
   target: "rm_sequence"
   token_spread: "gae"
   delta_mode: "td"

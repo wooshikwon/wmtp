@@ -130,9 +130,9 @@ def run_training_pipeline(
 
     # Step 2: Base 모델 로딩
     # Facebook native MTP 모델 - 4개 head가 내장된 WMTP의 핵심 아키텍처
-    base_loader = ComponentFactory.create_model_loader(config, recipe)
+    base_loader = ComponentFactory.create_model_loader(config, recipe, "base")
     base_loader.setup({})
-    base_result = base_loader.run({"model_path": str(config.paths.models.base)})
+    base_result = base_loader.run({})  # model_path는 Factory에서 이미 설정됨
     base = base_result["model"]
 
     console.print(f"[dim]🔍 Base 모델 로딩 완료: {config.paths.models.base}[/dim]")
@@ -146,26 +146,21 @@ def run_training_pipeline(
 
     console.print(f"[dim]🔍 토크나이저 생성 완료: {config.paths.models.base}[/dim]")
 
-    # Step 4: 알고리즘별 추가 모델 로딩 (조건부)
-    # 각 WMTP 알고리즘은 서로 다른 보조 모델을 필요로 함
+    # Step 4: Auxiliary 모델 로딩 (알고리즘에 따라 자동 선택)
+    # Factory에서 알고리즘에 맞는 보조 모델을 자동으로 선택
     ref_model = None  # Rho-1에서 사용할 참조 모델
     rm_model = None  # Critic에서 사용할 보상 모델
 
-    if recipe.train.algo == "rho1-wmtp":
-        # Rho-1: Reference Model 로딩 - |CE^ref_t - CE^base_t| 계산용
-        ref_loader = ComponentFactory.create_aux_model_loader(recipe, config, "ref")
-        ref_loader.setup({})
-        ref_result = ref_loader.run({"model_path": str(config.paths.models.ref)})
-        ref_model = ref_result["model"]
+    aux_loader = ComponentFactory.create_model_loader(config, recipe, "aux")
+    if aux_loader:  # baseline-mtp는 None 반환
+        aux_loader.setup({})
+        aux_result = aux_loader.run({})  # model_path는 Factory에서 이미 설정됨
 
-    elif recipe.train.algo == "critic-wmtp":
-        # Critic: Reward Model 로딩 - Stage1 Value Head 훈련용
-        rm_loader = ComponentFactory.create_aux_model_loader(recipe, config, "rm")
-        rm_loader.setup({})
-        rm_result = rm_loader.run({"model_path": str(config.paths.models.rm)})
-        rm_model = rm_result["model"]
-
-    # mtp-baseline은 추가 모델 불필요 - Base 모델만으로 균등 가중치 MTP 수행
+        # 알고리즘에 따라 적절한 변수에 할당
+        if recipe.train.algo == "rho1-wmtp":
+            ref_model = aux_result["model"]
+        elif recipe.train.algo == "critic-wmtp":
+            rm_model = aux_result["model"]
 
     console.print(f"[dim]🔍 알고리즘별 추가 모델 로딩 완료: {recipe.train.algo}[/dim]")
 

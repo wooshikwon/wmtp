@@ -255,6 +255,58 @@ class DatasetPaths(BaseModel):
     )
 
 
+class CheckpointConfig(BaseModel):
+    """체크포인트 저장 설정
+
+    WMTP 맥락:
+    학습 중간 상태를 저장하여 재개 가능하게 하는 체크포인트 관리 설정입니다.
+    로컬/S3 경로 모두 지원하며, Phase 1에서 구현한 S3 기능을 활용합니다.
+
+    Attributes:
+        base_path: 체크포인트 기본 저장 경로
+            - file://./checkpoints: 로컬 상대 경로
+            - file:///absolute/path: 로컬 절대 경로
+            - s3://bucket/path: S3 경로
+            - 기본값: "file://./checkpoints"
+
+        save_interval: 체크포인트 저장 간격 (steps)
+            - 매 N 스텝마다 중간 체크포인트 저장
+            - 기본값: 500
+
+        keep_last: 보관할 체크포인트 개수
+            - 디스크 공간 절약을 위해 오래된 체크포인트 자동 삭제
+            - 기본값: 3
+
+        save_final: 최종 모델 저장 여부
+            - 학습 완료 시 final_model.pt 저장
+            - 기본값: True
+
+    Example:
+        checkpoints:
+          base_path: "s3://wmtp/checkpoints"
+          save_interval: 1000
+          keep_last: 5
+          save_final: true
+    """
+
+    base_path: str = Field(
+        default="file://./checkpoints",
+        description="체크포인트 기본 저장 경로 (file:// 또는 s3://)"
+    )
+    save_interval: int = Field(
+        default=500,
+        description="체크포인트 저장 간격 (steps)"
+    )
+    keep_last: int = Field(
+        default=3,
+        description="보관할 체크포인트 개수"
+    )
+    save_final: bool = Field(
+        default=True,
+        description="최종 모델 저장 여부"
+    )
+
+
 class Paths(BaseModel):
     """전체 경로 설정 통합.
 
@@ -268,6 +320,7 @@ class Paths(BaseModel):
     Attributes:
         models: 모델 파일 경로들 (프로토콜 포함 가능)
         datasets: 데이터셋 경로들 (프로토콜 포함 가능)
+        checkpoints: 체크포인트 저장 설정 (Phase 1에서 추가)
 
     Example:
         paths:
@@ -278,24 +331,32 @@ class Paths(BaseModel):
           datasets:
             mbpp: s3://wmtp/dataset/mbpp
             contest: file://./dataset/contest
+          checkpoints:
+            base_path: s3://wmtp/checkpoints
+            save_interval: 500
+            keep_last: 3
     """
 
     models: ModelPaths = Field(default_factory=ModelPaths)
     datasets: DatasetPaths = Field(default_factory=DatasetPaths)
+    checkpoints: CheckpointConfig = Field(default_factory=CheckpointConfig)
 
-    @field_validator("models", "datasets")
+    @field_validator("models", "datasets", "checkpoints")
     @classmethod
     def validate_paths(
-        cls, v: ModelPaths | DatasetPaths, info
-    ) -> ModelPaths | DatasetPaths:
+        cls, v: ModelPaths | DatasetPaths | CheckpointConfig, info
+    ) -> ModelPaths | DatasetPaths | CheckpointConfig:
         """경로 프로토콜 검증 및 정규화.
 
         Phase 2 핵심 기능:
         PathResolver를 사용하여 모든 경로의 프로토콜을 검증합니다.
         잘못된 프로토콜이나 형식은 에러를 발생시킵니다.
 
+        Phase 1 확장:
+        CheckpointConfig의 base_path도 동일한 검증 로직을 적용합니다.
+
         Args:
-            v: ModelPaths 또는 DatasetPaths 인스턴스
+            v: ModelPaths, DatasetPaths, 또는 CheckpointConfig 인스턴스
             info: Pydantic validation context
 
         Returns:
@@ -310,7 +371,8 @@ class Paths(BaseModel):
         # 각 경로 검증 (빈 문자열은 허용)
         for attr_name in v.model_fields:
             path = getattr(v, attr_name)
-            if path and path.strip():  # 빈 경로가 아닌 경우만 검증
+            # 문자열 타입이고 비어있지 않은 경우만 검증
+            if path and isinstance(path, str) and path.strip():
                 try:
                     # 경로 해석 시도 (프로토콜 검증)
                     path_type, resolved = resolver.resolve(path)

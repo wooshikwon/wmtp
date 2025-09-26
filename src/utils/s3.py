@@ -342,6 +342,9 @@ def create_s3_manager(config: dict[str, Any]) -> S3Manager | None:
     # Phase 2: 새로운 s3_auth 방식 우선 사용
     if "s3_auth" in config:
         s3_auth = config["s3_auth"]
+        # s3_auth가 None인 경우 처리
+        if s3_auth is None:
+            return None
         return S3Manager(
             bucket=s3_auth.get("default_bucket"),
             region=s3_auth.get("region", "ap-northeast-2"),

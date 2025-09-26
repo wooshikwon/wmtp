@@ -21,7 +21,6 @@ WMTP에서의 역할:
 4. 메모리 효율성 극대화 (디스크 I/O 제거)
 """
 
-from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
@@ -33,7 +32,7 @@ from ...utils.s3 import create_s3_manager
 console = Console()
 
 
-class BaseLoader(BaseComponent, ABC):
+class BaseLoader(BaseComponent):
     """
     모든 WMTP 로더의 추상 기본 클래스입니다 (Cache-Free).
 
@@ -146,10 +145,12 @@ class BaseLoader(BaseComponent, ABC):
             f"Could not find data at local path '{local_path}' or S3 key '{s3_key}'"
         )
 
-    @abstractmethod
     def load(self, path: str, **kwargs) -> Any:
         """
-        Load data from path (must be implemented by subclasses).
+        Load data from path - 기본 구현 제공.
+
+        구현체는 이 메서드를 오버라이드하거나,
+        run() 메서드로 대체 구현할 수 있습니다.
 
         Args:
             path: Path to data
@@ -158,7 +159,13 @@ class BaseLoader(BaseComponent, ABC):
         Returns:
             Loaded data
         """
-        pass
+        # 기본 구현: NotImplementedError
+        # 하위 클래스는 이 메서드를 오버라이드하거나
+        # run() 메서드로 대체 구현 가능
+        raise NotImplementedError(
+            "Data loading must be implemented by subclasses. "
+            "Override load() or implement run() method."
+        )
 
     def run(self, ctx: dict[str, Any]) -> dict[str, Any]:
         """
@@ -188,7 +195,12 @@ class BaseLoader(BaseComponent, ABC):
 
 
 class DatasetLoader(BaseLoader):
-    """Base class for dataset loaders with split support."""
+    """
+    Base class for dataset loaders with split support.
+
+    현재 구현체(DataLoader)는 run() 메서드로 실행되며,
+    load()와 preprocess()는 호환성을 위한 인터페이스로 제공됩니다.
+    """
 
     def create_splits(
         self,
@@ -223,10 +235,12 @@ class DatasetLoader(BaseLoader):
             "test": data,
         }
 
-    @abstractmethod
     def preprocess(self, data: Any, **kwargs) -> Any:
         """
-        Preprocess dataset (must be implemented by subclasses).
+        Preprocess dataset - 기본 구현 제공.
+
+        구현체는 필요시 오버라이드하거나,
+        내부적으로 다른 전처리 메서드를 사용할 수 있습니다.
 
         Args:
             data: Raw dataset
@@ -235,16 +249,25 @@ class DatasetLoader(BaseLoader):
         Returns:
             Preprocessed data
         """
-        pass
+        # 기본 구현: 데이터를 그대로 반환
+        return data
 
 
 class ModelLoader(BaseLoader):
-    """Base class for model loaders."""
+    """
+    Base class for model loaders.
 
-    @abstractmethod
+    현재 구현체(model_loader.py의 ModelLoader)는 run() 메서드로 실행되며,
+    load_model()은 실제 모델 로딩 로직을 구현합니다.
+    load()는 호환성을 위한 래퍼 메서드입니다.
+    """
+
     def load_model(self, path: str, **kwargs) -> Any:
         """
-        Load model from path (must be implemented by subclasses).
+        Load model from path - 기본 구현 제공.
+
+        구현체는 이 메서드를 오버라이드하거나,
+        내부적으로 다른 로딩 메서드를 사용할 수 있습니다.
 
         Args:
             path: Model path
@@ -253,7 +276,13 @@ class ModelLoader(BaseLoader):
         Returns:
             Loaded model
         """
-        pass
+        # 기본 구현: NotImplementedError
+        # 하위 클래스는 이 메서드를 오버라이드하거나
+        # run() 메서드로 대체 구현 가능
+        raise NotImplementedError(
+            "Model loading must be implemented by subclasses. "
+            "Override load_model() or implement run() method."
+        )
 
     def load(self, path: str, **kwargs) -> dict[str, Any]:
         """

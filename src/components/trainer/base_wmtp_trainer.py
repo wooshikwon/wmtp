@@ -295,20 +295,22 @@ class BaseWmtpTrainer(BaseComponent):
         # 체크포인트 관리 설정
         self.dist_manager = dm  # 분산 훈련 매니저 (체크포인트 저장/로드용)
 
-        # Recipe에서 체크포인트 설정 파싱
-        recipe = ctx.get("recipe")  # Recipe 객체 가져오기 (없으면 None)
+        # Config에서 체크포인트 설정 파싱 (Phase 2: Recipe에서 Config로 이동)
+        config = ctx.get("config")  # Config 객체 가져오기
+        recipe = ctx.get("recipe")  # Recipe 객체 가져오기 (알고리즘 정보용)
+
         if (
-            recipe
-            and hasattr(recipe, "train")
-            and hasattr(recipe.train, "checkpointing")
+            config
+            and hasattr(config, "paths")
+            and hasattr(config.paths, "checkpoints")
         ):
-            checkpointing = recipe.train.checkpointing
-            self.save_interval = getattr(checkpointing, "save_interval", 100)
-            self.keep_last = getattr(checkpointing, "keep_last", 3)
-            self.save_final = getattr(checkpointing, "save_final", True)
+            checkpoint_config = config.paths.checkpoints
+            self.save_interval = checkpoint_config.save_interval
+            self.keep_last = checkpoint_config.keep_last
+            self.save_final = checkpoint_config.save_final
         else:
-            # 기본값 설정
-            self.save_interval = 100
+            # 기본값 설정 (하위 호환성)
+            self.save_interval = 500
             self.keep_last = 3
             self.save_final = True
 
@@ -319,10 +321,18 @@ class BaseWmtpTrainer(BaseComponent):
             else "wmtp"
         )
 
-        # 체크포인트 디렉토리 설정
-        run_name = recipe.run.name if recipe and hasattr(recipe, "run") else "default"
-        self.checkpoint_dir = Path("./checkpoints") / run_name
-        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        # 체크포인트 디렉토리 설정 (Phase 3: Config + MLflow run_id 기반)
+        checkpoint_path, self.is_s3_checkpoint = self._resolve_checkpoint_path(
+            config, recipe, ctx
+        )
+
+        if self.is_s3_checkpoint:
+            # S3 경로: 문자열로 저장
+            self.checkpoint_dir = checkpoint_path
+        else:
+            # 로컬 경로: Path 객체로 생성 및 디렉토리 생성
+            self.checkpoint_dir = Path(checkpoint_path)
+            self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
         # 저장된 체크포인트 목록 관리
         self.saved_checkpoints = []
@@ -345,6 +355,44 @@ class BaseWmtpTrainer(BaseComponent):
             console.print(
                 f"[green]Model and optimizer states restored from step {self.start_step}[/green]"
             )
+
+    def _resolve_checkpoint_path(self, config, recipe, ctx) -> tuple[str, bool]:
+        """체크포인트 경로 해석 (Phase 3: Config + MLflow run_id 기반)
+
+        Args:
+            config: Config 객체
+            recipe: Recipe 객체
+            ctx: 컨텍스트 딕셔너리
+
+        Returns:
+            (checkpoint_dir, is_s3): 체크포인트 디렉토리와 S3 여부
+        """
+        from src.utils.path_resolver import resolve_checkpoint_path
+
+        # MLflow run_id 가져오기 (최우선 식별자)
+        run_id = self.mlflow.get_run_id() if self.mlflow else None
+
+        # run_id가 없으면 recipe.run.name 사용 (fallback)
+        if not run_id:
+            run_id = (
+                recipe.run.name
+                if recipe and hasattr(recipe, "run") and hasattr(recipe.run, "name")
+                else "no_mlflow_run"
+            )
+
+        # Config에서 체크포인트 설정 가져오기
+        if (
+            config
+            and hasattr(config, "paths")
+            and hasattr(config.paths, "checkpoints")
+        ):
+            base_path = config.paths.checkpoints.base_path
+            checkpoint_dir, is_s3 = resolve_checkpoint_path(base_path, run_id)
+            return checkpoint_dir, is_s3
+        else:
+            # 기본값 (하위 호환성)
+            checkpoint_dir = f"./checkpoints/{run_id}"
+            return checkpoint_dir, False
 
     @abstractmethod
     def compute_head_weights(
@@ -457,9 +505,9 @@ class BaseWmtpTrainer(BaseComponent):
 
         return metrics
 
-    def _save_checkpoint(self, epoch: int, step: int, metrics: dict) -> Path:
+    def _save_checkpoint(self, epoch: int, step: int, metrics: dict) -> str:
         """
-        단일 체크포인트 저장.
+        단일 체크포인트 저장 (Phase 3: S3/로컬 자동 판단)
 
         Args:
             epoch: 현재 에폭
@@ -467,15 +515,21 @@ class BaseWmtpTrainer(BaseComponent):
             metrics: 훈련 메트릭
 
         Returns:
-            저장된 체크포인트 경로
+            저장된 체크포인트 경로 (문자열)
         """
-        checkpoint_path = self.checkpoint_dir / f"checkpoint_step_{step}.pt"
+        # S3/로컬 자동 판단하여 체크포인트 경로 생성
+        if self.is_s3_checkpoint:
+            # S3 경로: 문자열 결합
+            checkpoint_path = f"{self.checkpoint_dir}/checkpoint_step_{step}.pt"
+        else:
+            # 로컬 경로: Path 객체 사용
+            checkpoint_path = str(self.checkpoint_dir / f"checkpoint_step_{step}.pt")
 
         # FSDP 호환 체크포인트 저장 (MLflow 통합)
         self.dist_manager.save_checkpoint(
             model=self.model,
             optimizer=self.optimizer,
-            checkpoint_path=str(checkpoint_path),
+            checkpoint_path=checkpoint_path,
             epoch=epoch,
             step=step,
             mlflow_manager=self.mlflow,  # MLflow 매니저 전달
@@ -486,18 +540,20 @@ class BaseWmtpTrainer(BaseComponent):
 
         # MLflow 업로드는 분산 매니저에서 수행함 (중복 제거)
 
-        console.print(f"[green]체크포인트 저장 완료: {checkpoint_path}[/green]")
+        storage_type = "S3" if self.is_s3_checkpoint else "로컬"
+        console.print(f"[green]{storage_type} 체크포인트 저장 완료: {checkpoint_path}[/green]")
         return checkpoint_path
 
     def _manage_checkpoints(
-        self, saved_checkpoints: list, new_checkpoint: Path
+        self, saved_checkpoints: list, new_checkpoint: str
     ) -> list:
         """
         체크포인트 파일 개수 관리 (keep_last 개만 유지).
+        Phase 3: S3/로컬 자동 판단
 
         Args:
             saved_checkpoints: 기존 체크포인트 목록
-            new_checkpoint: 새로 저장된 체크포인트
+            new_checkpoint: 새로 저장된 체크포인트 경로 (문자열)
 
         Returns:
             업데이트된 체크포인트 목록
@@ -506,15 +562,30 @@ class BaseWmtpTrainer(BaseComponent):
 
         # keep_last 개수 초과 시 오래된 파일 삭제
         while len(saved_checkpoints) > self.keep_last:
-            old_checkpoint = saved_checkpoints.pop(0)
+            old_checkpoint_path = saved_checkpoints.pop(0)
             try:
-                if old_checkpoint.exists():
-                    old_checkpoint.unlink()
+                if self.is_s3_checkpoint:
+                    # S3 체크포인트 삭제
+                    from src.utils.s3 import S3Manager
+                    s3_manager = S3Manager()
+                    # S3 경로에서 버킷과 키 분리
+                    bucket, key = old_checkpoint_path.replace("s3://", "").split("/", 1)
+                    s3_manager.delete_object(bucket, key)
+                    checkpoint_name = key.split("/")[-1]
                     console.print(
-                        f"[blue]이전 체크포인트 삭제: {old_checkpoint.name}[/blue]"
+                        f"[blue]이전 S3 체크포인트 삭제: {checkpoint_name}[/blue]"
                     )
+                else:
+                    # 로컬 체크포인트 삭제
+                    old_checkpoint = Path(old_checkpoint_path)
+                    if old_checkpoint.exists():
+                        old_checkpoint.unlink()
+                        console.print(
+                            f"[blue]이전 체크포인트 삭제: {old_checkpoint.name}[/blue]"
+                        )
             except Exception as e:
-                console.print(f"[yellow]체크포인트 삭제 실패: {e}[/yellow]")
+                storage_type = "S3" if self.is_s3_checkpoint else "로컬"
+                console.print(f"[yellow]{storage_type} 체크포인트 삭제 실패: {e}[/yellow]")
 
         return saved_checkpoints
 

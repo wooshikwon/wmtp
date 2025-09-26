@@ -309,7 +309,7 @@ class DistributedManager:
 
     def save_checkpoint(
         self,
-        model: FSDP,
+        model: Union[FSDP, torch.nn.Module],
         optimizer: torch.optim.Optimizer,
         checkpoint_path: str,
         epoch: int,
@@ -318,7 +318,7 @@ class DistributedManager:
         **kwargs,
     ) -> None:
         """
-        FSDP 체크포인트 저장 (MLflow 통합).
+        체크포인트 저장 (FSDP/non-FSDP 모델 모두 지원).
 
         WMTP 맥락:
         학습 중간 상태를 저장하여 재개 가능하게 합니다.
@@ -326,7 +326,7 @@ class DistributedManager:
         S3 경로 지원 및 MLflow 자동 업로드 기능이 추가되었습니다.
 
         매개변수:
-            model: FSDP 래핑된 모델
+            model: FSDP 래핑된 모델 또는 일반 torch.nn.Module
             optimizer: 옵티마이저
             checkpoint_path: 저장 경로 (로컬 또는 s3://)
             epoch: 현재 에폭
@@ -340,24 +340,33 @@ class DistributedManager:
             - S3 경로시 직접 업로드, 로컬 경로시 파일 저장 후 MLflow 업로드
         """
         if self.is_main_process():
-            # Configure state dict
-            save_policy = FullStateDictConfig(
-                offload_to_cpu=True,
-                rank0_only=True,
-            )
+            # 모델 타입에 따른 분기 처리
+            if isinstance(model, FSDP):
+                # 기존 FSDP 로직 유지
+                save_policy = FullStateDictConfig(
+                    offload_to_cpu=True,
+                    rank0_only=True,
+                )
 
-            with FSDP.state_dict_type(
-                model, StateDictType.FULL_STATE_DICT, save_policy
-            ):
+                with FSDP.state_dict_type(
+                    model, StateDictType.FULL_STATE_DICT, save_policy
+                ):
+                    state_dict = model.state_dict()
+            else:
+                # 일반 모델 처리 (신규 추가)
                 state_dict = model.state_dict()
+                # CPU로 이동 (메모리 효율성)
+                if hasattr(model, 'device') and str(model.device) != 'cpu':
+                    state_dict = {k: v.cpu() for k, v in state_dict.items()}
 
-                checkpoint = {
-                    "model": state_dict,
-                    "optimizer": optimizer.state_dict(),
-                    "epoch": epoch,
-                    "step": step,
-                    **kwargs,
-                }
+            # 공통 체크포인트 구성 (기존 로직 유지)
+            checkpoint = {
+                "model": state_dict,
+                "optimizer": optimizer.state_dict(),
+                "epoch": epoch,
+                "step": step,
+                **kwargs,
+            }
 
             # S3 또는 로컬 저장 처리
             if checkpoint_path.startswith("s3://"):
@@ -410,15 +419,15 @@ class DistributedManager:
 
     def load_checkpoint(
         self,
-        model: FSDP,
+        model: Union[FSDP, torch.nn.Module],
         optimizer: torch.optim.Optimizer,
         checkpoint_path: str,
     ) -> dict[str, Any]:
         """
-        FSDP 체크포인트 로드 (S3 지원).
+        체크포인트 로드 (FSDP/non-FSDP 모델 모두 지원).
 
         매개변수:
-            model: FSDP 래핑된 모델
+            model: FSDP 래핑된 모델 또는 일반 torch.nn.Module
             optimizer: 옵티마이저
             checkpoint_path: 체크포인트 경로 (로컬 또는 s3://)
 
@@ -444,13 +453,18 @@ class DistributedManager:
                 map_location=self.device,
             )
 
-        # Configure state dict
-        load_policy = FullStateDictConfig(
-            offload_to_cpu=True,
-            rank0_only=False,
-        )
+        # 모델 타입에 따른 분기 처리
+        if isinstance(model, FSDP):
+            # 기존 FSDP 로직 유지
+            load_policy = FullStateDictConfig(
+                offload_to_cpu=True,
+                rank0_only=False,
+            )
 
-        with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, load_policy):
+            with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, load_policy):
+                model.load_state_dict(checkpoint["model"])
+        else:
+            # 일반 모델 처리 (신규 추가)
             model.load_state_dict(checkpoint["model"])
 
         optimizer.load_state_dict(checkpoint["optimizer"])
