@@ -78,9 +78,9 @@ class CodeContestsEvaluator(EvaluationProtocol):
         model: Any,
         tokenizer: Any,
         dataset: Any | None = None,
-        batch_size: int = 8,
+        batch_size: int = 8,  # noqa: ARG002
         num_samples: int | None = None,
-        k_values: list[int] = [1, 5],
+        k_values: list[int] | None = None,
     ) -> dict[str, float]:
         """
         CodeContests 데이터셋에서 모델 평가.
@@ -107,6 +107,9 @@ class CodeContestsEvaluator(EvaluationProtocol):
         """
         if dataset is None:
             dataset = self.load_codecontests_dataset()
+
+        if k_values is None:
+            k_values = [1, 5]
 
         metrics = defaultdict(list)
 

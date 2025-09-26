@@ -27,8 +27,11 @@ import torch
 import torch.nn.functional as F
 from rich.console import Console
 
-from src.components.trainer.base_wmtp_trainer import BaseWmtpTrainer, compute_weighted_mtp_loss
 from src.components.registry import trainer_registry
+from src.components.trainer.base_wmtp_trainer import (
+    BaseWmtpTrainer,
+    compute_weighted_mtp_loss,
+)
 
 console = Console()
 
@@ -84,26 +87,32 @@ class Rho1WmtpTrainer(BaseWmtpTrainer):
 
         # Recipe 기반 설정 로드 (Factory에서 전달)
         self.rho1_cfg = self.config.get("rho1_config", {})
-        
-        # Dual mode 파라미터 로드 
+
+        # Dual mode 파라미터 로드
         self.selection_mode = self.rho1_cfg.get("selection_mode", "weighted")
-        self.skip_threshold_pct = float(self.rho1_cfg.get("skip_threshold_percentile", 0.3))
-        
+        self.skip_threshold_pct = float(
+            self.rho1_cfg.get("skip_threshold_percentile", 0.3)
+        )
+
         # Weight softmax temperature (weighted mode에서 사용)
         # Backward compatibility: temperature → weight_temperature
         self.temperature = float(
-            self.loss_cfg.get("weight_temperature") or
-            self.loss_cfg.get("temperature", 0.7)
+            self.loss_cfg.get("weight_temperature")
+            or self.loss_cfg.get("temperature", 0.7)
         )
         if self.temperature <= 0:
-            raise ValueError(f"Weight temperature must be positive, got {self.temperature}")
-            
+            raise ValueError(
+                f"Weight temperature must be positive, got {self.temperature}"
+            )
+
         # Phase 1.2: CE Difference Threshold 파라미터 (노이즈 필터링)
         self.min_ce_diff = float(self.rho1_cfg.get("min_ce_diff", 0.01))
         if self.min_ce_diff < 0:
-            raise ValueError(f"min_ce_diff must be non-negative, got {self.min_ce_diff}")
+            raise ValueError(
+                f"min_ce_diff must be non-negative, got {self.min_ce_diff}"
+            )
 
-        console.print(f"[green]Rho-1 WMTP initialized:[/green]")
+        console.print("[green]Rho-1 WMTP initialized:[/green]")
         console.print(f"  Mode: {self.selection_mode}")
         if self.selection_mode == "token_skip":
             console.print(f"  Skip threshold: {self.skip_threshold_pct:.1%} (bottom)")
@@ -111,7 +120,9 @@ class Rho1WmtpTrainer(BaseWmtpTrainer):
             console.print(f"  Weight temperature: {self.temperature}")
         console.print(f"  Min CE diff threshold: {self.min_ce_diff}")
 
-    def compute_reference_ce(self, input_ids: torch.Tensor, target_ids: torch.Tensor) -> torch.Tensor:
+    def compute_reference_ce(
+        self, input_ids: torch.Tensor, target_ids: torch.Tensor
+    ) -> torch.Tensor:
         """효율적 Reference CE 계산 (한 번의 forward pass).
 
         Reference 모델로 각 위치에서 다음 토큰의 Cross-Entropy를 계산합니다.
@@ -138,20 +149,24 @@ class Rho1WmtpTrainer(BaseWmtpTrainer):
                 ref_logits = ref_outputs
 
             if ref_logits.ndim != 3:
-                raise ValueError(f"Reference logits should be 3D [B,S,V], got {ref_logits.shape}")
+                raise ValueError(
+                    f"Reference logits should be 3D [B,S,V], got {ref_logits.shape}"
+                )
 
             # 각 위치에서 다음 토큰의 CE 계산
             # ref_logits[:, :-1] = t 위치의 logits (t+1 토큰 예측)
             # target_ids[:, 1:] = t+1 위치의 실제 토큰
             ref_ce_all = F.cross_entropy(
                 ref_logits[:, :-1].transpose(1, 2),  # [B, V, S-1]
-                target_ids[:, 1:],                   # [B, S-1]
-                reduction='none'
+                target_ids[:, 1:],  # [B, S-1]
+                reduction="none",
             )  # [B, S-1] - 각 위치 t에서 t+1 토큰에 대한 CE
 
         return ref_ce_all
 
-    def align_ref_ce_to_mtp(self, ref_ce_all: torch.Tensor, mtp_ce_heads: torch.Tensor) -> torch.Tensor:
+    def align_ref_ce_to_mtp(
+        self, ref_ce_all: torch.Tensor, mtp_ce_heads: torch.Tensor
+    ) -> torch.Tensor:
         """Reference CE를 MTP 헤드와 정렬.
 
         Reference 모델의 위치별 CE를 MTP 헤드별 CE와 올바른 time step으로 매칭합니다.
@@ -179,11 +194,17 @@ class Rho1WmtpTrainer(BaseWmtpTrainer):
                 valid_len = min(S - k - 1, ref_ce_all.size(1) - k)
                 if valid_len > 0:
                     # 헤드 k의 처음 valid_len 위치에 reference[k:k+valid_len] 매칭
-                    aligned_ref_ce[:, :valid_len, k] = ref_ce_all[:, k:k+valid_len]
+                    aligned_ref_ce[:, :valid_len, k] = ref_ce_all[:, k : k + valid_len]
 
         return aligned_ref_ce
 
-    def compute_head_weights(self, logits: torch.Tensor, target_ids: torch.Tensor, ce_per_head: torch.Tensor, **kwargs) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+    def compute_head_weights(
+        self,
+        logits: torch.Tensor,
+        target_ids: torch.Tensor,
+        ce_per_head: torch.Tensor,
+        **kwargs,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         """Rho-1 방식: |CE^ref - CE^base| 기반 가중치 계산.
 
         Reference 모델과 Base 모델의 CE 차이를 계산하여 토큰 중요도를 측정하고,
@@ -219,7 +240,7 @@ class Rho1WmtpTrainer(BaseWmtpTrainer):
         # 3. Excess loss 계산: |CE^ref - CE^base|
         # 큰 차이 = 두 모델 모두 어려워함 = 중요한 토큰
         excess_loss = torch.abs(ce_per_head - aligned_ref_ce)  # [B, S, H]
-        
+
         # Phase 1.2: CE Difference Threshold 적용 (노이즈 필터링)
         excess_loss = self._apply_ce_threshold(excess_loss)
 
@@ -230,96 +251,90 @@ class Rho1WmtpTrainer(BaseWmtpTrainer):
             return self._compute_weighted_weights(excess_loss)
 
     def _compute_token_skip_weights(
-        self, 
-        excess_loss: torch.Tensor
+        self, excess_loss: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Rho-1 Original: 상위 토큰만 선택, 나머지 제외.
-        
+
         Args:
             excess_loss: [B, S, H] - 각 토큰-헤드의 excess loss
-            
+
         Returns:
             head_weights: [B, S, H] - 선택된 토큰은 1.0, 제외는 0.0
             selection_mask: [B, S, H] - 동일 (바이너리 마스크)
         """
         B, S, H = excess_loss.shape
-        
+
         # 배치별로 threshold 계산
         flat_loss = excess_loss.view(B, -1)  # [B, S*H]
-        
+
         # 하위 k% percentile 값 구하기
         k_threshold = torch.quantile(
-            flat_loss, 
+            flat_loss,
             self.skip_threshold_pct,  # 하위 30% 기본값
-            dim=1, 
-            keepdim=True
+            dim=1,
+            keepdim=True,
         ).view(B, 1, 1)  # [B, 1, 1]
-        
+
         # 임계값 이상인 토큰만 선택 (binary mask)
         selection_mask = (excess_loss >= k_threshold).float()  # [B, S, H]
-        
+
         # 선택된 토큰에만 균등 가중치 부여
         head_weights = selection_mask.clone()
-        
+
         # 통계 로깅
         selected_ratio = selection_mask.mean()
         console.print(f"[cyan]Token Skip: {selected_ratio:.1%} tokens selected[/cyan]")
-        
+
         return head_weights, selection_mask
-    
-    def _compute_weighted_weights(
-        self, 
-        excess_loss: torch.Tensor
-    ) -> torch.Tensor:
+
+    def _compute_weighted_weights(self, excess_loss: torch.Tensor) -> torch.Tensor:
         """
         WMTP: 모든 토큰에 연속적 가중치 적용 (기존 방식).
-        
+
         Args:
             excess_loss: [B, S, H] - 각 토큰-헤드의 excess loss
-            
+
         Returns:
             weights: [B, S, H] - Softmax 가중치
         """
         # Softmax로 연속적 가중치 계산
         weights = F.softmax(excess_loss / self.temperature, dim=-1)  # [B, S, H]
-        
+
         # 통계 로깅
         weight_std = weights.std()
         console.print(f"[cyan]Weighted: std={weight_std:.3f}[/cyan]")
-        
+
         return weights  # selection_mask 없이 weights만 반환
-    
+
     def _apply_ce_threshold(self, excess_loss: torch.Tensor) -> torch.Tensor:
         """
         Phase 1.2: CE Difference Threshold 적용 - 노이즈 필터링.
-        
+
         너무 작은 CE 차이는 노이즈로 간주하고 0으로 처리하여
         가중치 계산에서 제외합니다.
-        
+
         Args:
             excess_loss: [B, S, H] - 원본 excess loss 값
-            
+
         Returns:
             filtered_excess_loss: [B, S, H] - threshold 적용된 excess loss
         """
         if self.min_ce_diff <= 0:
             return excess_loss  # threshold 비활성화 시 원본 값 반환
-            
+
         # Threshold 적용: min_ce_diff 미만은 0으로 처리
         filtered_loss = torch.where(
-            excess_loss >= self.min_ce_diff,
-            excess_loss,
-            torch.zeros_like(excess_loss)
+            excess_loss >= self.min_ce_diff, excess_loss, torch.zeros_like(excess_loss)
         )
-        
+
         # Edge case 처리: 모든 값이 threshold 미만인 경우
         B, S, H = filtered_loss.shape
-        
+
         # 배치별로 처리
         for b in range(B):
             batch_loss = filtered_loss[b]  # [S, H]
-            
+
             # 유효한 값이 하나라도 있는지 확인
             if torch.all(batch_loss == 0):
                 # 모든 값이 0이면 uniform weight fallback
@@ -328,7 +343,7 @@ class Rho1WmtpTrainer(BaseWmtpTrainer):
                 )
                 # 균등 가중치로 대체 (1/H 대신 1.0 사용 - softmax에서 정규화됨)
                 filtered_loss[b] = torch.ones_like(batch_loss)
-        
+
         return filtered_loss
 
     def train_step(self, batch: dict[str, Any]) -> dict[str, Any]:
@@ -346,8 +361,9 @@ class Rho1WmtpTrainer(BaseWmtpTrainer):
         self.model.train()
 
         # 배치를 디바이스로 이동
-        batch = {k: v.to(self.device) if torch.is_tensor(v) else v
-                 for k, v in batch.items()}
+        batch = {
+            k: v.to(self.device) if torch.is_tensor(v) else v for k, v in batch.items()
+        }
 
         target_ids: torch.Tensor = batch["labels"]  # [B, S]
         input_ids: torch.Tensor = batch.get("input_ids")
@@ -387,7 +403,9 @@ class Rho1WmtpTrainer(BaseWmtpTrainer):
 
             # 🎯 단계 1: MTP 헤드별 CE 계산 (임시 균등 가중치로)
             B, S, H, V = logits.shape
-            temp_weights = torch.ones((B, S, H), device=logits.device, dtype=logits.dtype)
+            temp_weights = torch.ones(
+                (B, S, H), device=logits.device, dtype=logits.dtype
+            )
 
             _, valid_mask, ce_per_head = compute_weighted_mtp_loss(
                 logits=logits,
@@ -401,7 +419,7 @@ class Rho1WmtpTrainer(BaseWmtpTrainer):
             result = self.compute_head_weights(
                 logits, target_ids, ce_per_head, input_ids=input_ids
             )
-            
+
             # 반환값 타입에 따라 처리
             if isinstance(result, tuple):
                 head_weights, selection_mask = result
@@ -446,7 +464,9 @@ class Rho1WmtpTrainer(BaseWmtpTrainer):
                         shift = k + 1
                         valid_len = S - shift
                         if valid_len <= 0:
-                            ce_head_means.append(torch.tensor(0.0, device=logits.device))
+                            ce_head_means.append(
+                                torch.tensor(0.0, device=logits.device)
+                            )
                             continue
                         logits_k = logits[:, :valid_len, k, :]
                         labels_k = target_ids[:, shift : shift + valid_len]
@@ -464,12 +484,22 @@ class Rho1WmtpTrainer(BaseWmtpTrainer):
                         f"train/ce_head_{i}": float(x)
                         for i, x in enumerate(ce_head_means)
                     }
-                    metrics.update({
-                        "train/loss": float(loss.detach().item()),
-                        "train/ce_mean": float(
-                            (ce_per_head[valid_mask.unsqueeze(-1).expand(-1, -1, H)]).mean().item()
-                        ) if valid_mask.any() else 0.0,
-                    })
+                    metrics.update(
+                        {
+                            "train/loss": float(loss.detach().item()),
+                            "train/ce_mean": float(
+                                (
+                                    ce_per_head[
+                                        valid_mask.unsqueeze(-1).expand(-1, -1, H)
+                                    ]
+                                )
+                                .mean()
+                                .item()
+                            )
+                            if valid_mask.any()
+                            else 0.0,
+                        }
+                    )
 
                     # 가중치 통계 (Rho-1 가중치 분석용)
                     w_eff = head_weights[valid_mask.unsqueeze(-1).expand(-1, -1, H)]
@@ -483,24 +513,46 @@ class Rho1WmtpTrainer(BaseWmtpTrainer):
 
                         # 가중치 분포 백분위수
                         try:
-                            weight_stats.update({
-                                "train/weight_p25": float(torch.quantile(w_eff, 0.25).item()),
-                                "train/weight_p75": float(torch.quantile(w_eff, 0.75).item()),
-                                "train/weight_p95": float(torch.quantile(w_eff, 0.95).item()),
-                            })
+                            weight_stats.update(
+                                {
+                                    "train/weight_p25": float(
+                                        torch.quantile(w_eff, 0.25).item()
+                                    ),
+                                    "train/weight_p75": float(
+                                        torch.quantile(w_eff, 0.75).item()
+                                    ),
+                                    "train/weight_p95": float(
+                                        torch.quantile(w_eff, 0.95).item()
+                                    ),
+                                }
+                            )
                         except Exception:
                             sorted_w = torch.sort(w_eff)[0]
                             n = sorted_w.numel()
-                            weight_stats.update({
-                                "train/weight_p25": float(sorted_w[int(n * 0.25)].item()),
-                                "train/weight_p75": float(sorted_w[int(n * 0.75)].item()),
-                                "train/weight_p95": float(sorted_w[int(n * 0.95)].item()),
-                            })
+                            weight_stats.update(
+                                {
+                                    "train/weight_p25": float(
+                                        sorted_w[int(n * 0.25)].item()
+                                    ),
+                                    "train/weight_p75": float(
+                                        sorted_w[int(n * 0.75)].item()
+                                    ),
+                                    "train/weight_p95": float(
+                                        sorted_w[int(n * 0.95)].item()
+                                    ),
+                                }
+                            )
 
-                        weight_stats.update({
-                            "train/nan_weights": int((~torch.isfinite(head_weights)).sum().item()),
-                            "train/extreme_weights": int((head_weights > 5.0).sum().item()),
-                        })
+                        weight_stats.update(
+                            {
+                                "train/nan_weights": int(
+                                    (~torch.isfinite(head_weights)).sum().item()
+                                ),
+                                "train/extreme_weights": int(
+                                    (head_weights > 5.0).sum().item()
+                                ),
+                            }
+                        )
 
                         metrics.update(weight_stats)
 
@@ -508,24 +560,40 @@ class Rho1WmtpTrainer(BaseWmtpTrainer):
                     try:
                         # Reference CE 재계산 (로깅용)
                         ref_ce_all = self.compute_reference_ce(input_ids, target_ids)
-                        aligned_ref_ce = self.align_ref_ce_to_mtp(ref_ce_all, ce_per_head)
+                        aligned_ref_ce = self.align_ref_ce_to_mtp(
+                            ref_ce_all, ce_per_head
+                        )
                         excess_loss = torch.abs(ce_per_head - aligned_ref_ce)
 
-                        excess_eff = excess_loss[valid_mask.unsqueeze(-1).expand(-1, -1, H)]
+                        excess_eff = excess_loss[
+                            valid_mask.unsqueeze(-1).expand(-1, -1, H)
+                        ]
                         if excess_eff.numel() > 0:
                             # Excess loss 통계
-                            metrics.update({
-                                "train/rho1_excess_mean": float(excess_eff.mean().item()),
-                                "train/rho1_excess_std": float(excess_eff.std().item()),
-                                "train/rho1_excess_max": float(excess_eff.max().item()),
-                            })
+                            metrics.update(
+                                {
+                                    "train/rho1_excess_mean": float(
+                                        excess_eff.mean().item()
+                                    ),
+                                    "train/rho1_excess_std": float(
+                                        excess_eff.std().item()
+                                    ),
+                                    "train/rho1_excess_max": float(
+                                        excess_eff.max().item()
+                                    ),
+                                }
+                            )
 
                             # 높은 excess loss 토큰 비율 (중요 토큰 비율)
                             threshold = excess_eff.mean() + excess_eff.std()
-                            important_tokens = float((excess_eff > threshold).sum().item())
+                            important_tokens = float(
+                                (excess_eff > threshold).sum().item()
+                            )
                             total_tokens = float(excess_eff.numel())
                             metrics["train/rho1_important_ratio"] = (
-                                important_tokens / total_tokens if total_tokens > 0 else 0.0
+                                important_tokens / total_tokens
+                                if total_tokens > 0
+                                else 0.0
                             )
 
                             metrics["train/rho1_algorithm"] = 1  # Rho-1 플래그

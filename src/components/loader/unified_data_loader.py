@@ -237,10 +237,7 @@ class UnifiedDataLoader(DatasetLoader):
             # JSON 형식
             with open(file_path, encoding="utf-8") as f:
                 data = json.load(f)
-                if isinstance(data, list):
-                    data_list = data
-                else:
-                    data_list = [data]
+                data_list = data if isinstance(data, list) else [data]
 
         return Dataset.from_list(data_list)
 

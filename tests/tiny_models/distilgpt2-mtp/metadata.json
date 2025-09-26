@@ -1,0 +1,26 @@
+{
+  "wmtp_type": "base_model",
+  "training_algorithm": "mtp",
+  "horizon": 4,
+  "n_heads": 4,
+  "base_architecture": "gpt2",
+  "model_size": "120m",
+  "storage_version": "2.0",
+  "created_by": "wmtp_local_standardizer",
+  "standardization_date": "2025-09-26T18:58:41.725505",
+  "original_format": "huggingface_safetensors",
+  "source_path": "tests/tiny_models/distilgpt2-mtp",
+  "loading_strategy": {
+    "loader_type": "custom_mtp",
+    "model_class_name": "GPTMTPForCausalLM",
+    "custom_module_file": "modeling.py",
+    "transformers_class": null,
+    "state_dict_mapping": {
+      "remove_prefix": "base_model.",
+      "add_prefix": null,
+      "key_transforms": {}
+    },
+    "required_files": ["config.json", "model.safetensors", "modeling.py", "metadata.json"]
+  },
+  "algorithm_compatibility": ["baseline-mtp", "critic-wmtp"]
+}

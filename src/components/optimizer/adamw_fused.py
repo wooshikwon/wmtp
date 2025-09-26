@@ -22,7 +22,7 @@ from src.components.registry import optimizer_registry
 class AdamWFusedOptimizer(BaseComponent):
     """
     AdamW optimizer with CUDA fused kernel optimization and LR scheduler.
-    
+
     Mixed precision (BF16/FP16) is handled by trainer autocast context,
     not by this optimizer. This component focuses on:
     - Fused kernel optimization for CUDA acceleration
@@ -54,7 +54,9 @@ class AdamWFusedOptimizer(BaseComponent):
 
         # Recipe에서 검증된 값들을 사용 (Pydantic으로 이미 검증됨)
         lr: float = float(self.config["lr"])  # Recipe optim.lr에서 제공
-        weight_decay: float = float(self.config["weight_decay"])  # Recipe optim.weight_decay에서 제공
+        weight_decay: float = float(
+            self.config["weight_decay"]
+        )  # Recipe optim.weight_decay에서 제공
         betas = self.config["betas"]  # Recipe optim.betas에서 제공
 
         # Enable fused AdamW when available (PyTorch CUDA build)
@@ -81,10 +83,16 @@ class AdamWFusedOptimizer(BaseComponent):
             )
 
         # Scheduler setup via transformers (Recipe에서 값 제공)
-        scheduler_type: str = self.config["scheduler"]  # Recipe optim.scheduler에서 제공
-        warmup_ratio: float = float(self.config["warmup_ratio"])  # Recipe optim.warmup_ratio에서 제공
+        scheduler_type: str = self.config[
+            "scheduler"
+        ]  # Recipe optim.scheduler에서 제공
+        warmup_ratio: float = float(
+            self.config["warmup_ratio"]
+        )  # Recipe optim.warmup_ratio에서 제공
         num_training_steps: int = int(ctx.get("num_training_steps", 0))
-        num_warmup_steps = int(num_training_steps * warmup_ratio) if num_training_steps > 0 else 0
+        num_warmup_steps = (
+            int(num_training_steps * warmup_ratio) if num_training_steps > 0 else 0
+        )
 
         if num_training_steps > 0:
             self.scheduler = get_scheduler(
@@ -100,7 +108,9 @@ class AdamWFusedOptimizer(BaseComponent):
 
         # Store fused flag and grad clip for trainer reference
         self.fused = fused_flag
-        self.grad_clip = float(self.config["grad_clip"])  # Recipe optim.grad_clip에서 제공
+        self.grad_clip = float(
+            self.config["grad_clip"]
+        )  # Recipe optim.grad_clip에서 제공
 
     def step(self) -> None:
         if self.optimizer is None:
@@ -133,42 +143,40 @@ class AdamWFusedOptimizer(BaseComponent):
             "has_scheduler": self.scheduler is not None,
             "fused": bool(getattr(self, "fused", False)),
         }
-    
+
     def state_dict(self) -> dict[str, Any]:
         """Return the state dictionary for checkpointing.
-        
+
         Returns:
             Dictionary containing optimizer and scheduler states
         """
         if self.optimizer is None:
             raise RuntimeError("Optimizer not initialized. Call setup() first.")
-            
+
         state = {
             "optimizer": self.optimizer.state_dict(),
             "last_lr": self._last_lr,
         }
-        
+
         if self.scheduler is not None:
             state["scheduler"] = self.scheduler.state_dict()
-            
+
         return state
-    
+
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
         """Load state from checkpoint.
-        
+
         Args:
             state_dict: State dictionary from checkpointing
         """
         if self.optimizer is None:
             raise RuntimeError("Optimizer not initialized. Call setup() first.")
-            
+
         if "optimizer" in state_dict:
             self.optimizer.load_state_dict(state_dict["optimizer"])
-            
+
         if "last_lr" in state_dict:
             self._last_lr = float(state_dict["last_lr"])
-            
+
         if "scheduler" in state_dict and self.scheduler is not None:
             self.scheduler.load_state_dict(state_dict["scheduler"])
-
-

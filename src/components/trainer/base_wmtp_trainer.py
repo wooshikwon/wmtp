@@ -17,7 +17,6 @@ BaseWmtpTrainer는 모든 WMTP 알고리즘(mtp-baseline, critic-wmtp, rho1-wmtp
 
 from __future__ import annotations  # Python 3.10+ 타입 힌트 호환성
 
-import math  # 수학 연산 (가중치 정규화 등)
 from abc import abstractmethod  # 추상 메서드
 from pathlib import Path  # 경로 처리
 from typing import Any  # 범용 타입 힌트
@@ -46,7 +45,7 @@ def compute_weighted_mtp_loss(
 
     각 헤드별 CE에 해당 헤드의 가중치를 직접 적용하여
     토큰 중요도가 손실에 정확히 반영되도록 함.
-    
+
     Token skip mode에서는 selection_mask가 0인 토큰들을 손실 계산에서 완전히 제외.
 
     Args:
@@ -98,7 +97,7 @@ def compute_weighted_mtp_loss(
 
     device = logits.device
     dtype = logits.dtype
-    
+
     # selection_mask가 없으면 모두 1로 초기화
     if selection_mask is None:
         selection_mask = torch.ones((bsz, seqlen, H), device=device, dtype=dtype)
@@ -139,7 +138,7 @@ def compute_weighted_mtp_loss(
 
         # 유효 위치 마스킹 (ignore_index 제외)
         valid_k_mask = (labels_k != ignore_index).to(dtype)  # [B, valid_len]
-        
+
         # Token skip mask 적용 (selection_mask가 0인 토큰은 완전 제외)
         combined_mask = valid_k_mask * mask_k  # [B, valid_len]
 
@@ -254,16 +253,16 @@ class BaseWmtpTrainer(BaseComponent):
         self.optimizer = optimizer
 
         # 디바이스 설정 - 모델의 파라미터로부터 추론
-        if hasattr(model, 'parameters') and list(model.parameters()):
+        if hasattr(model, "parameters") and list(model.parameters()):
             self.device = next(model.parameters()).device
         else:
             # 폴백: 사용 가능한 최적 디바이스 자동 선택
             if torch.cuda.is_available():
-                self.device = torch.device('cuda')
+                self.device = torch.device("cuda")
             elif torch.backends.mps.is_available():
-                self.device = torch.device('mps')
+                self.device = torch.device("mps")
             else:
-                self.device = torch.device('cpu')
+                self.device = torch.device("cpu")
 
         # 혼합 정밀도 설정: 메모리와 속도 최적화
         mp = str(self.config.get("mixed_precision", "bf16")).lower()
@@ -321,9 +320,7 @@ class BaseWmtpTrainer(BaseComponent):
         )
 
         # 체크포인트 디렉토리 설정
-        run_name = (
-            recipe.run.name if recipe and hasattr(recipe, "run") else "default"
-        )
+        run_name = recipe.run.name if recipe and hasattr(recipe, "run") else "default"
         self.checkpoint_dir = Path("./checkpoints") / run_name
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
@@ -350,7 +347,9 @@ class BaseWmtpTrainer(BaseComponent):
             )
 
     @abstractmethod
-    def compute_head_weights(self, logits: torch.Tensor, target_ids: torch.Tensor, **kwargs) -> torch.Tensor:
+    def compute_head_weights(
+        self, logits: torch.Tensor, target_ids: torch.Tensor, **kwargs
+    ) -> torch.Tensor:
         """각 알고리즘별 헤드 가중치 계산 (필수 구현).
 
         Args:
@@ -424,7 +423,9 @@ class BaseWmtpTrainer(BaseComponent):
                     )
                 except Exception as e:
                     # 실제 파일 저장 여부 확인
-                    checkpoint_path = self.checkpoint_dir / f"checkpoint_step_{current_step}.pt"
+                    checkpoint_path = (
+                        self.checkpoint_dir / f"checkpoint_step_{current_step}.pt"
+                    )
                     if checkpoint_path.exists():
                         console.print(
                             f"[yellow]체크포인트 저장 완료, 부가 기능 오류 (스텝 {current_step}): {repr(e)}[/yellow]"
@@ -448,7 +449,9 @@ class BaseWmtpTrainer(BaseComponent):
                 # 실제 파일 저장 여부 확인
                 final_path = self.checkpoint_dir / "final_model.pt"
                 if final_path.exists():
-                    console.print(f"[yellow]최종 모델 저장 완료, 부가 기능 오류: {repr(e)}[/yellow]")
+                    console.print(
+                        f"[yellow]최종 모델 저장 완료, 부가 기능 오류: {repr(e)}[/yellow]"
+                    )
                 else:
                     console.print(f"[red]최종 모델 저장 실패: {repr(e)}[/red]")
 

@@ -145,6 +145,7 @@ class PathResolver:
         else:
             return resolved
 
+
 def create_path_resolver() -> PathResolver:
     """PathResolver 인스턴스 생성
 

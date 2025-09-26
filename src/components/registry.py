@@ -9,7 +9,6 @@ that keep the existing decorator and factory usage compatible.
 from __future__ import annotations
 
 from collections.abc import Callable
-from types import SimpleNamespace
 from typing import Any, TypeVar
 
 from .base import Component
@@ -116,15 +115,17 @@ class UnifiedRegistry:
 # 단일 통합 레지스트리 - 모든 컴포넌트를 여기서 관리
 registry = UnifiedRegistry("main")
 
+
 # 하위 호환성을 위한 기존 인터페이스 유지 (내부적으로 registry 사용)
 class _CompatibilityAdapter:
     """기존 *_registry.register() 패턴 지원을 위한 어댑터"""
+
     def __init__(self, category: str):
         self.category = category
 
     def register(self, key: str, **kwargs):
         # category 파라미터 제거 (중복)
-        kwargs.pop('category', None)
+        kwargs.pop("category", None)
         return registry.register(key, category=self.category, **kwargs)
 
     def create(self, key: str, config=None):
@@ -136,6 +137,7 @@ class _CompatibilityAdapter:
         if category is None or category == self.category:
             return list(registry._by_category.get(self.category, {}).keys())
         return []
+
 
 # 기존 인터페이스 유지 - 코드 변경 없이 작동
 loader_registry = _CompatibilityAdapter("loader")

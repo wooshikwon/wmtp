@@ -227,6 +227,7 @@ class EvaluationProtocol(Component):
 
         console.print(table)
 
+
 # Export main classes and functions
 __all__ = [
     "EvaluationProtocol",

@@ -23,8 +23,6 @@ Critic WMTP Trainer - 강화학습 가치함수 기반 WMTP 알고리즘 (Scorer
 
 from __future__ import annotations
 
-import math
-import os
 from typing import Any
 
 import torch
@@ -32,8 +30,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from rich.console import Console
 
-from src.components.trainer.base_wmtp_trainer import BaseWmtpTrainer, compute_weighted_mtp_loss
 from src.components.registry import trainer_registry
+from src.components.trainer.base_wmtp_trainer import (
+    BaseWmtpTrainer,
+    compute_weighted_mtp_loss,
+)
 from src.utils.reward_utils import compute_sequence_rewards
 
 console = Console()
@@ -83,7 +84,9 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
         self.critic_cfg = self.config.get("critic_config", {})
 
         # Phase 2.1: discount_lambda 파라미터 (Recipe에서)
-        self.discount_lambda = float(self.critic_cfg.get("discount_lambda", 0.95))  # TD error 할인율
+        self.discount_lambda = float(
+            self.critic_cfg.get("discount_lambda", 0.95)
+        )  # TD error 할인율
         # self.temperature는 setup()에서 설정
 
         # Value Head는 setup()에서 초기화
@@ -100,8 +103,8 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
         # Weight temperature 파라미터 설정 (Phase 1 통합: recipe.loss.weight_temperature에서)
         # Backward compatibility: temperature → weight_temperature
         self.temperature = float(
-            self.loss_cfg.get("weight_temperature") or
-            self.loss_cfg.get("temperature", 0.7)
+            self.loss_cfg.get("weight_temperature")
+            or self.loss_cfg.get("temperature", 0.7)
         )
 
         # RM model 저장 (Stage 2에서도 사용)
@@ -128,12 +131,18 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
                 map_location = self.device if self.device else "cpu"
                 state = torch.load(value_head_path, map_location=map_location)
                 self.value_head.load_state_dict(state)
-                console.print(f"[green]✓ Loaded Stage 1 Value Head from {value_head_path} to {map_location}[/green]")
+                console.print(
+                    f"[green]✓ Loaded Stage 1 Value Head from {value_head_path} to {map_location}[/green]"
+                )
             except Exception as e:
-                console.print(f"[yellow]⚠ Failed to load Stage 1 Value Head: {e}[/yellow]")
+                console.print(
+                    f"[yellow]⚠ Failed to load Stage 1 Value Head: {e}[/yellow]"
+                )
                 console.print("[yellow]  Using random initialization instead[/yellow]")
         else:
-            console.print("[yellow]ℹ No Stage 1 Value Head provided, using random initialization[/yellow]")
+            console.print(
+                "[yellow]ℹ No Stage 1 Value Head provided, using random initialization[/yellow]"
+            )
 
         # Value Head를 모델과 같은 device로 이동
         if self.device:
@@ -142,15 +151,27 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
         # Value Head를 optimizer에 포함 (Stage 2 continuous learning)
         if self.optimizer is not None:
             # Critic 설정 가져오기 (value_lr 등)
-            critic_config = ctx.get("recipe", {}).critic if hasattr(ctx.get("recipe", {}), "critic") else {}
-            value_lr = float(critic_config.get("value_lr", 5e-5)) if isinstance(critic_config, dict) else 5e-5
+            critic_config = (
+                ctx.get("recipe", {}).critic
+                if hasattr(ctx.get("recipe", {}), "critic")
+                else {}
+            )
+            value_lr = (
+                float(critic_config.get("value_lr", 5e-5))
+                if isinstance(critic_config, dict)
+                else 5e-5
+            )
 
             # Value Head parameters를 별도 param group으로 추가
-            self.optimizer.add_param_group({
-                'params': self.value_head.parameters(),
-                'lr': value_lr  # Higher LR for value head
-            })
-            console.print(f"[green]✓ Value Head added to optimizer with lr={value_lr}[/green]")
+            self.optimizer.add_param_group(
+                {
+                    "params": self.value_head.parameters(),
+                    "lr": value_lr,  # Higher LR for value head
+                }
+            )
+            console.print(
+                f"[green]✓ Value Head added to optimizer with lr={value_lr}[/green]"
+            )
 
     def _compute_deltas(self, values: torch.Tensor) -> torch.Tensor:
         """TD error 계산: δ_t = V_t - λV_{t-1}.
@@ -212,7 +233,9 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
                     valid_heads.append(k)
                 else:
                     # 시퀀스 끝을 넘어가는 경우 매우 작은 값
-                    delta_k = torch.full((B,), -10.0, device=values.device, dtype=values.dtype)
+                    delta_k = torch.full(
+                        (B,), -10.0, device=values.device, dtype=values.dtype
+                    )
                     delta_list.append(delta_k)
 
             if delta_list:
@@ -264,14 +287,16 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
         """Pseudo rewards using negative CE from base model"""
 
         # Use common utility with base model as fallback RM
-        return compute_sequence_rewards(self.model, input_ids, attention_mask, amp_dtype=self._amp_dtype)
+        return compute_sequence_rewards(
+            self.model, input_ids, attention_mask, amp_dtype=self._amp_dtype
+        )
 
     def _compute_gae_returns(
         self,
         rewards: torch.Tensor,
         values: torch.Tensor,
         gamma: float = 0.99,
-        gae_lambda: float = 0.95
+        gae_lambda: float = 0.95,
     ) -> torch.Tensor:
         """토큰별 value target 계산 (Stage 1과 동일)"""
         B, S = values.shape
@@ -280,10 +305,7 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
         for b in range(B):
             gae = 0
             for t in reversed(range(S)):
-                if t == S - 1:
-                    next_val = 0.0
-                else:
-                    next_val = values[b, t + 1]
+                next_val = 0.0 if t == S - 1 else values[b, t + 1]
 
                 # TD error
                 delta = rewards[b, t] + gamma * next_val - values[b, t]
@@ -294,7 +316,9 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
 
         return returns
 
-    def compute_head_weights(self, logits: torch.Tensor, target_ids: torch.Tensor, **kwargs) -> torch.Tensor:
+    def compute_head_weights(
+        self, logits: torch.Tensor, target_ids: torch.Tensor, **kwargs
+    ) -> torch.Tensor:
         """Value Head를 사용한 직접 헤드 가중치 계산.
 
         Hidden states로부터 가치함수를 예측하고 TD error를 계산하여
@@ -313,9 +337,7 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
             ValueError: hidden_states가 없는 경우
         """
         if self.value_head is None:
-            raise RuntimeError(
-                "Value Head not initialized. Call setup() first."
-            )
+            raise RuntimeError("Value Head not initialized. Call setup() first.")
 
         # Hidden states 추출
         hidden_states = kwargs.get("hidden_states")
@@ -341,9 +363,11 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
         with torch.set_grad_enabled(self.model.training):
             # [B, S, D] -> [B*S, D] -> [B*S, 1] -> [B, S]
             B_hs, S_hs, D = hidden_states.shape
-            values = self.value_head(
-                hidden_states.view(B_hs * S_hs, D)
-            ).view(B_hs, S_hs).squeeze(-1)
+            values = (
+                self.value_head(hidden_states.view(B_hs * S_hs, D))
+                .view(B_hs, S_hs)
+                .squeeze(-1)
+            )
 
             # Shape alignment if needed
             if values.shape[0] != B or values.shape[1] != S:
@@ -379,8 +403,9 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
         self.value_head.train()  # Value Head도 학습 모드로
 
         # 배치를 디바이스로 이동
-        batch = {k: v.to(self.device) if torch.is_tensor(v) else v
-                 for k, v in batch.items()}
+        batch = {
+            k: v.to(self.device) if torch.is_tensor(v) else v for k, v in batch.items()
+        }
 
         input_ids = batch["input_ids"]
         target_ids: torch.Tensor = batch["labels"]  # [B, S]
@@ -441,9 +466,9 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
 
             # Value prediction (gradient enabled for training)
             B, S, D = hidden_states.shape
-            values = self.value_head(
-                hidden_states.view(B * S, D)
-            ).view(B, S).squeeze(-1)  # [B, S]
+            values = (
+                self.value_head(hidden_states.view(B * S, D)).view(B, S).squeeze(-1)
+            )  # [B, S]
 
             # WMTP 손실 계산 (BaseWmtpTrainer의 공통 함수 사용)
             weighted_loss, valid_mask, ce_per_head = compute_weighted_mtp_loss(
@@ -457,13 +482,12 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
             # Value Loss 계산 (auxiliary loss for continuous learning)
             value_loss = torch.tensor(0.0, device=self.device)
             critic_config = self.config.get("critic", {})
-            if self.rm_model is not None or critic_config.get("use_pseudo_rewards", True):
+            if self.rm_model is not None or critic_config.get(
+                "use_pseudo_rewards", True
+            ):
                 # Compute rewards
                 rewards = self._compute_sequence_rewards(
-                    self.rm_model,
-                    input_ids,
-                    attention_mask,
-                    amp_dtype=self._amp_dtype
+                    self.rm_model, input_ids, attention_mask, amp_dtype=self._amp_dtype
                 )
 
                 # Spread rewards to tokens (uniform for simplicity)
@@ -479,13 +503,12 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
                         token_rewards,
                         values.detach(),
                         gamma=critic_config.get("gamma", 0.99),
-                        gae_lambda=critic_config.get("gae_lambda", 0.95)
+                        gae_lambda=critic_config.get("gae_lambda", 0.95),
                     )
 
                 # MSE loss for value prediction
                 value_loss = F.mse_loss(
-                    values[valid_mask.bool()],
-                    returns[valid_mask.bool()]
+                    values[valid_mask.bool()], returns[valid_mask.bool()]
                 )
 
             # Phase 2.2: Clean loss structure - main loss fixed at 1.0
@@ -505,11 +528,13 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
             if p.grad is not None:
                 param_norm = p.grad.data.norm(2)
                 total_norm += param_norm.item() ** 2
-        total_norm = total_norm ** (1. / 2)
+        total_norm = total_norm ** (1.0 / 2)
 
         # 극단적인 경우만 체크 (자연스러운 학습은 허용)
         if total_norm > 100.0:  # Very high threshold for research integrity
-            console.print(f"[yellow]⚠ Large gradient norm detected: {total_norm:.2f} at step {self.global_step}[/yellow]")
+            console.print(
+                f"[yellow]⚠ Large gradient norm detected: {total_norm:.2f} at step {self.global_step}[/yellow]"
+            )
 
         self.optimizer.step()
         self.optimizer.zero_grad()
@@ -532,7 +557,9 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
 
                 # 가중치 통계 (평균만)
                 with torch.no_grad():
-                    w_eff = head_weights[valid_mask.unsqueeze(-1).expand(-1, -1, self.horizon)]
+                    w_eff = head_weights[
+                        valid_mask.unsqueeze(-1).expand(-1, -1, self.horizon)
+                    ]
                     if w_eff.numel() > 0:
                         metrics["train/weight_mean"] = float(w_eff.mean().item())
 
@@ -542,7 +569,9 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
 
         # 실패 감지 (NaN/Inf 체크)
         if not torch.isfinite(loss) or not torch.isfinite(head_weights).all():
-            raise RuntimeError(f"NaN/Inf detected at step {self.global_step}; aborting training.")
+            raise RuntimeError(
+                f"NaN/Inf detected at step {self.global_step}; aborting training."
+            )
 
         return {
             "loss": float(loss.detach().item()),

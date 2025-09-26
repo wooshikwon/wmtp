@@ -19,7 +19,7 @@ run:
 train:
   algo: "baseline-mtp"  # Uniform weighting
   full_finetune: true
-  max_steps: 10
+  max_steps: 2
   checkpointing:
     save_interval: 5
     keep_last: 1

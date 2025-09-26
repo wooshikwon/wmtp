@@ -8,13 +8,13 @@ seed: 42
 # Path configurations
 paths:
   models:
-    base: "tests/tiny_models/distilgpt2"  # Tiny test model
-    rm: "tests/tiny_models/tiny-reward-model"  # Tiny RM for value head training
-    ref: "tests/tiny_models/distilgpt2"  # Same for consistency
+    base: "file://tests/tiny_models/distilgpt2-mtp"  # MTP-enabled distilgpt2 for testing
+    rm: "file://tests/tiny_models/tiny-reward-model"  # Tiny RM for value head training
+    ref: "file://tests/tiny_models/distilgpt2"  # Regular distilgpt2 for reference
   datasets:
-    mbpp: "tests/test_dataset/mbpp"
-    contest: "tests/test_dataset/contest"
-    humaneval: "tests/test_dataset/humaneval"
+    mbpp: "file://tests/test_dataset/mbpp"
+    contest: "file://tests/test_dataset/contest"
+    humaneval: "file://tests/test_dataset/humaneval"
 
 # MLflow configuration - local tracking
 mlflow:

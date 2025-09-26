@@ -16,14 +16,12 @@ Stage 2: 학습된 Value Head로 TD error 계산하여 토큰 중요도 가중�
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from rich.console import Console
 from rich.progress import track
 
@@ -69,7 +67,9 @@ class CriticHeadPretrainer(BaseComponent):
         # Value Head는 run()에서 생성
         self.value_head: nn.Module | None = None
 
-    def spread_reward_to_tokens(self, sequence_reward: float, seq_length: int) -> np.ndarray:
+    def spread_reward_to_tokens(
+        self, sequence_reward: float, seq_length: int
+    ) -> np.ndarray:
         """시퀀스 보상을 토큰별로 균등 분배.
 
         간단한 균등 분배 방식. 향후 더 정교한 방법 고려 가능.
@@ -85,10 +85,7 @@ class CriticHeadPretrainer(BaseComponent):
         return np.full(seq_length, sequence_reward / seq_length, dtype=np.float32)
 
     def compute_gae_returns(
-        self,
-        rewards: np.ndarray,
-        values: np.ndarray,
-        next_value: float = 0.0
+        self, rewards: np.ndarray, values: np.ndarray, next_value: float = 0.0
     ) -> np.ndarray:
         """GAE(Generalized Advantage Estimation)로 가치 목표값 계산.
 
@@ -109,10 +106,7 @@ class CriticHeadPretrainer(BaseComponent):
         # GAE 계산 (역방향)
         gae = 0
         for t in reversed(range(T)):
-            if t == T - 1:
-                next_val = next_value
-            else:
-                next_val = values[t + 1]
+            next_val = next_value if t == T - 1 else values[t + 1]
 
             # TD error: δ_t = r_t + γV(s_{t+1}) - V(s_t)
             delta = rewards[t] + self.gamma * next_val - values[t]
@@ -125,7 +119,6 @@ class CriticHeadPretrainer(BaseComponent):
             returns[t] = values[t] + advantages[t]
 
         return returns
-
 
     def run(self, ctx: dict[str, Any]) -> dict[str, Any]:
         """Value Head 사전학습 실행.
@@ -148,7 +141,9 @@ class CriticHeadPretrainer(BaseComponent):
         run_name = ctx.get("run_name", "default")
 
         if rm_model is None:
-            console.print("[yellow]⚠ No RM model provided for Stage 1 training[/yellow]")
+            console.print(
+                "[yellow]⚠ No RM model provided for Stage 1 training[/yellow]"
+            )
             return {"skipped": True, "message": "No RM model"}
 
         # Hidden size 추출
@@ -168,10 +163,7 @@ class CriticHeadPretrainer(BaseComponent):
         self.value_head = self.value_head.to(device)
 
         # Optimizer와 Loss function
-        optimizer = torch.optim.AdamW(
-            self.value_head.parameters(),
-            lr=self.lr
-        )
+        optimizer = torch.optim.AdamW(self.value_head.parameters(), lr=self.lr)
         loss_fn = nn.MSELoss()
 
         # Hidden states 출력 활성화
@@ -185,7 +177,7 @@ class CriticHeadPretrainer(BaseComponent):
         base_model.eval()
         self.value_head.train()
 
-        console.print(f"[cyan]Starting Stage 1: Value Head Pretraining[/cyan]")
+        console.print("[cyan]Starting Stage 1: Value Head Pretraining[/cyan]")
         console.print(f"  - Hidden size: {hidden_size}")
         console.print(f"  - Learning rate: {self.lr}")
         console.print(f"  - Max steps: {self.max_steps}")
@@ -231,8 +223,7 @@ class CriticHeadPretrainer(BaseComponent):
 
                 # 🎁 RM으로부터 시퀀스 보상 계산 (공통 유틸리티 사용)
                 reward_tensor = compute_sequence_rewards(
-                    rm_model, input_ids, attention_mask,
-                    amp_dtype=torch.bfloat16
+                    rm_model, input_ids, attention_mask, amp_dtype=torch.bfloat16
                 )
                 rewards = reward_tensor.tolist()  # list[float]로 변환
 
@@ -250,9 +241,7 @@ class CriticHeadPretrainer(BaseComponent):
 
                     # GAE로 가치 목표값 계산
                     value_target = self.compute_gae_returns(
-                        token_rewards,
-                        init_values,
-                        next_value=0.0
+                        token_rewards, init_values, next_value=0.0
                     )
                     value_targets.append(value_target)
 
@@ -283,10 +272,12 @@ class CriticHeadPretrainer(BaseComponent):
                     if p.grad is not None:
                         param_norm = p.grad.data.norm(2)
                         total_norm += param_norm.item() ** 2
-                total_norm = total_norm ** (1. / 2)
+                total_norm = total_norm ** (1.0 / 2)
 
                 if total_norm > 50.0:  # High threshold for Stage 1
-                    console.print(f"[yellow]⚠ Stage 1 large gradient: {total_norm:.2f}[/yellow]")
+                    console.print(
+                        f"[yellow]⚠ Stage 1 large gradient: {total_norm:.2f}[/yellow]"
+                    )
 
                 optimizer.step()
 
@@ -309,7 +300,7 @@ class CriticHeadPretrainer(BaseComponent):
         save_location = self._save_value_head(run_name)
 
         avg_final_loss = total_loss / max(step_count, 1)
-        console.print(f"\n[green]✅ Stage 1 Training Complete[/green]")
+        console.print("\n[green]✅ Stage 1 Training Complete[/green]")
         console.print(f"  - Final avg loss: {avg_final_loss:.4f}")
         console.print(f"  - Value Head saved to: {save_location}")
 
@@ -339,14 +330,19 @@ class CriticHeadPretrainer(BaseComponent):
         # 메타데이터도 저장
         meta_path = checkpoint_dir / "value_head_meta.json"
         import json
+
         with open(meta_path, "w") as f:
-            json.dump({
-                "version": "2.0.0",
-                "hidden_size": self.value_head[0].in_features,
-                "intermediate_size": self.value_head[0].out_features,
-                "lr": self.lr,
-                "gamma": self.gamma,
-                "gae_lambda": self.gae_lambda,
-            }, f, indent=2)
+            json.dump(
+                {
+                    "version": "2.0.0",
+                    "hidden_size": self.value_head[0].in_features,
+                    "intermediate_size": self.value_head[0].out_features,
+                    "lr": self.lr,
+                    "gamma": self.gamma,
+                    "gae_lambda": self.gae_lambda,
+                },
+                f,
+                indent=2,
+            )
 
         return str(vh_path)
