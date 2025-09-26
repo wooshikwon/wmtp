@@ -1,5 +1,5 @@
 # Production Recipe - Critic WMTP Algorithm
-# Value-based dynamic weighting with Stage 1 pretraining on A100x2
+# Value function delta-based dynamic weighting on A100x2
 
 # Run metadata
 run:
@@ -10,44 +10,7 @@ run:
     - "critic"
     - "wmtp"
     - "a100"
-    - "two-stage"
-
-# Model configuration
-model:
-  base_id: "mtp-7b-1t-4"  # Facebook MTP 7B model
-  tokenizer_type: "hf"
-  tokenizer_pad_side: "right"
-  mtp:
-    n_heads: 4
-    horizon: 4
-
-# Training configuration
-train:
-  algo: "critic-wmtp"  # Value-based dynamic weighting
-  full_finetune: true
-  max_steps: 12000  # Longer for two-stage training
-  eval_interval: 500
-  save_interval: 1000
-  checkpointing:
-    save_interval: 1000
-    keep_last: 5
-    save_final: true
-  # Stage 1 configuration
-  stage1:
-    enabled: true
-    max_steps: 2000
-    lr: 1.0e-4
-    save_value_head: true
-
-# Optimizer configuration
-optim:
-  optimizer: "adamw"
-  lr: 1.5e-5  # Slightly lower for critic
-  weight_decay: 0.01
-  betas: [0.9, 0.999]
-  grad_clip: 1.0
-  scheduler: "cosine"
-  warmup_ratio: 0.03
+    - "value-function"
 
 # Data configuration
 data:
@@ -64,17 +27,52 @@ data:
     pack_sequences: false
     num_workers: 4
 
-# Loss configuration - critic with value loss
+# Training configuration
+train:
+  algo: "critic-wmtp"  # Value function delta-based weighting
+  full_finetune: true
+  max_steps: 10000
+  eval_interval: 500
+  save_interval: 1000
+  checkpointing:
+    save_interval: 1000
+    keep_last: 5
+    save_final: true
+
+# Optimizer configuration
+optim:
+  optimizer: "adamw"
+  lr: 2.0e-5
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+  grad_clip: 1.0
+  scheduler: "cosine"
+  warmup_ratio: 0.03
+
+# Loss configuration (Phase 2.2: lambda not used in critic-wmtp)
 loss:
-  weight_norm: "softmax"
-  lambda: 0.01
-  temperature: 1.0
-  epsilon: 1.0e-8
-  max_weight: 10.0
-  # Value loss configuration
-  value_coef: 0.1  # V_loss weight
-  gamma: 0.99      # GAE discount
-  gae_lambda: 0.95 # GAE lambda
+  weight_norm: "mean1.0_clip"
+  lambda: 0.3  # Not used in critic-wmtp (main loss always 1.0)
+  weight_temperature: 0.7  # Weight softmax temperature
+  epsilon: 0.05
+  max_weight: 3.0
+
+# Critic-specific configuration (Phase 2: fully parameterized)
+critic:
+  # Phase 2.1: TD error discount (previously hardcoded)
+  discount_lambda: 0.95  # Short-term discount for delta computation
+  # GAE parameters
+  gamma: 0.99           # Long-term reward discount
+  gae_lambda: 0.95      # GAE lambda parameter
+  # Phase 2.2: Clean loss structure (main loss always 1.0)
+  auxiliary_loss_coef: 0.1  # Value head auxiliary loss coefficient
+  # Other parameters
+  target: "rm_sequence"
+  token_spread: "gae"
+  delta_mode: "td"
+  normalize: "zscore"
+  value_lr: 5.0e-5
+  use_pseudo_rewards: true
 
 # Evaluation configuration
 eval:

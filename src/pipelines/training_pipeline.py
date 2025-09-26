@@ -21,6 +21,7 @@
 from __future__ import annotations  # Python 3.10+ 타입 힌트 호환성
 
 from dataclasses import dataclass  # 간단한 데이터 클래스 생성용
+from pathlib import Path  # 파일 경로 처리
 from typing import Any  # 범용 타입 힌트
 
 from torch.utils.data import DataLoader  # 데이터셋을 배치로 로드하는 도구
@@ -31,7 +32,7 @@ from rich.console import Console  # Rich 콘솔 출력
 
 from src.factory.component_factory import ComponentFactory  # 알고리즘별 컴포넌트 생성 팩토리
 from src.settings import Config, Recipe  # Pydantic 기반 설정 모델들
-from src.utils import create_mlflow_manager, set_seed  # MLflow 추적과 재현성 보장 유틸
+from src.utils import create_mlflow_manager, set_seed, get_dist_manager  # MLflow 추적과 재현성 보장 유틸
 
 console = Console()
 
@@ -71,6 +72,10 @@ def run_training_pipeline(
 
     # Step 0: 실험 추적 및 재현성 설정
     set_seed(config.seed)  # 동일한 시드로 재현 가능한 실험 보장
+
+    # Step 0.5: Config 기반 분산 초기화
+    dist_manager = get_dist_manager(config.devices.distributed)
+    dist_manager.setup()  # Config 기반 자동 초기화
 
     # 재개 처리 로직 - ComponentFactory 통합 (한 번만 로딩)
     start_epoch = 0

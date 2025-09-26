@@ -1,0 +1,53 @@
+# VESSL GPU Production Configuration for Critic WMTP Algorithm
+# Optimized for VESSL cluster with A100 x4 GPUs
+
+# Project metadata
+project: "wmtp_prod_critic"
+seed: 42
+
+# Path configurations - Production models
+paths:
+  models:
+    base: "s3://wmtp/models/7b_1t_4/"
+    rm: "s3://wmtp/models/Starling-RM-7B-alpha/"
+    ref: "s3://wmtp/models/Sheared-LLaMA-2.7B/"
+  datasets:
+    mbpp: "s3://wmtp/dataset/mbpp"
+    contest: "s3://wmtp/dataset/contest"
+    humaneval: "s3://wmtp/dataset/humaneval"
+
+# MLflow configuration - Production tracking
+mlflow:
+  experiment: "wmtp/prod_critic"
+  tracking_uri: "s3://wmtp/mlflow"
+  registry_uri: "s3://wmtp/mlflow"
+
+# Launcher configuration - VESSL A100x4
+launcher:
+  target: "vessl"
+  resources:
+    gpus: 4
+    gpu_type: "A100"
+    cpu_limit: "32"
+    memory_limit: "256Gi"
+    shm_size: "32Gi"
+
+# Device configuration for A100 GPUs
+devices:
+  compute_backend: "cuda"
+  mixed_precision: "bf16"  # A100 supports bfloat16
+  distributed:
+    enabled: true                 # 분산 학습 활성화
+    backend: "nccl"               # GPU 간 고속 통신
+    init_method: "env://"         # torchrun 환경변수 사용
+    timeout: 1800                 # NCCL 타임아웃 (30분)
+    find_unused_parameters: false # FSDP와 함께 사용 시 False
+
+  # 기존 FSDP 설정 유지
+  fsdp:
+    enabled: true
+    auto_wrap: true
+    activation_ckpt: true
+    sharding: "full_shard"
+    offload_params: false
+    offload_grads: false

@@ -61,37 +61,37 @@ def compute_sequence_rewards(
                 except Exception:
                     pass
 
-    # 2단계: 명시적 보상이 없으면 logits에서 negative CE 계산 (fallback)
-    logits = (
-        outputs["logits"]
-        if isinstance(outputs, dict) and "logits" in outputs
-        else outputs
-    )
+    # 2단계: 명시적 보상이 없으면 logits 해석
+    logits = outputs.get("logits") if isinstance(outputs, dict) else getattr(outputs, "logits", None)
+    if isinstance(logits, torch.Tensor):
+        # SequenceClassification/Regression: [B] or [B,1] or [B,C]
+        if logits.ndim == 1:
+            return logits.detach().float().view(-1)
+        if logits.ndim == 2:
+            if logits.size(1) == 1:
+                return logits.squeeze(1).detach().float().view(-1)
+            # multi-class → max-logit as reward proxy
+            return logits.max(dim=1).values.detach().float().view(-1)
 
-    # 유효하지 않은 출력인 경우 기본값 반환
-    if not isinstance(logits, torch.Tensor) or logits.ndim != 3:
-        return torch.zeros(input_ids.shape[0], device=input_ids.device, dtype=torch.float32)
+        # CausalLM: [B, S, V] → negative CE fallback
+        if logits.ndim == 3:
+            B, S, V = logits.shape
+            if S <= 1:
+                return torch.zeros(B, device=input_ids.device, dtype=torch.float32)
 
-    B, S, V = logits.shape  # [배치, 시퀀스길이, 어휘크기]
-    if S <= 1:  # 시퀀스가 너무 짧으면 의미있는 보상 계산 불가
-        return torch.zeros(B, device=input_ids.device, dtype=torch.float32)
+            logits_shifted = logits[:, :-1, :].transpose(1, 2).contiguous()
+            labels_shifted = input_ids[:, 1:].contiguous()
 
-    # Next-token 예측을 위한 shift (t시점 입력 → t+1시점 예측)
-    logits_shifted = logits[:, :-1, :].transpose(1, 2).contiguous()  # [B, V, S-1]
-    labels_shifted = input_ids[:, 1:].contiguous()  # [B, S-1]
+            ce = F.cross_entropy(logits_shifted, labels_shifted, reduction="none")
 
-    # 토큰별 교차엔트로피 계산
-    ce = F.cross_entropy(logits_shifted, labels_shifted, reduction="none")  # [B, S-1]
+            if attention_mask is not None:
+                mask = attention_mask[:, 1:].to(dtype=ce.dtype)
+                token_counts = torch.clamp(mask.sum(dim=1), min=1.0)
+                ce_mean = (ce * mask).sum(dim=1) / token_counts
+            else:
+                ce_mean = ce.mean(dim=1)
 
-    # 어텐션 마스크 적용 (패딩 토큰 제외)
-    if attention_mask is not None:
-        mask = attention_mask[:, 1:].to(dtype=ce.dtype)  # [B, S-1]
-        token_counts = torch.clamp(mask.sum(dim=1), min=1.0)  # 유효 토큰 수
-        ce_mean = (ce * mask).sum(dim=1) / token_counts  # 마스킹된 평균 CE
-    else:
-        ce_mean = ce.mean(dim=1)  # 단순 평균 CE
+            return (-ce_mean.detach().float())
 
-    # 음의 교차엔트로피를 보상으로 사용 (낮은 CE = 높은 보상)
-    # "더 자연스러운 문장 = 더 높은 점수" 원리
-    rewards = -ce_mean.detach().float()
-    return rewards
+    # 출력 형태를 해석할 수 없는 경우 0 보상
+    return torch.zeros(input_ids.shape[0], device=input_ids.device, dtype=torch.float32)

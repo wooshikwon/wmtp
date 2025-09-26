@@ -1,0 +1,71 @@
+# M3 Test Recipe - Rho1 WMTP Algorithm (Token Skip Mode)
+# Reference CE comparison based dynamic weighting for Multi-Token Prediction
+
+# Run metadata
+run:
+  name: "m3_test_rho1_tokenskip"
+  tags:
+    - "test"
+    - "m3"
+    - "rho1"
+    - "token_skip"
+    - "wmtp"
+
+# Training configuration
+train:
+  algo: "rho1-wmtp"  # Reference CE comparison based weighting
+  full_finetune: true
+  max_steps: 10
+  checkpointing:
+    save_interval: 5
+    keep_last: 1
+    save_final: true
+
+# Optimizer configuration
+optim:
+  optimizer: "adamw"
+  lr: 5.0e-5
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+  grad_clip: 1.0
+  scheduler: "constant"
+  warmup_ratio: 0.0
+
+# Data configuration
+data:
+  train:
+    sources: ["mbpp"]
+    max_length: 128
+    batch_size: 1
+    pack_sequences: false
+    num_workers: 4
+  eval:
+    sources: ["mbpp"]
+    max_length: 128
+    batch_size: 1
+    pack_sequences: false
+    num_workers: 4
+
+# Loss configuration (Phase 1 integration)
+loss:
+  weight_norm: "mean1.0_clip"
+  lambda: 0.3
+  weight_temperature: 0.7  # Weight softmax temperature (formerly temperature)
+  epsilon: 0.05
+  max_weight: 3.0
+
+# Rho-1 specific configuration (Token Skip Mode)
+rho1:
+  selection_mode: "token_skip"
+  skip_threshold_percentile: 0.3  # Drop bottom 30% tokens
+  min_ce_diff: 0.01  # Phase 1.2: CE difference threshold for noise filtering
+
+# Evaluation configuration
+eval:
+  protocol: "meta-mtp"
+  sampling:
+    temperature: 0.7
+    top_p: 0.9
+    n: 1
+  metrics:
+    - "mbpp_exact"

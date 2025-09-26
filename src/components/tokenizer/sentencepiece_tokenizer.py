@@ -24,9 +24,7 @@ from ..registry import tokenizer_registry
 logger = logging.getLogger(__name__)
 
 
-@tokenizer_registry.register("unified", category="tokenizer", version="2.0.0")
 @tokenizer_registry.register("sentencepiece", category="tokenizer", version="2.0.0")
-@tokenizer_registry.register("default", category="tokenizer", version="2.0.0")
 class SentencePieceTokenizer(BaseComponent):
     """
     S3 기반 통합 SentencePiece 토크나이저.

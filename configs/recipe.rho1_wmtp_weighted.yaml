@@ -1,0 +1,77 @@
+# Production Recipe - Rho1 WMTP Algorithm
+# Reference CE comparison based dynamic weighting on A100x2
+
+# Run metadata
+run:
+  name: "prod_rho1_weighted"
+  tags:
+    - "production"
+    - "vessl"
+    - "rho1"
+    - "weighted"
+    - "wmtp"
+    - "a100"
+    - "reference-ce"
+
+# Data configuration
+data:
+  train:
+    sources: ["mbpp", "contest"]
+    max_length: 2048
+    batch_size: 4  # Per GPU: 4 x 2 = 8 total
+    pack_sequences: true
+    num_workers: 8
+  eval:
+    sources: ["mbpp", "humaneval"]
+    max_length: 2048
+    batch_size: 4
+    pack_sequences: false
+    num_workers: 4
+
+# Training configuration
+train:
+  algo: "rho1-wmtp"  # Reference CE comparison based weighting
+  full_finetune: true
+  max_steps: 10000
+  eval_interval: 500
+  save_interval: 1000
+  checkpointing:
+    save_interval: 1000
+    keep_last: 5
+    save_final: true
+
+# Optimizer configuration
+optim:
+  optimizer: "adamw"
+  lr: 2.0e-5
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+  grad_clip: 1.0
+  scheduler: "cosine"
+  warmup_ratio: 0.03
+
+# Loss configuration (Phase 1 integration)
+loss:
+  weight_norm: "mean1.0_clip"
+  lambda: 0.3
+  weight_temperature: 0.7  # Weight softmax temperature (used in Rho1 weighted mode)
+  epsilon: 0.05
+  max_weight: 3.0
+
+# Rho-1 specific configuration (Weighted Mode)
+rho1:
+  selection_mode: "weighted"  # Continuous weights for all tokens
+  skip_threshold_percentile: 0.3  # Token skip 임계값 (weighted mode에서는 참고용)
+  min_ce_diff: 0.01  # Phase 1.2: CE difference threshold for noise filtering
+
+# Evaluation configuration
+eval:
+  protocol: "meta-mtp"
+  sampling:
+    temperature: 0.7
+    top_p: 0.9
+    n: 20  # For pass@k evaluation
+  metrics:
+    - "mbpp_exact"
+    - "humaneval_exact"
+    - "contest_exact"

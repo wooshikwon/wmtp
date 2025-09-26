@@ -293,140 +293,11 @@ class MLflowManager:
         else:
             console.print("[green]Model logged to MLflow[/green]")
 
-    def load_model(
-        self,
-        model_uri: str,
-        dst_path: str | Path | None = None,
-    ) -> Any:
-        """
-        Load model from MLflow.
-
-        Args:
-            model_uri: Model URI (runs:/<run_id>/model or models:/<name>/<version>)
-            dst_path: Optional local destination path
-
-        Returns:
-            Loaded PyTorch model
-        """
-        if dst_path:
-            # Download to local path
-            dst_path = Path(dst_path)
-            dst_path.mkdir(parents=True, exist_ok=True)
-            mlflow.artifacts.download_artifacts(
-                artifact_uri=model_uri,
-                dst_path=str(dst_path),
-            )
-            return mlflow.pytorch.load_model(str(dst_path))
-        else:
-            # Load directly
-            return mlflow.pytorch.load_model(model_uri)
-
     def get_run_id(self) -> str | None:
         """Get current run ID."""
         if self.run:
             return self.run.info.run_id
         return None
-
-    def get_experiment_id(self) -> str:
-        """Get current experiment ID."""
-        return self.experiment_id
-
-    def search_runs(
-        self,
-        experiment_ids: list[str] | None = None,
-        filter_string: str = "",
-        max_results: int = 100,
-        order_by: list[str] | None = None,
-    ) -> list[mlflow.entities.Run]:
-        """
-        Search for MLflow runs.
-
-        Args:
-            experiment_ids: List of experiment IDs to search
-            filter_string: Filter string (e.g., "metrics.accuracy > 0.9")
-            max_results: Maximum number of results
-            order_by: List of order by clauses
-
-        Returns:
-            List of MLflow runs
-        """
-        if not experiment_ids:
-            experiment_ids = [self.experiment_id]
-
-        return self.client.search_runs(
-            experiment_ids=experiment_ids,
-            filter_string=filter_string,
-            max_results=max_results,
-            order_by=order_by,
-        )
-
-    def register_model(
-        self,
-        name: str,
-        source: str,
-        tags: dict[str, str] | None = None,
-    ) -> Any:
-        """
-        Register model in MLflow registry.
-
-        Args:
-            name: Model name
-            source: Model source URI
-            tags: Optional tags
-
-        Returns:
-            Model version
-        """
-        try:
-            # Create registered model if it doesn't exist
-            try:
-                self.client.create_registered_model(name, tags=tags)
-            except Exception:
-                # Model already exists
-                pass
-
-            # Create new version
-            model_version = self.client.create_model_version(
-                name=name,
-                source=source,
-                tags=tags,
-            )
-
-            console.print(
-                f"[green]Registered model '{name}' version {model_version.version}[/green]"
-            )
-            return model_version
-
-        except Exception as e:
-            console.print(f"[red]Failed to register model: {e}[/red]")
-            return None
-
-    def transition_model_stage(
-        self,
-        name: str,
-        version: int,
-        stage: str,
-        archive_existing: bool = True,
-    ) -> None:
-        """
-        Transition model version to new stage.
-
-        Args:
-            name: Model name
-            version: Model version
-            stage: Target stage ('Staging', 'Production', 'Archived')
-            archive_existing: Archive existing versions in target stage
-        """
-        self.client.transition_model_version_stage(
-            name=name,
-            version=version,
-            stage=stage,
-            archive_existing_versions=archive_existing,
-        )
-
-        console.print(
-            f"[green]Transitioned model '{name}' v{version} to {stage}[/green]"
-        )
 
     def _flatten_dict(
         self,
@@ -473,52 +344,8 @@ def create_mlflow_manager(config: dict[str, Any]) -> MLflowManager:
         experiment_name=mlflow_config.get("experiment", "default"),
     )
 
-
-def auto_log_config(config: dict[str, Any], recipe: dict[str, Any]) -> None:
-    """
-    Automatically log configuration to MLflow.
-
-    Args:
-        config: Environment configuration
-        recipe: Recipe configuration
-    """
-    # Log key configuration parameters
-    params = {
-        "project": config.get("project"),
-        "seed": config.get("seed"),
-        "storage_mode": config.get("storage", {}).get("mode"),
-        "launcher": config.get("launcher", {}).get("target"),
-        "mixed_precision": config.get("devices", {}).get("mixed_precision"),
-        "algorithm": recipe.get("train", {}).get("algo"),
-        "model_base": recipe.get("model", {}).get("base_id"),
-        "learning_rate": recipe.get("optim", {}).get("lr"),
-        "batch_tokens": recipe.get("batching", {}).get("global_batch_tokens"),
-    }
-
-    mlflow.log_params(params)
-
-
-def log_system_info() -> None:
-    """Log system information to MLflow."""
-    import platform
-
-    import torch
-
-    system_info = {
-        "python_version": platform.python_version(),
-        "torch_version": torch.__version__,
-        "cuda_available": torch.cuda.is_available(),
-        "cuda_version": torch.version.cuda if torch.cuda.is_available() else "N/A",
-        "platform": platform.platform(),
-    }
-
-    mlflow.log_params(system_info)
-
-
 # Export main functions and classes
 __all__ = [
     "MLflowManager",
     "create_mlflow_manager",
-    "auto_log_config",
-    "log_system_info",
 ]

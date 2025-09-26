@@ -53,7 +53,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
 
-from .config_schema import Config
+from .config_schema import Config, S3AuthConfig
 from .recipe_schema import Recipe
 
 console = Console()
@@ -219,6 +219,86 @@ def validate_schema(data: dict[str, Any], schema: type[T], name: str = "config")
         raise ConfigurationError(f"Unexpected error validating {name}: {e}")
 
 
+def migrate_storage_config(data: dict[str, Any]) -> dict[str, Any]:
+    """
+    Phase 2 하위 호환성: 기존 storage 설정을 새 형식으로 마이그레이션
+
+    기존 형식:
+        storage:
+          mode: s3
+          s3:
+            bucket: wmtp
+            prefix: checkpoints
+        paths:
+          models:
+            base: models/7b_1t_4
+
+    새 형식:
+        s3_auth:
+          default_bucket: wmtp
+          region: ap-northeast-2
+        paths:
+          models:
+            base: s3://wmtp/checkpoints/models/7b_1t_4
+
+    Args:
+        data: 원본 config 딕셔너리
+
+    Returns:
+        마이그레이션된 config 딕셔너리
+    """
+    # 이미 새 형식이면 그대로 반환
+    if 'storage' not in data:
+        return data
+
+    storage = data.get('storage', {})
+    storage_mode = storage.get('mode', 'local')
+
+    # storage를 s3_auth로 변환
+    if storage_mode in ['s3', 'auto'] and 's3' in storage:
+        s3_config = storage['s3']
+        data['s3_auth'] = {
+            'default_bucket': s3_config.get('bucket'),
+            'region': s3_config.get('region', 'ap-northeast-2')
+        }
+
+        # S3 모드일 때 경로에 프로토콜 추가
+        if storage_mode == 's3':
+            bucket = s3_config.get('bucket', '')
+            prefix = s3_config.get('prefix', '')
+
+            # paths 섹션의 모든 경로에 s3:// 프리픽스 추가
+            if 'paths' in data:
+                for category, paths in data['paths'].items():
+                    if isinstance(paths, dict):
+                        for key, path in paths.items():
+                            if path and not path.startswith(('s3://', 'file://', '/')):
+                                # 상대 경로를 S3 URI로 변환
+                                if prefix:
+                                    data['paths'][category][key] = f"s3://{bucket}/{prefix}/{path}"
+                                else:
+                                    data['paths'][category][key] = f"s3://{bucket}/{path}"
+
+    # auto 모드 처리 - 경로는 그대로 유지 (PathResolver가 처리)
+    elif storage_mode == 'auto':
+        # s3_auth는 위에서 이미 설정됨
+        # 경로는 수정하지 않음 (사용자가 이미 프로토콜 포함 가능)
+        pass
+
+    # local 모드는 특별한 처리 불필요
+
+    # storage 섹션을 유지 (deprecated 필드로 남김)
+    # 완전히 제거하면 validation error가 발생할 수 있음
+
+    # Print migration warning
+    console.print("[yellow]⚠️  Legacy 'storage' configuration detected. "
+                 "Migrating to new protocol-based format.[/yellow]")
+    console.print("[yellow]    Please update your config to use s3_auth "
+                 "and protocol prefixes in paths.[/yellow]")
+
+    return data
+
+
 def load_config(path: str | Path, verbose: bool = False) -> Config:
     """
     Load and validate environment configuration.
@@ -240,6 +320,9 @@ def load_config(path: str | Path, verbose: bool = False) -> Config:
 
     # Load YAML
     data = load_yaml(path)
+
+    # Phase 2: 하위 호환성을 위한 마이그레이션
+    data = migrate_storage_config(data)
 
     # Validate against schema
     config = validate_schema(data, Config, "config.yaml")
@@ -284,9 +367,9 @@ def load_recipe(path: str | Path, verbose: bool = False) -> Recipe:
         console.print("[green]Recipe loaded:[/green]")
         console.print(f"  • Run: {recipe.run.name}")
         console.print(f"  • Algorithm: {recipe.train.algo}")
-        console.print(f"  • Model: {recipe.model.base_id}")
         console.print(f"  • Learning Rate: {recipe.optim.lr}")
-        console.print(f"  • Batch Tokens: {recipe.batching.global_batch_tokens:,}")
+        # Phase 3: recipe.model 제거됨, batching 필드도 없음
+        console.print(f"  • Batch Size: {recipe.data.train.batch_size}")
 
     return recipe
 
@@ -340,5 +423,6 @@ __all__ = [
     "validate_schema",
     "merge_configs",
     "save_config",
+    "migrate_storage_config",
     "ConfigurationError",
 ]

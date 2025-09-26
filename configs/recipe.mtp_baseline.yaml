@@ -11,14 +11,20 @@ run:
     - "mtp"
     - "a100"
 
-# Model configuration
-model:
-  base_id: "mtp-7b-1t-4"  # Facebook MTP 7B model
-  tokenizer_type: "hf"
-  tokenizer_pad_side: "right"
-  mtp:
-    n_heads: 4
-    horizon: 4
+# Data configuration
+data:
+  train:
+    sources: ["mbpp", "contest"]
+    max_length: 2048
+    batch_size: 4  # Per GPU: 4 x 2 = 8 total
+    pack_sequences: true
+    num_workers: 8
+  eval:
+    sources: ["mbpp", "humaneval"]
+    max_length: 2048
+    batch_size: 4
+    pack_sequences: false
+    num_workers: 4
 
 # Training configuration
 train:
@@ -42,26 +48,11 @@ optim:
   scheduler: "cosine"
   warmup_ratio: 0.03
 
-# Data configuration
-data:
-  train:
-    sources: ["mbpp", "contest"]
-    max_length: 2048
-    batch_size: 4  # Per GPU: 4 x 2 = 8 total
-    pack_sequences: true
-    num_workers: 8
-  eval:
-    sources: ["mbpp", "humaneval"]
-    max_length: 2048
-    batch_size: 4
-    pack_sequences: false
-    num_workers: 4
-
 # Loss configuration - baseline (uniform weights)
 loss:
   weight_norm: "none"
   lambda: 0.001
-  temperature: 1.0
+  weight_temperature: 1.0
   epsilon: 1.0e-8
   max_weight: 1.01
 

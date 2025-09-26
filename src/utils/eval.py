@@ -39,7 +39,6 @@ WMTP 알고리즘과의 연결:
 """
 
 import re
-from collections import defaultdict
 from typing import Any
 
 import torch
@@ -125,27 +124,6 @@ class EvaluationProtocol(Component):
 
         self.initialized = True
 
-    def run(self, inputs: dict[str, Any]) -> dict[str, Any]:
-        """Run evaluation.
-
-        Args:
-            inputs: Dictionary containing:
-                - model: Model to evaluate
-                - tokenizer: Tokenizer
-                - dataset: Optional dataset
-                - batch_size: Batch size
-                - num_samples: Number of samples
-
-        Returns:
-            Dictionary of evaluation metrics
-        """
-        if not self.initialized:
-            raise RuntimeError(
-                f"{self.__class__.__name__} must be initialized with setup()"
-            )
-
-        return self.evaluate(**inputs)
-
     def evaluate(
         self,
         model: Any,
@@ -209,25 +187,6 @@ class EvaluationProtocol(Component):
 
         return completion.strip()
 
-    def compute_metrics(
-        self,
-        predictions: list[str],
-        references: list[str],
-        **kwargs,
-    ) -> dict[str, float]:
-        """
-        Compute evaluation metrics.
-
-        Args:
-            predictions: Model predictions
-            references: Ground truth references
-            **kwargs: Additional metric parameters
-
-        Returns:
-            Dictionary of metrics
-        """
-        raise NotImplementedError("Subclasses must implement compute_metrics()")
-
     def extract_code(self, completion: str) -> str:
         """
         Extract code from model completion.
@@ -268,37 +227,7 @@ class EvaluationProtocol(Component):
 
         console.print(table)
 
-
-def aggregate_metrics(
-    metrics_list: list[dict[str, float]],
-) -> dict[str, float]:
-    """
-    Aggregate metrics from multiple evaluations.
-
-    Args:
-        metrics_list: List of metric dictionaries
-
-    Returns:
-        Aggregated metrics with mean and std
-    """
-    aggregated = defaultdict(list)
-
-    for metrics in metrics_list:
-        for key, value in metrics.items():
-            aggregated[key].append(value)
-
-    result = {}
-    for key, values in aggregated.items():
-        mean = sum(values) / len(values)
-        std = (sum((v - mean) ** 2 for v in values) / len(values)) ** 0.5
-        result[f"{key}_mean"] = mean
-        result[f"{key}_std"] = std
-
-    return result
-
-
 # Export main classes and functions
 __all__ = [
     "EvaluationProtocol",
-    "aggregate_metrics",
 ]

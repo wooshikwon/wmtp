@@ -10,16 +10,6 @@ run:
     - "critic"
     - "wmtp"
 
-# Model configuration
-model:
-  base_id: "test-mtp"  # Special ID for test loader
-  rm_id: "tiny-reward-model"  # Lightweight RM for testing
-  tokenizer_type: "hf"
-  tokenizer_pad_side: "right"
-  mtp:
-    n_heads: 4
-    horizon: 4
-
 # Training configuration
 train:
   algo: "critic-wmtp"  # Value-based dynamic weighting
@@ -57,22 +47,24 @@ data:
 loss:
   weight_norm: "mean1.0_clip"
   lambda: 0.3
-  temperature: 0.7
+  weight_temperature: 0.7
   epsilon: 0.05
   max_weight: 3.0
 
 # Critic-specific configuration
 critic:
-  # Stage 2 Value Loss settings (for continuous value head training)
-  value_coef: 0.1
+  # Phase 2.2: Clean loss structure (main loss always 1.0)
+  auxiliary_loss_coef: 0.1
   value_lr: 5e-5
   use_pseudo_rewards: true
 
+  # Phase 2.1: TD error discount (previously hardcoded)
+  discount_lambda: 0.95  # Short-term discount for delta computation
   # GAE parameters
-  gamma: 0.99
-  gae_lambda: 0.95
+  gamma: 0.99           # Long-term reward discount
+  gae_lambda: 0.95      # GAE lambda parameter
 
-  # Existing settings
+  # Other parameters
   target: "rm_sequence"
   token_spread: "gae"
   delta_mode: "td"

@@ -28,10 +28,10 @@ WMTP 알고리즘과의 연결:
 - 통신 오류: NCCL_DEBUG=INFO 환경변수로 디버깅
 """
 
+import datetime
 import os
 import random
-from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any, Union
 
 import numpy as np
 import torch
@@ -52,35 +52,14 @@ from torch.distributed.fsdp import (
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 
+# Type checking imports - Pydantic Config 클래스들을 타입 힌트용으로만 import
+if TYPE_CHECKING:
+    from src.settings.config_schema import FSDPConfig, DistributedConfig
+
 console = Console()
 
 
-@dataclass
-class FSDPConfig:
-    """
-    FSDP(Fully Sharded Data Parallel) 설정 클래스.
-
-    WMTP 맥락:
-    대규모 언어 모델을 효율적으로 학습하기 위한 FSDP 설정입니다.
-    7B 이상 모델에서 메모리 효율과 학습 속도를 최적화합니다.
-
-    주요 설정:
-    - sharding: 모델 파라미터 분산 전략
-    - activation_ckpt: 중간 활성화 재계산으로 메모리 절약
-    - mixed_precision: bf16/fp16으로 메모리와 속도 개선
-    """
-
-    enabled: bool = True  # FSDP 활성화 여부
-    auto_wrap: bool = True  # Transformer 레이어 자동 래핑
-    activation_ckpt: bool = True  # 활성화 체크포인팅 (메모리 절약)
-    sharding: str = (
-        "full"  # full(전체 샤딩), shard_grad_op(그래디언트만), no_shard(미샤딩)
-    )
-    cpu_offload: bool = False  # CPU로 파라미터 오프로드 (메모리 절약)
-    backward_prefetch: bool = True  # 역전파 중 다음 파라미터 미리 가져오기
-    mixed_precision: str = "bf16"  # 혼합 정밀도 (bf16/fp16/fp32)
-    sync_module_states: bool = True  # 모든 랭크에서 모듈 상태 동기화
-    use_orig_params: bool = True  # 원본 파라미터 사용 (옵티마이저 호환성)
+# FSDPConfig dataclass 삭제 - config_schema.py의 Pydantic 버전 사용
 
 
 class DistributedManager:
@@ -104,100 +83,94 @@ class DistributedManager:
     - 알고리즘별 최적 샤딩 전략 자동 선택
     """
 
-    def __init__(self):
-        """분산 매니저 초기화."""
+    def __init__(self, config: Union["DistributedConfig", None] = None):
+        """Config 기반 분산 매니저 초기화.
+
+        Args:
+            config: 분산 학습 설정. None이면 기본값 사용 (분산 비활성화)
+        """
+        # Config 처리 - 늦은 import로 순환 import 방지
+        if config is None:
+            from src.settings.config_schema import DistributedConfig
+            self.config = DistributedConfig()  # 기본값 제공 (enabled=False)
+        else:
+            self.config = config
+
         self.initialized = False
-        self.world_size = 1  # 전체 프로세스 수
-        self.rank = 0  # 현재 프로세스 순위
-        self.local_rank = 0  # 노드 내 로컬 순위
+
+        # Config가 분산을 활성화한 경우에만 환경변수 읽기
+        if self.config.enabled:
+            # torchrun이 설정한 환경변수를 읽어서 분산 정보 획득
+            self.rank = int(os.environ.get("RANK", 0))
+            self.world_size = int(os.environ.get("WORLD_SIZE", 1))
+            self.local_rank = int(os.environ.get("LOCAL_RANK", 0))
+
+            # 환경변수가 제대로 설정되지 않은 경우 경고
+            if self.world_size == 1:
+                console.print("[yellow]경고: 분산이 활성화되었지만 WORLD_SIZE=1입니다. torchrun을 사용했는지 확인하세요.[/yellow]")
+        else:
+            # 단일 GPU 모드
+            self.rank = 0
+            self.world_size = 1
+            self.local_rank = 0
+
         self.device = None  # 현재 디바이스
         self.accelerator = None  # HuggingFace Accelerate (선택적)
 
-    def setup(
-        self,
-        backend: str = "nccl",
-        timeout: int = 1800,
-        use_accelerate: bool = False,
-    ) -> None:
-        """
-        분산 학습 환경 초기화.
+    def setup(self) -> None:
+        """Config 기반 분산 학습 환경 초기화."""
+        if not self.config.enabled:
+            # 분산 학습이 비활성화된 경우
+            console.print("[dim]분산 학습 비활성화 - 단일 GPU 모드[/dim]")
+            if torch.cuda.is_available():
+                self.device = torch.device("cuda:0")
+            else:
+                self.device = torch.device("cpu")
+            return
 
-        WMTP 맥락:
-        대규모 모델 학습을 위한 멀티 GPU 환경을 설정합니다.
-        NCCL 백엔드는 GPU 간 고속 통신을 제공합니다.
+        if self.world_size > 1 and not dist.is_initialized():
+            # 분산 환경에서 초기화
 
-        매개변수:
-            backend: 분산 백엔드
-                - 'nccl': NVIDIA GPU용 (권장)
-                - 'gloo': CPU 또는 디버깅용
-            timeout: 초기화 타임아웃 (초 단위, 기본 1800)
-            use_accelerate: HuggingFace Accelerate 사용 여부
+            # LOCAL_RANK 기반 GPU 설정 (핵심!)
+            if torch.cuda.is_available():
+                torch.cuda.set_device(self.local_rank)
+                self.device = torch.device(f"cuda:{self.local_rank}")
+                console.print(f"[green]GPU {self.local_rank} 할당 완료[/green]")
+            else:
+                self.device = torch.device("cpu")
 
-        디버깅:
-            - NCCL 오류시: NCCL_DEBUG=INFO 환경변수 설정
-            - 타임아웃시: timeout 값 증가 (3600 이상)
-        """
-        if use_accelerate:
-            self._setup_with_accelerate()
-        else:
-            self._setup_pytorch_dist(backend, timeout)
+            # Config에서 백엔드 설정 읽기
+            backend = self.config.backend
+            if backend == "auto":
+                backend = "nccl" if torch.cuda.is_available() else "gloo"
 
-        self.initialized = True
-        self._log_setup_info()
+            # 분산 프로세스 그룹 초기화
+            try:
+                dist.init_process_group(
+                    backend=backend,
+                    init_method=self.config.init_method,
+                    rank=self.rank,
+                    world_size=self.world_size,
+                    timeout=datetime.timedelta(seconds=self.config.timeout)
+                )
+                self.initialized = True
+                console.print(f"[green]✅ 분산 초기화 완료 (rank={self.rank}/{self.world_size}, backend={backend})[/green]")
+            except Exception as e:
+                console.print(f"[red]분산 초기화 실패: {e}[/red]")
+                raise
 
-    def _setup_pytorch_dist(self, backend: str, timeout: int) -> None:
-        """PyTorch 분산 환경 설정."""
-        if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
-            self.rank = int(os.environ["RANK"])
-            self.world_size = int(os.environ["WORLD_SIZE"])
-            self.local_rank = int(os.environ.get("LOCAL_RANK", 0))
-        elif torch.cuda.is_available():
-            self.rank = 0
-            self.world_size = 1
-            self.local_rank = 0
-        else:
-            # CPU-only mode
-            self.rank = 0
-            self.world_size = 1
-            self.local_rank = 0
-
-        if self.world_size > 1:
-            dist.init_process_group(
-                backend=backend,
-                rank=self.rank,
-                world_size=self.world_size,
-                timeout=torch.distributed.default_pg_timeout(timeout),
-            )
-
-        # Set device
-        if torch.cuda.is_available():
-            self.device = torch.device(f"cuda:{self.local_rank}")
-            torch.cuda.set_device(self.device)
-        else:
-            self.device = torch.device("cpu")
-
-    def _setup_with_accelerate(self) -> None:
-        """HuggingFace Accelerate로 분산 환경 설정."""
-        self.accelerator = Accelerator()
-        self.rank = self.accelerator.process_index
-        self.world_size = self.accelerator.num_processes
-        self.local_rank = self.accelerator.local_process_index
-        self.device = self.accelerator.device
-
-    def _log_setup_info(self) -> None:
-        """분산 설정 정보 출력."""
-        if self.is_main_process():
-            console.print("[green]Distributed Training Setup:[/green]")
-            console.print(f"  World Size: {self.world_size}")
-            console.print(
-                f"  Backend: {'Accelerate' if self.accelerator else 'PyTorch'}"
-            )
-            console.print(f"  Device: {self.device}")
+        elif self.world_size == 1:
+            # 단일 프로세스 환경 (분산 활성화되었지만 실제로는 단일 GPU)
+            console.print("[yellow]분산이 활성화되었지만 단일 프로세스 환경입니다.[/yellow]")
+            if torch.cuda.is_available():
+                self.device = torch.device("cuda:0")
+            else:
+                self.device = torch.device("cpu")
 
     def setup_fsdp(
         self,
         model: torch.nn.Module,
-        config: FSDPConfig | dict[str, Any],
+        config: Union["FSDPConfig", dict[str, Any]],
     ) -> FSDP:
         """
         모델을 FSDP로 래핑.
@@ -208,7 +181,7 @@ class DistributedManager:
 
         매개변수:
             model: 래핑할 모델
-            config: FSDP 설정 (FSDPConfig 또는 dict)
+            config: FSDP 설정 (Pydantic FSDPConfig 또는 dict)
 
         반환값:
             FSDP로 래핑된 모델
@@ -218,25 +191,36 @@ class DistributedManager:
             - OOM 시: cpu_offload=True 활성화
             - 속도 우선: sharding="shard_grad_op"
         """
-        if isinstance(config, dict):
-            config = FSDPConfig(**config)
+        # Pydantic 모델인 경우 dict로 변환
+        if hasattr(config, 'model_dump'):
+            # Pydantic v2 모델
+            config_dict = config.model_dump()
+        elif hasattr(config, 'dict'):
+            # Pydantic v1 모델 (호환성)
+            config_dict = config.dict()
+        elif isinstance(config, dict):
+            config_dict = config
+        else:
+            raise TypeError(f"Unsupported config type: {type(config)}")
+        
+        # 이제 config_dict를 사용하여 FSDP 설정
 
         # Set up mixed precision
-        mixed_precision_policy = self._get_mixed_precision(config.mixed_precision)
+        mixed_precision_policy = self._get_mixed_precision(config_dict.get('mixed_precision', 'bf16'))
 
         # Set up sharding strategy
-        sharding_strategy = self._get_sharding_strategy(config.sharding)
+        sharding_strategy = self._get_sharding_strategy(config_dict.get('sharding', 'full'))
 
         # Set up auto wrap policy
         auto_wrap_policy = None
-        if config.auto_wrap:
+        if config_dict.get('auto_wrap', True):
             auto_wrap_policy = transformer_auto_wrap_policy(
                 transformer_layer_cls={LlamaDecoderLayer},
             )
 
         # Set up CPU offload
         cpu_offload_config = None
-        if config.cpu_offload:
+        if config_dict.get('cpu_offload', False):
             cpu_offload_config = CPUOffload(offload_params=True)
 
         # Wrap model with FSDP
@@ -247,16 +231,16 @@ class DistributedManager:
             mixed_precision=mixed_precision_policy,
             cpu_offload=cpu_offload_config,
             backward_prefetch=BackwardPrefetch.BACKWARD_PRE
-            if config.backward_prefetch
+            if config_dict.get('backward_prefetch', True)
             else None,
-            sync_module_states=config.sync_module_states,
-            use_orig_params=config.use_orig_params,
-            device_id=torch.cuda.current_device()
-            if torch.cuda.is_available()
+            sync_module_states=config_dict.get('sync_module_states', True),
+            use_orig_params=config_dict.get('use_orig_params', True),
+            device_id=self.local_rank
+            if torch.cuda.is_available() and self.world_size > 1
             else None,
         )
 
-        if config.activation_ckpt:
+        if config_dict.get('activation_ckpt', True):
             self._enable_activation_checkpointing(model)
 
         console.print("[green]Model wrapped with FSDP[/green]")
@@ -369,20 +353,25 @@ class DistributedManager:
             if checkpoint_path.startswith("s3://"):
                 # S3에 직접 저장
                 import io
+                import tempfile
+                from pathlib import Path
 
                 buffer = io.BytesIO()
                 torch.save(checkpoint, buffer)
                 buffer.seek(0)
 
                 if mlflow_manager:
-                    # MLflow를 통해 S3에 저장
-                    mlflow_manager.log_model_checkpoint(
-                        buffer,
-                        artifact_path=f"checkpoints/step_{step}",
-                        registered_model_name=kwargs.get("model_name", None),
-                    )
+                    # MLflow를 통해 아티팩트로 업로드 (임시 파일 경유)
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        tmp_path = Path(tmpdir) / f"checkpoint_step_{step}.pt"
+                        with open(tmp_path, "wb") as f:
+                            f.write(buffer.getvalue())
+                        mlflow_manager.log_artifact(
+                            local_path=str(tmp_path),
+                            artifact_path=f"checkpoints/step_{step}"
+                        )
                     console.print(
-                        f"[green]Checkpoint saved to MLflow/S3: step_{step}[/green]"
+                        f"[green]Checkpoint uploaded to MLflow: step_{step}[/green]"
                     )
                 else:
                     # S3Manager를 사용하여 직접 저장
@@ -468,47 +457,8 @@ class DistributedManager:
         """메인 프로세스 여부 확인."""
         return self.rank == 0
 
-    def all_reduce(
-        self,
-        tensor: torch.Tensor,
-        op: str = "sum",
-    ) -> torch.Tensor:
-        """
-        프로세스 간 텐서 리듀스.
-
-        매개변수:
-            tensor: 리듀스할 텐서
-            op: 리듀스 연산
-                - 'sum': 합계
-                - 'mean': 평균
-                - 'max': 최댓값
-                - 'min': 최솟값
-
-        반환값:
-            리듀스된 텐서
-        """
-        if self.world_size == 1:
-            return tensor
-
-        op_map = {
-            "sum": dist.ReduceOp.SUM,
-            "mean": dist.ReduceOp.SUM,  # Will divide by world_size after
-            "max": dist.ReduceOp.MAX,
-            "min": dist.ReduceOp.MIN,
-        }
-
-        dist.all_reduce(tensor, op=op_map[op])
-
-        if op == "mean":
-            tensor = tensor / self.world_size
-
-        return tensor
-
-    def cleanup(self) -> None:
-        """분산 프로세스 그룹 정리."""
-        if self.world_size > 1 and dist.is_initialized():
-            dist.destroy_process_group()
-            console.print("[green]Distributed process group destroyed[/green]")
+    # all_reduce와 cleanup 메서드 삭제됨 - Phase 2 리팩토링
+    # 이 메서드들은 전혀 호출되지 않아 제거되었습니다.
 
 
 def set_seed(seed: int, deterministic: bool = False) -> None:
@@ -548,83 +498,34 @@ def set_seed(seed: int, deterministic: bool = False) -> None:
     console.print(f"[green]Random seed set to {seed}[/green]")
 
 
-def get_world_info() -> dict[str, int]:
-    """
-    분산 환경 정보 조회.
-
-    반환값:
-        분산 정보 딕셔너리
-            - rank: 현재 프로세스 순위
-            - world_size: 전체 프로세스 수
-            - local_rank: 노드 내 로컬 순위
-    """
-    if dist.is_initialized():
-        return {
-            "rank": dist.get_rank(),
-            "world_size": dist.get_world_size(),
-            "local_rank": int(os.environ.get("LOCAL_RANK", 0)),
-        }
-    else:
-        return {
-            "rank": 0,
-            "world_size": 1,
-            "local_rank": 0,
-        }
-
-
-def compute_throughput(
-    tokens_processed: int,
-    time_elapsed: float,
-    world_size: int = 1,
-) -> dict[str, float]:
-    """
-    학습 처리량 계산.
-
-    WMTP 맥락:
-    토큰 처리 속도를 측정하여 학습 효율성을 평가합니다.
-    알고리즘별 오버헤드를 정량화하는데 중요합니다.
-
-    매개변수:
-        tokens_processed: 처리된 토큰 수
-        time_elapsed: 경과 시간 (초)
-        world_size: GPU/프로세스 수
-
-    반환값:
-        처리량 메트릭 딕셔너리
-            - tokens_per_second: 초당 토큰 처리량
-            - tokens_per_second_per_gpu: GPU당 초당 토큰
-            - time_per_1k_tokens: 1000토큰당 소요 시간
-
-    성능 기준 (A100 GPU):
-        - Baseline MTP: ~30k tokens/sec/gpu
-        - Critic-WMTP: ~25k tokens/sec/gpu (value 계산 오버헤드)
-        - Rho1-WMTP: ~20k tokens/sec/gpu (ref 모델 오버헤드)
-    """
-    tokens_per_second = tokens_processed / time_elapsed
-    tokens_per_second_per_gpu = tokens_per_second / world_size
-
-    return {
-        "tokens_per_second": tokens_per_second,
-        "tokens_per_second_per_gpu": tokens_per_second_per_gpu,
-        "time_per_1k_tokens": 1000 / tokens_per_second,
-    }
+# 미사용 함수 get_world_info, compute_throughput 삭제됨 - Phase 1 리팩토링
 
 
 # 전역 분산 매니저 인스턴스
-_dist_manager = DistributedManager()
+_dist_manager: Union[DistributedManager, None] = None
 
 
-def get_dist_manager() -> DistributedManager:
-    """전역 분산 매니저 인스턴스 반환."""
+def get_dist_manager(config: Union["DistributedConfig", None] = None) -> DistributedManager:
+    """Config 기반 분산 매니저 싱글톤 생성.
+
+    Args:
+        config: 분산 설정. None이면 기존 인스턴스 반환 또는 기본값 생성
+
+    Returns:
+        DistributedManager: 설정된 분산 매니저
+    """
+    global _dist_manager
+
+    # 새 config가 제공되거나 아직 인스턴스가 없는 경우
+    if _dist_manager is None or config is not None:
+        _dist_manager = DistributedManager(config)
+
     return _dist_manager
 
 
 # Export main functions and classes
 __all__ = [
     "DistributedManager",
-    "FSDPConfig",
     "set_seed",
-    "get_world_info",
-    "compute_throughput",
     "get_dist_manager",
 ]

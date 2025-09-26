@@ -25,8 +25,6 @@ logger = logging.getLogger(__name__)
 
 
 @tokenizer_registry.register("hf-sentencepiece", category="tokenizer", version="1.0.0")
-@tokenizer_registry.register("hf", category="tokenizer", version="1.0.0")
-@tokenizer_registry.register("huggingface", category="tokenizer", version="1.0.0")
 class HfSentencePieceTokenizer(BaseComponent):
     """ComponentFactory 패턴 호환 HuggingFace 스타일 SentencePiece 토크나이저
 

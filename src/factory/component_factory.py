@@ -45,6 +45,11 @@ from src.components.registry import (
 )
 from src.settings import Config, Recipe  # Pydantic 설정 모델들
 
+MTP_CONFIG = {
+    "n_heads": 4,  # Meta 논문 기준 최적값
+    "horizon": 4,  # 예측 범위 (t+1, t+2, t+3, t+4)
+}
+
 
 class ComponentFactory:
     """WMTP 알고리즘별 컴포넌트 생성 팩토리.
@@ -53,7 +58,7 @@ class ComponentFactory:
         이 클래스는 설정 파일(recipe.yaml)의 알고리즘 선택에 따라
         적합한 컴포넌트 조합을 자동으로 생성합니다.
 
-        Phase 2 리팩토링: 각 WMTP 알고리즘마다 독립된 트레이너 클래스를 사용합니다.
+        각 WMTP 알고리즘마다 독립된 트레이너 클래스를 사용합니다.
         - BaselineMtpTrainer: 균등 가중치
         - CriticWmtpTrainer: Critic 기반 가중치  
         - Rho1WmtpTrainer: Reference 모델 기반 가중치
@@ -106,10 +111,8 @@ class ComponentFactory:
         """
         # Trainer 설정 구성
         trainer_config = {
-            # MTP 모델 관련 설정
-            "n_heads": recipe.model.mtp.n_heads,  # 예측 헤드 개수 (보통 4)
-            "horizon": recipe.model.mtp.horizon,  # 예측 범위 (t+1, t+2, t+3, t+4)
-            # 손실 함수 설정 - WMTP 공식 L_WMTP = Σ w_{t+k} × CE_k
+            "n_heads": MTP_CONFIG["n_heads"],  # 예측 헤드 개수 (고정값 4)
+            "horizon": MTP_CONFIG["horizon"],  # 예측 범위 (고정값 4)
             "loss_config": {
                 "weight_norm": recipe.loss.weight_norm,  # 가중치 정규화 방식
                 "lambda": recipe.loss.lambda_weight,  # 정규화 강도 λ
@@ -126,6 +129,26 @@ class ComponentFactory:
             if config.devices.fsdp.enabled
             else None
         }
+
+        # 알고리즘별 특화 설정 추가
+        algo = recipe.train.algo
+        if algo == "critic-wmtp" and recipe.critic:
+            trainer_config["critic_config"] = {
+                "discount_lambda": recipe.critic.discount_lambda,
+                "gamma": recipe.critic.gamma,
+                "gae_lambda": recipe.critic.gae_lambda,
+                # Phase 2.2: value_coef → auxiliary_loss_coef (main loss always 1.0)
+                "auxiliary_loss_coef": recipe.critic.auxiliary_loss_coef,
+                "use_pseudo_rewards": recipe.critic.use_pseudo_rewards,
+            }
+        elif algo == "rho1-wmtp" and recipe.rho1:
+            trainer_config["rho1_config"] = {
+                "selection_mode": recipe.rho1.selection_mode,
+                "skip_threshold_percentile": recipe.rho1.skip_threshold_percentile,
+                "min_ce_diff": recipe.rho1.min_ce_diff,  # Phase 1.2: CE difference threshold
+                # Phase 1: rho1.temperature, rho_alpha, rho_beta 제거됨
+                # temperature는 loss.weight_temperature로 통합
+            }
 
         # Registry에서 Trainer 인스턴스 생성 및 반환
         return trainer_registry.create(recipe.train.algo, trainer_config)
@@ -198,21 +221,28 @@ class ComponentFactory:
             # Custom 또는 기타는 source를 그대로 경로로 사용
             dataset_path = source
 
-        # 3. 통합 데이터 로더 설정 (기존 로직 유지)
+        # 3. 통합 데이터 로더 설정
         loader_config = {
-            "storage": config.storage.model_dump(),
             "paths": config.paths.model_dump(),
             "split": "train",  # 기본 분할
             "dataset_type": source,  # 명시적 타입 지정
             "dataset_path": dataset_path,  # 경로 추가
         }
 
+        # S3 인증 정보가 있으면 추가
+        if config.s3_auth:
+            loader_config["s3_auth"] = config.s3_auth.model_dump()
+
+        # 하위 호환성을 위한 storage 정보 생성 (deprecated)
+        if hasattr(config, 'storage') and config.storage:  # 마이그레이션된 old config인 경우
+            loader_config["storage"] = config.storage
+
         # 4. UnifiedDataLoader 생성
         return loader_registry.create("unified-data-loader", loader_config)
 
     @staticmethod
     def create_model_loader(config: Config, recipe: Recipe = None) -> Loader:
-        """통합 모델 로더만 반환 - Phase 2 리팩토링 적용.
+        """통합 모델 로더만 반환.
 
         WMTP는 Facebook의 native MTP 모델을 기본으로 사용하되,
         다양한 모델 소스와 포맷을 지원합니다:
@@ -221,18 +251,21 @@ class ComponentFactory:
             - checkpoint: 훈련 중단점 파일 (.pt/.pth)
             - sheared-llama: Princeton 경량화 모델
             - starling-rm: Berkeley 보상 모델
+            - test-mtp: 테스트용 MTP wrapper (distilgpt2 with MTP heads)
+            - tiny-mtp: 테스트용 작은 MTP wrapper
 
         Args:
             config: 환경 설정 (모델 경로, GPU 설정 등)
             recipe: 훈련 레시피 (선택)
 
         Returns:
-            UnifiedModelLoader 인스턴스
+            적절한 ModelLoader 인스턴스 (UnifiedModelLoader, TestMTPLoader 등)
         """
-        # 통합 모델 로더 설정
+        # 로더 설정
         loader_config = config.model_dump()
 
         # UnifiedModelLoader 생성 - 모든 모델 타입을 하나의 로더로 처리
+        # distilgpt2-mtp 같은 로컬 모델도 UnifiedModelLoader가 처리
         return loader_registry.create("unified-model-loader", loader_config)
 
     @staticmethod
@@ -332,25 +365,20 @@ class ComponentFactory:
 
         if algo == "critic-wmtp":
             # Critic: Stage1 Value Head 훈련을 위한 설정
+            # Recipe에서 critic 설정 가져오기 (Pydantic으로 검증됨)
             pretrainer_config = {
-                # 보상 타겟: "rm_sequence" (시퀀스 레벨 보상 사용)
-                "target": getattr(recipe.critic, "target", "rm_sequence")
-                if hasattr(recipe, "critic")
-                else "rm_sequence",
-                # 토큰 확산 방식: "gae" (Generalized Advantage Estimation)
-                "token_spread": getattr(recipe.critic, "token_spread", "gae")
-                if hasattr(recipe, "critic")
-                else "gae",
-                # 델타 계산 모드: "td" (Temporal Difference)
-                "delta_mode": getattr(recipe.critic, "delta_mode", "td")
-                if hasattr(recipe, "critic")
-                else "td",
-                # 정규화 방식: "zscore" (표준화)
-                "normalize": getattr(recipe.critic, "normalize", "zscore")
-                if hasattr(recipe, "critic")
-                else "zscore",
+                # Recipe critic 섹션의 설정 사용
+                "target": recipe.critic.target,  # "rm_sequence"
+                "token_spread": recipe.critic.token_spread,  # "gae"
+                "delta_mode": recipe.critic.delta_mode,  # "td"
+                "normalize": recipe.critic.normalize,  # "zscore"
                 "temperature": recipe.loss.temperature,  # 소프트맥스 온도
-                "lr": 1e-4,  # Stage1 전용 학습률 (보통 메인보다 낮음)
+                # Stage1 전용 학습률 (recipe에서 가져오기)
+                "lr": recipe.train.stage1.lr if hasattr(recipe.train, "stage1") else 1e-4,
+                # GAE 파라미터도 recipe에서 가져오기
+                "gamma": recipe.critic.gamma,  # 0.99
+                "gae_lambda": recipe.critic.gae_lambda,  # 0.95
+                "value_coef": recipe.critic.value_coef,  # 0.1
             }
 
             # Registry에서 Stage1 Pretrainer 인스턴스 생성 및 반환
@@ -455,40 +483,42 @@ class ComponentFactory:
 
     @staticmethod
     def create_tokenizer(recipe: Recipe, config: Config) -> Any:
-        """토크나이저 생성 - recipe/config만 사용하는 통합 패턴.
+        """토크나이저 생성 - 환경 기반 자동 선택.
 
-        두 가지 토크나이저 중 recipe 설정에 따라 자동 선택:
-        1. "hf": HfSentencePieceTokenizer - HuggingFace 호환 인터페이스
-        2. "raw": SentencePieceTokenizer - Raw SentencePiece 인터페이스
+        환경(test/production)에 따라 토크나이저 자동 선택:
+        1. Test 환경 ("test" in path): hf-transformers 사용 (HuggingFace 호환)
+        2. Production 환경: hf-sentencepiece 사용 (Facebook MTP 모델용)
 
         Args:
-            recipe: 훈련 레시피 (tokenizer_type 필드 포함)
-            config: 환경 설정 (토크나이저 경로 정보 포함)
+            recipe: 훈련 레시피 (하위 호환성을 위해 유지, 사용하지 않음)
+            config: 환경 설정 (모델 경로에서 환경 감지)
 
         Returns:
             토크나이저 BaseComponent 인스턴스
 
         Raises:
-            ValueError: 지원되지 않는 tokenizer_type
+            ValueError: Registry에서 토크나이저 생성 실패시
         """
-        # 1. tokenizer_type을 recipe에서 가져옴 (더 이상 별도 인자 불필요)
-        tokenizer_type = recipe.model.tokenizer_type
+        # 1. 환경 감지 - base 모델 경로에서 test 환경 여부 판단
+        base_model_path = str(config.paths.models.base)
+        is_test_env = "test" in base_model_path.lower()
 
-        # 2. Registry 키 결정 - recipe 기반 tokenizer_type
-        if tokenizer_type in ["hf", "huggingface", "hf-sentencepiece"]:
-            registry_key = "hf"
-        elif tokenizer_type in ["raw", "sentencepiece", "default"]:
-            registry_key = "default"
+        # 2. 환경별 토크나이저 자동 결정
+        if is_test_env:
+            # 테스트 환경: HuggingFace transformers 토크나이저
+            # distilgpt2 등 HuggingFace 모델과 호환
+            registry_key = "hf-transformers"
+            print(f"[환경 자동 감지] 테스트 환경 → hf-transformers 토크나이저 사용")
         else:
-            raise ValueError(
-                f"지원되지 않는 tokenizer_type: {tokenizer_type}. "
-                f"사용 가능한 옵션: 'hf', 'huggingface', 'raw', 'sentencepiece'"
-            )
+            # 프로덕션 환경: Facebook MTP 모델용 SentencePiece
+            # 7B MTP 모델 등 native MTP 모델과 호환
+            registry_key = "hf-sentencepiece"
+            print(f"[환경 자동 감지] 프로덕션 환경 → hf-sentencepiece 토크나이저 사용")
 
-        # 3. 설정 구성 - config 값 직접 사용
+        # 4. 설정 구성 - config 값 직접 사용
         tokenizer_config = config.model_dump()
 
-        # 4. Registry 생성 및 반환 - 표준 패턴
+        # 5. Registry 생성 및 반환 - 표준 패턴
         return tokenizer_registry.create(registry_key, tokenizer_config)
 
     @staticmethod
@@ -548,7 +578,6 @@ class ComponentFactory:
                 "batch_size": recipe.data.eval.batch_size,
                 "device": "cuda" if torch.cuda.is_available() else "cpu"
             },
-            # Phase 2 평가기 추가
             "self-speculative": {
                 "num_sequences": 100,
                 "max_tokens": 512,

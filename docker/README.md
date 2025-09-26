@@ -18,7 +18,7 @@ docker/
 - Base image: PyTorch 2.4.0 with CUDA 12.1 (aligned with pyproject)
 - Installs uv for package management
 - Copies project sources and installs dependencies with `uv sync --frozen`
-- Default entrypoint: `python -m src.cli.__main__ --help`
+- Default entrypoint: `uv run python -m src.cli.__main__ --help`
 
 ### vessl.yaml
 - Parameterizes algorithm via `WMTP_ALGO` env (`baseline-mtp | critic-wmtp | rho1-wmtp`)
