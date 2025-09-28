@@ -3,8 +3,8 @@
 # Import registry first
 # Phase 2: Unified loaders (기존 개별 로더는 삭제됨)
 from .loader import (
-    ModelLoader,  # Phase 2 리팩토링: 단순화된 모델 로더
     DataLoader,  # Phase 2 리팩토링: 단순화된 데이터 로더
+    ModelLoader,  # Phase 2 리팩토링: 단순화된 모델 로더
 )
 
 # Import all optimizers to register them

@@ -100,7 +100,7 @@ wmtp/
   - VESSL GPU 클러스터 실행
   - 4가지 알고리즘별 실행 명령어
 
-- **⚙️ CI/CD 설정**: [.github/README.md](.github/README.md)
+- **⚙️ CI/CD 설정**: [.github/CI-CD-GUIDE.md](.github/CI-CD-GUIDE.md)
   - GitHub Actions 워크플로우
   - 자동 빌드/테스트/배포 파이프라인
   - GitHub Secrets 설정

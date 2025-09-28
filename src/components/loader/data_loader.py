@@ -12,10 +12,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from datasets import Dataset, load_dataset, load_from_disk
-
 from src.components.loader.base_loader import DatasetLoader
 from src.components.registry import loader_registry
 from src.utils.path_resolver import PathResolver
@@ -100,9 +99,9 @@ class DataLoader(DatasetLoader):
         return dataset
 
     # ============= STEP 1: 소스 확인 =============
-    def step1_identify_source(self, dataset_path: str) -> Tuple[str, str, str]:
+    def step1_identify_source(self, dataset_path: str) -> tuple[str, str, str]:
         """Step 1: 데이터셋 소스와 경로 타입 확인"""
-        print(f"  [1/4] 데이터셋 소스 확인 중...")
+        print("  [1/4] 데이터셋 소스 확인 중...")
 
         # 경로 타입 해석 (s3 또는 local)
         path_type, resolved_path = self.path_resolver.resolve(dataset_path)
@@ -119,9 +118,9 @@ class DataLoader(DatasetLoader):
     # ============= STEP 2: 메타데이터 확인 =============
     def step2_check_metadata(
         self, resolved_path: str, dataset_type: str, path_type: str
-    ) -> Dict:
+    ) -> dict:
         """Step 2: 데이터셋 메타데이터 및 가용성 확인"""
-        print(f"  [2/4] 메타데이터 확인 중...")
+        print("  [2/4] 메타데이터 확인 중...")
 
         metadata = {}
 
@@ -156,7 +155,7 @@ class DataLoader(DatasetLoader):
         self, resolved_path: str, dataset_type: str, path_type: str
     ) -> Dataset:
         """Step 3: 실제 데이터 로드"""
-        print(f"  [3/4] 데이터 로드 중...")
+        print("  [3/4] 데이터 로드 중...")
 
         if path_type == "s3":
             dataset = self._load_from_s3(resolved_path, dataset_type)
@@ -172,10 +171,10 @@ class DataLoader(DatasetLoader):
 
     # ============= STEP 4: 정규화 및 전처리 =============
     def step4_normalize_and_preprocess(
-        self, raw_dataset: Dataset, dataset_type: str, metadata: Dict
+        self, raw_dataset: Dataset, dataset_type: str, metadata: dict
     ) -> Dataset:
         """Step 4: 데이터 포맷 정규화 및 전처리"""
-        print(f"  [4/4] 데이터 정규화 및 전처리 중...")
+        print("  [4/4] 데이터 정규화 및 전처리 중...")
 
         # 데이터셋별 정규화
         if dataset_type == "mbpp":
@@ -315,7 +314,7 @@ class DataLoader(DatasetLoader):
             data = json.loads(stream.read())
             return Dataset.from_list(data)
 
-    def _load_custom_metadata(self, path: str, path_type: str) -> Dict:
+    def _load_custom_metadata(self, path: str, path_type: str) -> dict:
         """Custom 데이터셋의 메타데이터 로드"""
         metadata = {
             "format": "custom",

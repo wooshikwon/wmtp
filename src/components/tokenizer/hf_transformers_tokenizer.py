@@ -17,8 +17,9 @@ import os
 from pathlib import Path
 from typing import Any
 
-from datasets import Dataset
 from transformers import AutoTokenizer, PreTrainedTokenizer
+
+from datasets import Dataset
 
 from ..base import BaseComponent
 from ..registry import tokenizer_registry

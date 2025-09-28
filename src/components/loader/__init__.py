@@ -11,10 +11,10 @@ from .base_loader import ModelLoader as BaseModelLoader
 
 # Import specialized loaders
 from .checkpoint_loader import CheckpointLoader
+from .data_loader import DataLoader  # Phase 2 리팩토링: 단순화된 데이터 로더
 
 # Import unified loaders (Phase 2)
 from .model_loader import ModelLoader  # Phase 2 리팩토링: 단순화된 모델 로더
-from .data_loader import DataLoader  # Phase 2 리팩토링: 단순화된 데이터 로더
 
 # Export loaders
 __all__ = [
