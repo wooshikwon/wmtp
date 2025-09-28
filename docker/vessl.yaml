@@ -8,7 +8,7 @@ image: ghcr.io/wooshikwon/wmtp:latest  # Push via `make push`
 # Resource specifications (update to your cluster/preset)
 resources:
   cluster: default  # e.g., vessl-gcp-oregon
-  preset: v1-a100-1-pod  # change to v1-a100-4-pod for production
+  preset: v1-a100-4-pod  # 4 GPU configuration for production
 
 # Environment variables
 env:
@@ -33,25 +33,43 @@ env:
   MASTER_ADDR: localhost
   MASTER_PORT: 29500
 
-  # Algorithm selector: baseline-mtp | critic-wmtp | rho1-wmtp
-  WMTP_ALGO: rho1-wmtp
+  # Algorithm selector: baseline-mtp | critic-wmtp | rho1-weighted | rho1-tokenskip
+  WMTP_ALGO: baseline-mtp
+
+  # Environment mode: test | production
+  ENV_MODE: test
 
 # Command to run
 command: |
   echo "Starting WMTP on VESSL..."
   echo "Algorithm: ${WMTP_ALGO}"
+  echo "Environment: ${ENV_MODE}"
+
+  # Set config based on environment mode
+  if [ "${ENV_MODE}" = "test" ]; then
+    CONFIG=tests/configs/config.local_test.yaml
+    echo "Using test configuration"
+  else
+    CONFIG=configs/config.vessl.yaml
+    echo "Using production configuration"
+  fi
 
   # Select recipe by algorithm
   if [ "${WMTP_ALGO}" = "baseline-mtp" ]; then
     RECIPE=configs/recipe.mtp_baseline.yaml
-    CONFIG=configs/config.mtp_baseline.yaml
   elif [ "${WMTP_ALGO}" = "critic-wmtp" ]; then
     RECIPE=configs/recipe.critic_wmtp.yaml
-    CONFIG=configs/config.critic_wmtp.yaml
+  elif [ "${WMTP_ALGO}" = "rho1-weighted" ]; then
+    RECIPE=configs/recipe.rho1_wmtp_weighted.yaml
+  elif [ "${WMTP_ALGO}" = "rho1-tokenskip" ]; then
+    RECIPE=configs/recipe.rho1_wmtp_tokenskip.yaml
   else
-    RECIPE=configs/recipe.rho1_wmtp.yaml
-    CONFIG=configs/config.rho1_wmtp.yaml
+    echo "Invalid WMTP_ALGO: ${WMTP_ALGO}"
+    exit 1
   fi
+
+  echo "Using config: ${CONFIG}"
+  echo "Using recipe: ${RECIPE}"
 
   # Create ephemeral working dirs
   mkdir -p /tmp/models /tmp/datasets /tmp/outputs
@@ -60,7 +78,9 @@ command: |
   # Train
   uv run python -m src.cli.train \
     --config ${CONFIG} \
-    --recipe ${RECIPE}
+    --recipe ${RECIPE} \
+    --run-name vessl_${WMTP_ALGO}_${ENV_MODE} \
+    --tags vessl,${WMTP_ALGO},${ENV_MODE}
 
   # (Optional) Evaluate - expects checkpoint location managed by pipeline/MLflow
   # uv run python -m src.cli.eval \

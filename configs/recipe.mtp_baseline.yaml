@@ -1,5 +1,5 @@
 # Production Recipe - MTP Baseline Algorithm
-# Uniform weighting for Multi-Token Prediction on A100x2
+# Uniform weighting for Multi-Token Prediction on A100x4
 
 # Run metadata
 run:
@@ -16,13 +16,13 @@ data:
   train:
     sources: ["mbpp", "contest"]
     max_length: 2048
-    batch_size: 4  # Per GPU: 4 x 2 = 8 total
+    batch_size: 2  # Per GPU: 2 x 4 = 8 total
     pack_sequences: true
     num_workers: 8
   eval:
     sources: ["mbpp", "humaneval"]
     max_length: 2048
-    batch_size: 4
+    batch_size: 2
     pack_sequences: false
     num_workers: 4
 

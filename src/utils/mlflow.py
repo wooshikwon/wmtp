@@ -259,7 +259,7 @@ class MLflowManager:
     def log_model(
         self,
         model: Any,
-        artifact_path: str = "model",
+        name: str = "model",
         registered_model_name: str | None = None,
         signature: Any | None = None,
         input_example: Any | None = None,
@@ -269,7 +269,7 @@ class MLflowManager:
 
         Args:
             model: PyTorch model
-            artifact_path: Artifact path for model
+            name: Name for the logged model artifact
             registered_model_name: Optional model registry name
             signature: Optional model signature
             input_example: Optional input example
@@ -280,7 +280,7 @@ class MLflowManager:
 
         mlflow.pytorch.log_model(
             model,
-            artifact_path=artifact_path,
+            name=name,
             registered_model_name=registered_model_name,
             signature=signature,
             input_example=input_example,

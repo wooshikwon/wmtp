@@ -1,0 +1,109 @@
+name: Test All Algorithms
+
+# 수동 실행 또는 PR 시 테스트
+on:
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+    inputs:
+      algorithm:
+        description: 'Algorithm to test (leave empty for all)'
+        required: false
+        default: ''
+        type: choice
+        options:
+          - ''
+          - baseline-mtp
+          - critic-wmtp
+          - rho1-weighted
+          - rho1-tokenskip
+      environment:
+        description: 'Environment mode'
+        required: true
+        default: 'test'
+        type: choice
+        options:
+          - test
+          - production
+
+jobs:
+  # 알고리즘별 테스트 매트릭스
+  test-matrix:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false  # 하나 실패해도 다른 것 계속 실행
+      matrix:
+        algorithm: [baseline-mtp, critic-wmtp, rho1-weighted, rho1-tokenskip]
+    if: ${{ github.event.inputs.algorithm == '' || github.event.inputs.algorithm == matrix.algorithm }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build test image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile
+          load: true
+          tags: wmtp:test-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run ${{ matrix.algorithm }} test
+        run: |
+          # Recipe 파일 선택
+          if [ "${{ matrix.algorithm }}" == "baseline-mtp" ]; then
+            RECIPE=configs/recipe.mtp_baseline.yaml
+          elif [ "${{ matrix.algorithm }}" == "critic-wmtp" ]; then
+            RECIPE=configs/recipe.critic_wmtp.yaml
+          elif [ "${{ matrix.algorithm }}" == "rho1-weighted" ]; then
+            RECIPE=configs/recipe.rho1_wmtp_weighted.yaml
+          else
+            RECIPE=configs/recipe.rho1_wmtp_tokenskip.yaml
+          fi
+
+          # Config 파일 선택
+          ENV_MODE=${{ github.event.inputs.environment || 'test' }}
+          if [ "$ENV_MODE" == "test" ]; then
+            CONFIG=tests/configs/config.local_test.yaml
+          else
+            CONFIG=configs/config.vessl.yaml
+          fi
+
+          echo "Testing ${{ matrix.algorithm }} with $ENV_MODE environment"
+          echo "Config: $CONFIG"
+          echo "Recipe: $RECIPE"
+
+          # Docker 컨테이너에서 테스트 실행
+          docker run --rm \
+            -v $(pwd)/tests:/app/tests \
+            -v $(pwd)/configs:/app/configs \
+            -e WMTP_ALGO=${{ matrix.algorithm }} \
+            -e ENV_MODE=$ENV_MODE \
+            wmtp:test-${{ github.sha }} \
+            bash -c "uv run python -m src.cli.train \
+              --config $CONFIG \
+              --recipe $RECIPE \
+              --dry-run \
+              --verbose"
+
+      - name: Report results
+        if: always()
+        run: |
+          echo "### 🧪 Test Results for ${{ matrix.algorithm }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ **Status**: Success" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Status**: Failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Algorithm**: \`${{ matrix.algorithm }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: \`${{ github.event.inputs.environment || 'test' }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY

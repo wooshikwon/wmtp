@@ -328,7 +328,7 @@ class ModelLoader(BaseModelLoader):
                         result["hidden_states"] = model._last_hidden_states
                         result["last_hidden_state"] = model._last_hidden_states[-1]
 
-                    return type("ModelOutput", (), result)()  # 간단한 namespace 객체
+                    return result  # Return dict directly for trainer compatibility
                 else:
                     return logits
 

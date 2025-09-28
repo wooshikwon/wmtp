@@ -110,8 +110,22 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
         # RM model 저장 (Stage 2에서도 사용)
         self.rm_model = ctx.get("rm_model")  # Value loss 계산용
 
-        # 모델 hidden size 가져오기 (7B 모델 기본값: 4096)
-        hidden_size = ctx.get("hidden_size", 4096)
+        # 모델 hidden size 가져오기 (모델에서 직접 추출)
+        hidden_size = None
+        if hasattr(self.model, 'config'):
+            # HuggingFace 스타일 모델
+            hidden_size = getattr(self.model.config, 'hidden_size',
+                                getattr(self.model.config, 'n_embd', None))
+
+        if hidden_size is None:
+            # ctx에서 시도
+            hidden_size = ctx.get("hidden_size")
+
+        if hidden_size is None:
+            raise ValueError(
+                f"Failed to extract hidden_size from model. "
+                f"Model config attributes: {dir(self.model.config) if hasattr(self.model, 'config') else 'No config'}"
+            )
 
         # Value Head 초기화
         if self.value_head is None:
@@ -242,17 +256,18 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
                 # Stack deltas for all heads: [B, H]
                 delta_tensor = torch.stack(delta_list, dim=1)
 
-                # Softmax with temperature
-                weights_t = F.softmax(delta_tensor / self.temperature, dim=1)  # [B, H]
-
-                # 유효하지 않은 헤드는 0으로 마스킹
+                # 유효하지 않은 헤드에 대한 마스킹 (Softmax 전!)
+                # 시퀀스 경계를 넘는 예측은 매우 작은 값으로 설정하여
+                # Softmax 후 자연스럽게 0에 가까워지도록 함
                 for k in range(H):
                     if t + k + 1 >= S:
-                        weights_t[:, k] = 0.0
+                        delta_tensor[:, k] = -1e10
 
-                # 재정규화 (유효한 헤드만)
-                weights_sum = weights_t.sum(dim=1, keepdim=True).clamp(min=1e-8)
-                weights_t = weights_t / weights_sum
+                # Softmax with temperature (이제 gradient-safe)
+                weights_t = F.softmax(delta_tensor / self.temperature, dim=1)  # [B, H]
+
+                # 수치 안정성을 위한 클리핑만 적용 (inplace 수정 없음)
+                weights_t = torch.clamp(weights_t, min=1e-8, max=1.0)
 
                 head_weights[:, t, :] = weights_t
 

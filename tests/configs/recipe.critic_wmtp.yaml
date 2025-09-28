@@ -14,7 +14,7 @@ run:
 train:
   algo: "critic-wmtp"  # Value-based dynamic weighting
   full_finetune: true
-  max_steps: 10
+  max_steps: 2
   # checkpointing moved to config.paths.checkpoints in Phase 2
 
 # Optimizer configuration

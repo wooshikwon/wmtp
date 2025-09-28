@@ -149,22 +149,8 @@ class DistilGPT2MTP(nn.Module):
             if output_attentions:
                 result["attentions"] = outputs.attentions
 
-            # Create a simple namespace object for attribute access
-            class OutputNamespace:
-                def __init__(self, **kwargs):
-                    for k, v in kwargs.items():
-                        setattr(self, k, v)
-
-                def __getitem__(self, key):
-                    return getattr(self, key)
-
-                def __contains__(self, key):
-                    return hasattr(self, key)
-
-                def keys(self):
-                    return [k for k in dir(self) if not k.startswith("_")]
-
-            return OutputNamespace(**result)
+            # Return dict directly for trainer compatibility
+            return result
         else:
             # Legacy tuple format
             result = (mtp_logits,)
