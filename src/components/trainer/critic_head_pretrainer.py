@@ -147,9 +147,18 @@ class CriticHeadPretrainer(BaseComponent):
             return {"skipped": True, "message": "No RM model"}
 
         # Hidden size 추출
-        hidden_size = getattr(
-            getattr(base_model, "config", object()), "hidden_size", 4096
-        )
+        hidden_size = None
+        if hasattr(base_model, 'config'):
+            # HuggingFace 스타일 모델
+            config = base_model.config
+            hidden_size = getattr(config, 'hidden_size',
+                                getattr(config, 'n_embd', None))
+
+        if hidden_size is None:
+            raise ValueError(
+                f"Failed to extract hidden_size from base model. "
+                f"Model config attributes: {dir(base_model.config) if hasattr(base_model, 'config') else 'No config'}"
+            )
 
         # 🎯 Value Head 생성 (연구제안서: V_ϕ(h_t) → scalar)
         self.value_head = nn.Sequential(

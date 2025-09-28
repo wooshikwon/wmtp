@@ -5,16 +5,16 @@
 project: "wmtp_prod_critic"
 seed: 42
 
-# Path configurations - Production models
+# Path configurations - Container mounted paths
 paths:
   models:
-    base: "s3://wmtp/models/7b_1t_4/"
-    rm: "s3://wmtp/models/Starling-RM-7B-alpha/"
-    ref: "s3://wmtp/models/Sheared-LLaMA-2.7B/"
+    base: "file:///app/models/llama-7b-mtp/"
+    rm: "file:///app/models/starling-rm-7b/"
+    ref: "file:///app/models/sheared-llama-2.7b/"
   datasets:
-    mbpp: "s3://wmtp/dataset/mbpp"
-    contest: "s3://wmtp/dataset/contest"
-    humaneval: "s3://wmtp/dataset/humaneval"
+    mbpp: "file:///app/datasets/mbpp"
+    contest: "file:///app/datasets/contest"
+    humaneval: "file:///app/datasets/humaneval"
   checkpoints:
     base_path: "s3://wmtp/checkpoints"  # S3 production checkpoint storage
     save_interval: 500                  # Save every 500 steps for production

@@ -65,7 +65,7 @@ def check_system_resources():
     return True
 
 
-def safe_download(prefix: str, output_dir: str = "."):
+def safe_download(prefix: str, output_dir: str = ".", auto_confirm: bool = True):
     """메모리 안전 다운로드 실행"""
 
     # 시스템 리소스 확인
@@ -132,10 +132,13 @@ def safe_download(prefix: str, output_dir: str = "."):
             "[dim]Using memory-safe configuration to prevent system freeze[/dim]"
         )
 
-        response = console.input("\nProceed? (yes/no): ")
-        if response.lower() not in ["yes", "y"]:
-            console.print("[red]Cancelled.[/red]")
-            return
+        if auto_confirm:
+            console.print("[cyan]Auto-confirming download...[/cyan]")
+        else:
+            response = console.input("\nProceed? (yes/no): ")
+            if response.lower() not in ["yes", "y"]:
+                console.print("[red]Cancelled.[/red]")
+                return
 
         # 다운로드 실행
         console.print(

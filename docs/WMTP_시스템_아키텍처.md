@@ -1,7 +1,7 @@
 # WMTP 시스템 아키텍처
 ## "Not All Tokens Are What You Need" 연구 철학의 시스템 구현
 
-본 문서는 WMTP(Weighted Multi-Token Prediction) 연구 제안서의 핵심 아이디어를 구현한 시스템 아키텍처를 설명합니다. 토큰별 중요도를 동적으로 계산하여 학습 효율성을 높이는 세 가지 알고리즘(baseline-mtp, critic-wmtp, rho1-wmtp)을 통합 파이프라인으로 지원하는 현대적인 시스템입니다.
+본 문서는 WMTP(Weighted Multi-Token Prediction) 연구 제안서의 핵심 아이디어를 구현한 시스템 아키텍처를 설명합니다. 토큰별 중요도를 동적으로 계산하여 학습 효율성을 높이는 세 가지 핵심 알고리즘(baseline-mtp, critic-wmtp, rho1-wmtp)과 추가 변형(rho1-tokenskip)을 통합 파이프라인으로 지원하는 현대적인 시스템입니다.
 
 ---
 
@@ -34,6 +34,7 @@
 
 **주요 기능**:
 - **알고리즘 선택**: train.algo 필드로 baseline-mtp, critic-wmtp, rho1-wmtp 중 선택
+- **모드 선택**: rho1-wmtp의 경우 weighted/token_skip 모드 지원
 - **손실함수 파라미터**: lambda(정규화 강도), temperature(소프트맥스 온도), epsilon(수치 안정성) 설정
 - **훈련 메타데이터**: run.name과 tags를 통한 실험 추적 정보
 - **데이터 소스 지정**: MBPP, CodeContests, HumanEval 등 벤치마크 데이터셋 선택
@@ -124,20 +125,37 @@
 
 ## 알고리즘별 구현 전략
 
-### Baseline MTP (baseline-mtp)
+### 현재 구현된 알고리즘
+
+#### Baseline MTP (baseline-mtp)
 **철학**: 표준 MTP의 균등 가중치 기준선 제공
 **구현**: BaselineMtpTrainer에서 모든 토큰에 w=1 적용
 **목적**: 가중치 기법의 효과를 측정하기 위한 대조군
 
-### Critic WMTP (critic-wmtp)
+#### Critic WMTP (critic-wmtp)
 **철학**: 강화학습 가치 함수 기반 토큰 중요도 계산
 **구현**: CriticWmtpTrainer + Stage1 Value Head 사전훈련
 **핵심**: TD 오차와 GAE를 통한 동적 가중치, auxiliary loss로 안정성 확보
 
-### Rho1 WMTP (rho1-wmtp)
+#### Rho1 WMTP (rho1-wmtp)
 **철학**: 참조 모델과의 비교를 통한 선택적 학습
 **구현**: Rho1WmtpTrainer + 참조 모델 CE 차이 계산
 **핵심**: |CE_ref - CE_base| 기반 가중치, 노이즈 필터링 지원
+**모드**:
+- **Weighted 모드**: CE 차이를 softmax 온도로 정규화하여 연속적 가중치 생성
+- **Token Skip 모드**: 하위 일정 비율(기본 30%) 토큰을 완전히 제외하는 이진 선택
+
+### 미구현 알고리즘 (향후 확장 계획)
+
+#### Gradient-based WMTP
+**철학**: 최종 목적에 대한 각 토큰의 기여도(gradient norm) 기반 가중치
+**계획**: 목표 gradient 중요도 계산, EMA 스무딩, 스케일 정규화 적용
+**참조**: 연구제안서 4.1절 그래디언트 기반 가중화 계열
+
+#### GRPO-based WMTP
+**철학**: 그룹 내 상대 보상 기반 critic-free 최적화
+**계획**: 토큰 수준 GRPO 가중치, 그룹 표준화, KL 정규화 통합
+**참조**: 연구제안서 4.1절 GRPO 기반 가중화 계열
 
 ---
 
@@ -170,7 +188,13 @@
 - **운영 완성도**: MLflow 추적, 분산 학습, 체크포인트 재개
 
 ### 미래 확장 가능성
-- **새로운 WMTP 변형**: 그래디언트 기반, GRPO 기반 알고리즘 추가
+- **새로운 WMTP 변형**:
+  - 그래디언트 기반 알고리즘 (연구제안서 4.1절 참조)
+  - GRPO 기반 알고리즘 (DeepSeek 스타일 critic-free 최적화)
+  - 하이브리드 가중화 방식 (여러 방법론 결합)
+- **추가 Token Selection 전략**:
+  - 적응형 threshold (데이터셋별 자동 조정)
+  - 다단계 선택 (coarse-to-fine selection)
 - **다양한 모델 아키텍처**: 현재 MTP 외 다른 아키텍처 지원
 - **고급 평가 메트릭**: 더 정교한 성능 분석 도구
 - **클라우드 네이티브**: Kubernetes 기반 대규모 실험 관리

@@ -588,7 +588,7 @@ class BaseWmtpTrainer(BaseComponent):
                 # 모델 레지스트리 등록
                 self.mlflow.log_model(
                     model=self.model,
-                    artifact_path="final_model",
+                    name="final_model",
                     registered_model_name=model_name,
                 )
 
