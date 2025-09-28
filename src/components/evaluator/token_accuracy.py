@@ -241,7 +241,7 @@ class TokenAccuracyAnalyzer(BaseComponent):
         # 토크나이저에서 토큰 텍스트 가져오기
         try:
             token_text = tokenizer.decode([token_id])
-        except:
+        except Exception:
             return "special"
 
         # 간단한 휴리스틱 기반 분류

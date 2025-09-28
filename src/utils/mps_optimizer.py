@@ -240,6 +240,11 @@ class MPSOptimizer:
         # 텐서 디바이스 확인
         tensor_device = str(tensor.device).split(":")[0]
 
+        # 디바이스 호환성 체크
+        if tensor_device != device_type and device_type != "cpu":
+            print(f"⚠️ Tensor device ({tensor_device}) != target device ({device_type})")
+            return False
+
         # MPS 특별 처리
         if device_type == "mps":
             # MPS는 특정 dtype만 지원

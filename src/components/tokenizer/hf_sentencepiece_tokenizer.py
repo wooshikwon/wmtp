@@ -17,7 +17,6 @@ import logging
 from typing import Any
 
 from datasets import Dataset
-
 from src.components.base import BaseComponent
 from src.components.registry import tokenizer_registry
 
