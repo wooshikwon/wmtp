@@ -472,6 +472,7 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
                 target_labels=target_labels,  # [B, S, H] - MTPDataCollator 생성
                 head_weights=head_weights,  # [B, S, H] - 동적 가중치
                 ignore_index=-100,
+                config=self.config,  # MPS 경로 판단용 설정 전달
             )
 
             # Value Loss 계산 (auxiliary loss for continuous learning)

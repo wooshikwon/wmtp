@@ -1,20 +1,20 @@
 {
-  "wmtp_type": "reference_model",
-  "training_algorithm": "base_training",
+  "wmtp_type": "reward_model",
+  "training_algorithm": "reward_modeling",
   "horizon": 4,
   "n_heads": 4,
   "base_architecture": "gpt2",
   "model_size": "120m",
   "storage_version": "2.0",
   "created_by": "wmtp_local_standardizer",
-  "standardization_date": "2025-09-26T18:58:42.064895",
+  "standardization_date": "2025-09-26T18:58:41.878251",
   "original_format": "huggingface_safetensors",
-  "source_path": "tests/tiny_models/distilgpt2",
+  "source_path": "tests/test_models/tiny-reward-model",
   "loading_strategy": {
     "loader_type": "huggingface",
     "model_class_name": null,
     "custom_module_file": null,
-    "transformers_class": "AutoModelForCausalLM",
+    "transformers_class": "AutoModel",
     "state_dict_mapping": {
       "remove_prefix": null,
       "add_prefix": null,
@@ -22,5 +22,5 @@
     },
     "required_files": ["config.json", "model.safetensors", "metadata.json"]
   },
-  "algorithm_compatibility": ["rho1-wmtp"]
+  "algorithm_compatibility": ["critic-wmtp"]
 }

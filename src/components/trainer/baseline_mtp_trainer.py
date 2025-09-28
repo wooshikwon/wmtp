@@ -140,6 +140,7 @@ class BaselineMtpTrainer(BaseWmtpTrainer):
                 target_labels=target_labels,  # [B, S, H] - MTPDataCollator 생성
                 head_weights=head_weights,  # [B, S, H] - 모두 1.0
                 ignore_index=-100,
+                config=self.config,  # MPS 경로 판단용 설정 전달
             )
 
             # Lambda scaling (설정에서 가져오기)

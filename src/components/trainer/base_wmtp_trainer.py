@@ -38,6 +38,7 @@ def compute_weighted_mtp_loss(
     head_weights: torch.Tensor,  # [B, S, H]
     ignore_index: int = -100,
     selection_mask: torch.Tensor | None = None,  # [B, S, H] - 토큰 선택 마스크
+    config: dict | None = None,  # 설정 딕셔너리 (MPS 경로 판단용)
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     MTPDataCollator 기반 간단화된 WMTP 손실 계산: L_WMTP = Σ(k=0 to H-1) w_{t+k} × CE_k
@@ -45,18 +46,23 @@ def compute_weighted_mtp_loss(
     3D 라벨을 직접 받아서 헤드별 CE를 계산하고 가중치를 적용합니다.
     복잡한 shift 연산이 제거되어 성능이 대폭 향상됩니다.
 
+    MPS 최적화: config의 gpu_type이 "mps"면 자동으로 MPS 경로를 사용합니다.
+
     Args:
         logits: [B, S, H, V] - MTP 모델 출력
         target_labels: [B, S, H] - MTPDataCollator에서 생성된 3D 라벨
         head_weights: [B, S, H] - 헤드별 가중치 매트릭스
         ignore_index: 무시할 라벨 값 (-100)
         selection_mask: [B, S, H] - 토큰 선택 마스크 (None이면 모두 1)
+        config: 설정 딕셔너리 (MPS 경로 판단용)
 
     Returns:
         weighted_loss: 가중 평균 손실 (scalar)
         valid_mask: 유효한 위치 마스크 [B, S]
         ce_per_head: 헤드별 CE 손실 [B, S, H]
     """
+    from src.utils.mps_optimizer import MPSOptimizer
+
     B, S, H, V = logits.shape
 
     # Input validation (간소화)
@@ -76,17 +82,29 @@ def compute_weighted_mtp_loss(
     # 유효 라벨 마스크 생성
     valid_mask = (target_labels != ignore_index).float()  # [B, S, H]
 
-    # 헤드별 CE 계산 (벡터화)
-    # logits: [B, S, H, V] -> [B*S*H, V]
-    # target_labels: [B, S, H] -> [B*S*H]
-    logits_flat = logits.view(B * S * H, V)
-    target_flat = target_labels.view(B * S * H)
+    # MPS 경로 판단
+    use_mps_path = False
+    if config:
+        use_mps_path = MPSOptimizer.should_use_mps_path(config)
 
-    ce_flat = F.cross_entropy(
-        logits_flat, target_flat, ignore_index=ignore_index, reduction="none"
-    )  # [B*S*H]
+    # ===== 핵심 분기: MPS vs CUDA =====
+    if use_mps_path:
+        # MPS 최적화 경로: 헤드별 3D 처리 (view 없이)
+        ce_per_head = MPSOptimizer.compute_ce_per_head_mps(
+            logits, target_labels, ignore_index
+        )
+    else:
+        # 기존 CUDA 최적화 경로: 4D→2D flatten
+        # logits: [B, S, H, V] -> [B*S*H, V]
+        # target_labels: [B, S, H] -> [B*S*H]
+        logits_flat = logits.view(B * S * H, V)
+        target_flat = target_labels.view(B * S * H)
 
-    ce_per_head = ce_flat.view(B, S, H)  # [B, S, H]
+        ce_flat = F.cross_entropy(
+            logits_flat, target_flat, ignore_index=ignore_index, reduction="none"
+        )  # [B*S*H]
+
+        ce_per_head = ce_flat.view(B, S, H)  # [B, S, H]
 
     # 마스킹 적용
     effective_mask = valid_mask * selection_mask  # [B, S, H]

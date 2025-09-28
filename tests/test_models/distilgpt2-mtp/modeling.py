@@ -1,3 +1,5 @@
+from typing import Any
+
 import torch
 import torch.nn as nn
 from transformers import AutoModelForCausalLM
@@ -7,9 +9,10 @@ class DistilGPT2MTP(nn.Module):
     """DistilGPT2 with Multi-Token Prediction heads.
 
     Enhanced version with proper hidden_states support for Critic-WMTP training.
+    Now with MPS optimization support.
     """
 
-    def __init__(self, config=None):
+    def __init__(self, config=None, training_config: dict[str, Any] | None = None):
         super().__init__()
         if config is None:
             self.base_model = AutoModelForCausalLM.from_pretrained("distilgpt2")
@@ -26,6 +29,12 @@ class DistilGPT2MTP(nn.Module):
         self.hidden_size = self.config.n_embd
         self.vocab_size = self.config.vocab_size
 
+        # Store training config for MPS optimization decision
+        self.training_config = training_config
+
+        # Check if we should use MPS optimization
+        self._use_mps_optimization = self._should_use_mps_path()
+
         # Create additional MTP heads
         self.extra_heads = nn.ModuleList(
             [
@@ -33,6 +42,20 @@ class DistilGPT2MTP(nn.Module):
                 for _ in range(self.n_future_tokens - 1)
             ]
         )
+
+    def _should_use_mps_path(self) -> bool:
+        """Determine if MPS optimization should be used based on config."""
+        if self.training_config is None:
+            return False
+
+        try:
+            # Import here to avoid circular dependency
+            from src.utils.mps_optimizer import MPSOptimizer
+
+            return MPSOptimizer.should_use_mps_path(self.training_config)
+        except ImportError:
+            # If MPSOptimizer not available, fallback to default
+            return False
 
     def forward(
         self,
@@ -97,7 +120,22 @@ class DistilGPT2MTP(nn.Module):
             all_logits.append(logits)
 
         # Stack to create MTP logits: [B, S, n_future_tokens, V]
-        mtp_logits = torch.stack(all_logits, dim=2)
+        # Use MPS-optimized stacking if available
+        if self._use_mps_optimization:
+            try:
+                from src.utils.mps_optimizer import MPSOptimizer
+
+                mtp_logits = MPSOptimizer.optimize_4d_stack(
+                    all_logits,
+                    dim=2,
+                    use_mps=True,  # We already know we want MPS optimization
+                )
+            except Exception:
+                # Fallback to standard stacking if optimization fails
+                mtp_logits = torch.stack(all_logits, dim=2)
+        else:
+            # Standard stacking for CUDA/CPU
+            mtp_logits = torch.stack(all_logits, dim=2)
 
         # Prepare output
         if return_dict:
