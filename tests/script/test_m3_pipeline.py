@@ -125,7 +125,7 @@ def check_environment() -> list[str]:
     # 필수 디렉토리 확인
     required_dirs = [
         Path("tests/configs"),
-        Path("tests/tiny_models"),
+        Path("tests/test_models"),
         Path("tests/test_dataset"),
         Path("src/cli"),
         Path("src/pipelines"),

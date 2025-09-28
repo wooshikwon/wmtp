@@ -28,6 +28,7 @@ from .mlflow import (
     MLflowManager,
     create_mlflow_manager,
 )
+from .mps_optimizer import MPSOptimizer
 from .s3 import S3Manager, create_s3_manager
 
 __all__ = [
@@ -46,6 +47,8 @@ __all__ = [
     "DistributedManager",
     "set_seed",
     "get_dist_manager",
+    # MPS Optimization
+    "MPSOptimizer",
     # Evaluation
     "EvaluationProtocol",
     # # I/O

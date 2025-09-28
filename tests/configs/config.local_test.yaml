@@ -8,9 +8,9 @@ seed: 42
 # Path configurations
 paths:
   models:
-    base: "file://tests/tiny_models/distilgpt2-mtp"  # MTP-enabled distilgpt2 for testing
-    rm: "file://tests/tiny_models/tiny-reward-model-gpt2"  # GPT-2 based RM for value head training
-    ref: "file://tests/tiny_models/distilgpt2"  # Regular distilgpt2 for reference
+    base: "file://tests/test_models/distilgpt2-mtp"  # MTP-enabled distilgpt2 for testing
+    rm: "file://tests/test_models/tiny-reward-model-gpt2"  # GPT-2 based RM for value head training
+    ref: "file://tests/test_models/distilgpt2"  # Regular distilgpt2 for reference
   datasets:
     mbpp: "file://tests/test_dataset/mbpp"
     contest: "file://tests/test_dataset/contest"

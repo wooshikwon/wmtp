@@ -405,21 +405,8 @@ class Rho1WmtpTrainer(BaseWmtpTrainer):
             if not logits.requires_grad:
                 logits = logits.detach().requires_grad_(True)
 
-            # 🎯 단계 1: MTP 헤드별 CE 계산 (임시 균등 가중치로)
-            B, S, H, V = logits.shape
-            temp_weights = torch.ones(
-                (B, S, H), device=logits.device, dtype=logits.dtype
-            )
-
-            _, valid_mask, ce_per_head = compute_weighted_mtp_loss(
-                logits=logits,
-                target_ids=target_ids,
-                head_weights=temp_weights,
-                horizon=self.horizon,
-                ignore_index=-100,
-            )
-
             # 🎯 단계 1: 임시 초기 가중치로 CE 계산 (Rho-1은 CE 필요)
+            B, S, H, V = logits.shape
             initial_weights = torch.ones(
                 (logits.shape[0], logits.shape[1], logits.shape[2]),
                 device=logits.device,
@@ -431,6 +418,7 @@ class Rho1WmtpTrainer(BaseWmtpTrainer):
                 target_labels=target_labels,  # [B, S, H] - MTPDataCollator 생성
                 head_weights=initial_weights,  # [B, S, H] - 임시 균등 가중치
                 ignore_index=-100,
+                config=self.config,  # MPS 경로 판단용 설정 전달
             )
 
             # 🎯 단계 2: Rho-1 헤드 가중치 계산 (Reference CE 비교 기반)
@@ -452,6 +440,7 @@ class Rho1WmtpTrainer(BaseWmtpTrainer):
                 head_weights=head_weights,  # [B, S, H] - Rho-1 가중치
                 selection_mask=selection_mask,  # [B, S, H] - Token skip mask
                 ignore_index=-100,
+                config=self.config,  # MPS 경로 판단용 설정 전달
             )
 
             # Lambda scaling

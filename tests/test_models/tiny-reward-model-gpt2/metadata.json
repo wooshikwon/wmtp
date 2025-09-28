@@ -9,7 +9,7 @@
   "created_by": "wmtp_local_standardizer",
   "standardization_date": "2025-09-27T12:52:00.000000",
   "original_format": "huggingface_safetensors",
-  "source_path": "tests/tiny_models/distilgpt2",
+  "source_path": "tests/test_models/distilgpt2",
   "loading_strategy": {
     "loader_type": "huggingface",
     "model_class_name": null,
