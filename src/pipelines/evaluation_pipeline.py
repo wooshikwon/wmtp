@@ -198,7 +198,7 @@ def run_evaluation_pipeline(
                 all_metrics[f"{eval_type}.{metric_name}"] = metric_value
 
                 # MLflow에 메트릭 기록
-                if isinstance(metric_value, (int, float)):
+                if isinstance(metric_value, int | float):
                     mlflow.log_metric(f"{eval_type}.{metric_name}", metric_value)
 
         console.print(f"[green]✓ {eval_type} 평가 완료[/green]")

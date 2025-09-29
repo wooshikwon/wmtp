@@ -32,6 +32,7 @@ from src.components.trainer.base_wmtp_trainer import (
     BaseWmtpTrainer,
     compute_weighted_mtp_loss,
 )
+import contextlib
 
 console = Console()
 
@@ -200,7 +201,7 @@ class Rho1WmtpTrainer(BaseWmtpTrainer):
 
     def compute_head_weights(
         self,
-        logits: torch.Tensor,
+        logits: torch.Tensor,  # noqa: ARG002
         target_labels: torch.Tensor,
         ce_per_head: torch.Tensor,
         **kwargs,
@@ -499,12 +500,10 @@ class Rho1WmtpTrainer(BaseWmtpTrainer):
             or not torch.isfinite(head_weights).all()
         ):
             if self.mlflow is not None:
-                try:
+                with contextlib.suppress(Exception):
                     self.mlflow.log_metrics(
                         {"train/failure": 1.0}, step=self.global_step
                     )
-                except Exception:
-                    pass
             raise RuntimeError(
                 "Detected NaN/Inf in loss or inputs; aborting training step."
             )

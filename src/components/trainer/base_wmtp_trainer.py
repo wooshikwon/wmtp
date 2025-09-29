@@ -21,6 +21,9 @@ from abc import abstractmethod  # 추상 메서드
 from pathlib import Path  # 경로 처리
 from typing import Any  # 범용 타입 힌트
 
+# Import type aliases
+from src.types import BatchData, MetricsDict, HeadWeights, LogitsOutput
+
 import torch  # PyTorch 딥러닝 프레임워크
 import torch.nn as nn  # 신경망 모듈
 import torch.nn.functional as F  # 함수형 API (cross_entropy 등)
@@ -313,7 +316,7 @@ class BaseWmtpTrainer(BaseComponent):
                 f"[green]Model and optimizer states restored from step {self.start_step}[/green]"
             )
 
-    def _resolve_checkpoint_path(self, config, recipe, ctx) -> tuple[str, bool]:
+    def _resolve_checkpoint_path(self, config, recipe, ctx) -> tuple[str, bool]:  # noqa: ARG002
         """체크포인트 경로 해석 (Phase 3: Config + MLflow run_id 기반)
 
         Args:
@@ -349,8 +352,8 @@ class BaseWmtpTrainer(BaseComponent):
 
     @abstractmethod
     def compute_head_weights(
-        self, logits: torch.Tensor, target_ids: torch.Tensor, **kwargs
-    ) -> torch.Tensor:
+        self, logits: LogitsOutput, target_ids: torch.Tensor, **kwargs
+    ) -> HeadWeights:
         """각 알고리즘별 헤드 가중치 계산 (필수 구현).
 
         Args:
@@ -364,7 +367,7 @@ class BaseWmtpTrainer(BaseComponent):
         pass
 
     @abstractmethod
-    def train_step(self, batch: dict[str, Any]) -> dict[str, Any]:
+    def train_step(self, batch: BatchData) -> MetricsDict:
         """알고리즘별 훈련 스텝 구현 (필수 구현).
 
         Args:

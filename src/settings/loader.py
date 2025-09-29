@@ -181,9 +181,9 @@ def load_yaml(path: str | Path) -> dict[str, Any]:
         return data
 
     except yaml.YAMLError as e:
-        raise ConfigurationError(f"Failed to parse YAML file {path}: {e}")
+        raise ConfigurationError(f"Failed to parse YAML file {path}: {e}") from e
     except Exception as e:
-        raise ConfigurationError(f"Failed to load configuration from {path}: {e}")
+        raise ConfigurationError(f"Failed to load configuration from {path}: {e}") from e
 
 
 def validate_schema(data: dict[str, Any], schema: type[T], name: str = "config") -> T:
@@ -215,9 +215,9 @@ def validate_schema(data: dict[str, Any], schema: type[T], name: str = "config")
         raise ConfigurationError(
             f"Validation failed for {name}:\n{error_detail}\n\n"
             f"Please check your configuration against the schema requirements."
-        )
+        ) from e
     except Exception as e:
-        raise ConfigurationError(f"Unexpected error validating {name}: {e}")
+        raise ConfigurationError(f"Unexpected error validating {name}: {e}") from e
 
 
 def inject_env_auth(data: dict[str, Any], verbose: bool = False) -> dict[str, Any]:

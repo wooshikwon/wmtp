@@ -194,7 +194,7 @@ class ComponentContext:
             initial: Initial context values
         """
         self._data = initial or {}
-        self._history = []
+        self._history: list[tuple[str, Any]] = []
 
     def get(self, key: str, default: Any = None) -> Any:
         """Get value from context."""

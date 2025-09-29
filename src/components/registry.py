@@ -131,7 +131,7 @@ class _CompatibilityAdapter:
     def create(self, key: str, config=None):
         return registry.create(key, category=self.category, config=config)
 
-    def list_keys(self, category: str = None):
+    def list_keys(self, category: str | None = None):
         """List all keys in this category."""
         # If category is provided and matches, or if not provided, use self.category
         if category is None or category == self.category:

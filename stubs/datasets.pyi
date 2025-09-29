@@ -1,0 +1,28 @@
+"""Type stubs for datasets library"""
+
+from typing import Any, Optional, Union, Callable, Dict, List
+
+class Dataset:
+    def __getitem__(self, key: Union[str, int]) -> Any: ...
+    def __len__(self) -> int: ...
+    def map(
+        self,
+        function: Callable[[Dict[str, Any]], Dict[str, Any]],
+        remove_columns: Optional[List[str]] = None,
+        desc: Optional[str] = None,
+        load_from_cache_file: bool = True,
+        **kwargs: Any
+    ) -> "Dataset": ...
+    def filter(self, function: Callable[[Dict[str, Any]], bool], **kwargs: Any) -> "Dataset": ...
+    def select(self, indices: List[int]) -> "Dataset": ...
+    @property
+    def column_names(self) -> List[str]: ...
+
+def load_dataset(
+    path: str,
+    name: Optional[str] = None,
+    split: Optional[str] = None,
+    **kwargs: Any
+) -> Dataset: ...
+
+def load_from_disk(path: str) -> Dataset: ...

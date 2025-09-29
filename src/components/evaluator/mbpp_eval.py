@@ -182,7 +182,7 @@ class MBPPEvaluator(EvaluationProtocol):
         반환값:
             포맷된 프롬프트 문자열
         """
-        prompt = f"""Problem: {problem['text']}
+        prompt = f"""Problem: {problem["text"]}
 
 Write a Python function to solve this problem.
 

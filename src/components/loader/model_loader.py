@@ -66,7 +66,7 @@ class ModelLoader(BaseModelLoader):
             "loader": self.__class__.__name__,
         }
 
-    def load_model(self, model_path: str, **kwargs) -> Any:
+    def load_model(self, model_path: str, **kwargs) -> Any:  # noqa: ARG002
         """
         모델 로딩의 전체 흐름을 관리하는 메인 메서드
         4단계를 순차적으로 실행
@@ -150,7 +150,7 @@ class ModelLoader(BaseModelLoader):
         # S3에서 다운로드
         bucket, key_prefix = self.path_resolver.extract_bucket_and_key(resolved)
         for filename in required_files:
-            self._download_file_from_s3(bucket, key_prefix, filename, local_path)
+            self._download_file_from_s3(key_prefix, filename, local_path)
 
         return local_path
 
@@ -295,11 +295,11 @@ class ModelLoader(BaseModelLoader):
 
         def hf_compatible_forward(
             input_ids=None,
-            attention_mask=None,
+            attention_mask=None,  # noqa: ARG001
             tokens=None,
             start_pos=None,
             output_hidden_states=False,
-            output_attentions=False,
+            output_attentions=False,  # noqa: ARG001
             return_dict=True,
             **kwargs,
         ):
@@ -392,7 +392,7 @@ class ModelLoader(BaseModelLoader):
             return {}
 
     def _download_file_from_s3(
-        self, bucket: str, key_prefix: str, filename: str, local_path: Path
+        self, key_prefix: str, filename: str, local_path: Path
     ):
         """S3에서 단일 파일 다운로드"""
         if not self.s3_manager:
@@ -412,5 +412,5 @@ class ModelLoader(BaseModelLoader):
         except Exception as e:
             # 필수 파일이 아니면 경고만
             if filename in ["config.json", "model.safetensors"]:
-                raise RuntimeError(f"Required file {filename} not found: {e}")
+                raise RuntimeError(f"Required file {filename} not found: {e}") from e
             print(f"      → {filename} 스킵 (옵션)")

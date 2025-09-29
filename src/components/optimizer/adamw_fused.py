@@ -134,7 +134,7 @@ class AdamWFusedOptimizer(BaseComponent):
             raise RuntimeError("Optimizer not initialized. Call setup() first.")
         self.optimizer.add_param_group(group)
 
-    def run(self, ctx: dict[str, Any]) -> dict[str, Any]:
+    def run(self, ctx: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG002
         """
         Report current optimizer state (e.g., learning rate).
         """

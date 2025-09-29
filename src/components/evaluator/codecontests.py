@@ -177,7 +177,7 @@ class CodeContestsEvaluator(EvaluationProtocol):
 
     def format_codecontests_prompt(self, problem: dict[str, Any]) -> str:
         """CodeContests 문제를 프롬프트로 변환."""
-        prompt = f"""Problem: {problem['description']}
+        prompt = f"""Problem: {problem["description"]}
 
 Write a complete Python solution:
 

@@ -251,7 +251,7 @@ class PerplexityMeasurer(BaseComponent):
 
                 # Perplexity
                 perplexity = math.exp(ce_loss.item()) if ce_loss < 50 else float("inf")
-                head_perplexities[f"head_{h+1}"] = perplexity
+                head_perplexities[f"head_{h + 1}"] = perplexity
 
         return head_perplexities
 

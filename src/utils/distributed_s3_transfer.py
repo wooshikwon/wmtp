@@ -44,7 +44,7 @@ class DistributedS3Transfer:
     def __init__(
         self,
         s3_client=None,
-        bucket: str = None,
+        bucket: str | None = None,
         max_workers: int | None = None,
         use_multiprocess: bool = False,
         chunk_size_mb: int = 50,
@@ -105,7 +105,7 @@ class DistributedS3Transfer:
 
         # 진행률 추적용 락
         self.progress_lock = Lock()
-        self.download_stats = {}
+        self.download_stats: dict[str, Any] = {}
 
         # 재개 가능한 다운로드를 위한 메타데이터 저장
         self.metadata_dir = Path(".wmtp_download_cache")
@@ -230,9 +230,9 @@ class DistributedS3Transfer:
         num_workers = min(num_workers, num_chunks)  # 청크 수보다 많은 워커는 불필요
 
         console.print(f"[cyan]📊 File: {s3_key}[/cyan]")
-        console.print(f"[cyan]   Size: {file_size/(1024**3):.2f}GB[/cyan]")
+        console.print(f"[cyan]   Size: {file_size / (1024**3):.2f}GB[/cyan]")
         console.print(
-            f"[cyan]   Chunks: {num_chunks} × {self.chunk_size/(1024**2):.0f}MB[/cyan]"
+            f"[cyan]   Chunks: {num_chunks} × {self.chunk_size / (1024**2):.0f}MB[/cyan]"
         )
         console.print(f"[cyan]   Workers: {num_workers} parallel downloads[/cyan]")
 
@@ -368,7 +368,7 @@ class DistributedS3Transfer:
         # 통계 표시
         total_size = sum(size for _, size in files_to_download)
         console.print(
-            f"[cyan]📊 Found {len(files_to_download)} files, {total_size/(1024**3):.2f}GB total[/cyan]"
+            f"[cyan]📊 Found {len(files_to_download)} files, {total_size / (1024**3):.2f}GB total[/cyan]"
         )
 
         # 파일 크기별로 정렬 (큰 파일 먼저 - 로드 밸런싱)
@@ -396,7 +396,7 @@ class DistributedS3Transfer:
                 )
 
                 # 각 파일 다운로드
-                for s3_key, file_size in files_to_download:
+                for s3_key, _file_size in files_to_download:
                     # 로컬 경로 계산
                     relative_path = s3_key[len(s3_prefix) :].lstrip("/")
                     local_path = local_dir / relative_path
@@ -415,7 +415,7 @@ class DistributedS3Transfer:
                     progress.update(overall_task, advance=1)
         else:
             # 진행률 없이 다운로드
-            for s3_key, file_size in files_to_download:
+            for s3_key, _file_size in files_to_download:
                 relative_path = s3_key[len(s3_prefix) :].lstrip("/")
                 local_path = local_dir / relative_path
                 local_path.parent.mkdir(parents=True, exist_ok=True)
@@ -454,7 +454,7 @@ class DistributedS3Transfer:
             # 테스트 파일 생성 (없으면)
             try:
                 self.get_file_info(test_key)
-            except:
+            except Exception:
                 console.print("[yellow]Creating test file in S3...[/yellow]")
                 test_data = os.urandom(test_file_size_mb * 1024 * 1024)
                 self.s3_client.put_object(
@@ -519,7 +519,7 @@ class DistributedS3Transfer:
         if stats["memory_percent"] > 85:
             self.chunk_size = self.chunk_size // 2
             console.print(
-                f"[yellow]High memory usage, reducing chunk size to {self.chunk_size/(1024**2):.0f}MB[/yellow]"
+                f"[yellow]High memory usage, reducing chunk size to {self.chunk_size / (1024**2):.0f}MB[/yellow]"
             )
 
         # 디스크 공간 확인

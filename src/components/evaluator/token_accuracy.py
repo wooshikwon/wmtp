@@ -286,7 +286,7 @@ class TokenAccuracyAnalyzer(BaseComponent):
         grouped_accuracies = defaultdict(list)
         for pos, acc in position_avg.items():
             group = pos // self.granularity * self.granularity
-            grouped_accuracies[f"pos_{group}_{group+self.granularity}"].append(acc)
+            grouped_accuracies[f"pos_{group}_{group + self.granularity}"].append(acc)
 
         results["grouped_position_accuracies"] = {
             group: float(np.mean(accs)) for group, accs in grouped_accuracies.items()
@@ -315,7 +315,7 @@ class TokenAccuracyAnalyzer(BaseComponent):
                 if accs:
                     head_avg[pos] = float(np.mean(accs))
             if head_avg:
-                head_results[f"head_{head_idx+1}"] = {
+                head_results[f"head_{head_idx + 1}"] = {
                     "position_accuracies": head_avg,
                     "overall_accuracy": float(np.mean(list(head_avg.values()))),
                 }

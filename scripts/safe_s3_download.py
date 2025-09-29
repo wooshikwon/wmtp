@@ -118,7 +118,7 @@ def safe_download(prefix: str, output_dir: str = ".", auto_confirm: bool = True)
 
         # 다운로드 정보 표시
         console.print(
-            f"\n[green]Found {len(files)} files, {total_size/(1024**3):.2f}GB total[/green]"
+            f"\n[green]Found {len(files)} files, {total_size / (1024**3):.2f}GB total[/green]"
         )
 
         # 큰 파일부터 정렬 (하지만 동시 다운로드 제한)

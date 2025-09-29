@@ -117,7 +117,7 @@ class HfSentencePieceTokenizer(BaseComponent):
         max_length: int = 512,
         padding: bool | str = False,  # noqa: ARG002
         return_attention_mask: bool = True,
-        return_tensors: str = None,  # noqa: ARG002
+        return_tensors: str | None = None,  # noqa: ARG002
         **kwargs,  # noqa: ARG002
     ) -> dict[str, list[int]]:
         """HuggingFace 스타일 토크나이징 메서드
@@ -183,7 +183,7 @@ class HfSentencePieceTokenizer(BaseComponent):
     ) -> dict[str, list[list[int]]]:
         """배치 결과 병합"""
         merged = {}
-        for key in results[0].keys():
+        for key in results[0]:
             merged[key] = [result[key] for result in results]
         return merged
 
@@ -191,8 +191,8 @@ class HfSentencePieceTokenizer(BaseComponent):
         self,
         dataset: Dataset,
         max_length: int,
-        text_column: str = None,
-        remove_columns: list[str] = None,
+        text_column: str | None = None,
+        remove_columns: list[str] | None = None,
         **kwargs,
     ) -> Dataset:
         """Dataset 전체를 토크나이징하는 유틸리티 메서드

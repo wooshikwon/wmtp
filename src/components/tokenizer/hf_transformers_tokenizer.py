@@ -42,7 +42,7 @@ class HfTransformersTokenizer(BaseComponent):
     _tokenizers: dict[str, PreTrainedTokenizer] = {}
     _instances: dict[str, "HfTransformersTokenizer"] = {}
 
-    def __new__(cls, config: dict[str, Any], *args, **kwargs):
+    def __new__(cls, config: dict[str, Any], *args, **kwargs):  # noqa: ARG004
         """모델별 싱글톤 패턴 구현"""
         # 모델 ID 추출
         model_id = cls._extract_model_id(config)
@@ -124,15 +124,14 @@ class HfTransformersTokenizer(BaseComponent):
         # Phase 3: recipe.model 제거됨 - config에서만 모델 정보 추출
 
         # Config에서 모델 경로 추출
-        if config and hasattr(config, "paths"):
-            if hasattr(config.paths, "models"):
-                model_path = Path(config.paths.models.base)
-                # 경로가 실제 모델 디렉토리인 경우
-                if (model_path / "tokenizer_config.json").exists():
-                    self.model_id = str(model_path)
-                # 경로에서 모델 이름 추출
-                elif model_path.name:
-                    self.model_id = model_path.name
+        if config and hasattr(config, "paths") and hasattr(config.paths, "models"):
+            model_path = Path(config.paths.models.base)
+            # 경로가 실제 모델 디렉토리인 경우
+            if (model_path / "tokenizer_config.json").exists():
+                self.model_id = str(model_path)
+            # 경로에서 모델 이름 추출
+            elif model_path.name:
+                self.model_id = model_path.name
 
         logger.debug(
             f"토크나이저 설정 업데이트: model_id={self.model_id}, pad_side={self.pad_side}"
@@ -198,7 +197,7 @@ class HfTransformersTokenizer(BaseComponent):
                             "1. 인터넷 연결 확인 (HuggingFace Hub 접근)\n"
                             "2. 모델 ID 확인 (예: 'distilgpt2', 'gpt2')\n"
                             "3. transformers 업데이트: pip install -U transformers"
-                        )
+                        ) from e2
                 else:
                     raise RuntimeError(
                         f"토크나이저 로드 실패: {self.model_id}\n"
@@ -207,7 +206,7 @@ class HfTransformersTokenizer(BaseComponent):
                         "1. 인터넷 연결 확인\n"
                         "2. HuggingFace Hub 접근 확인\n"
                         "3. 캐시 디렉토리 권한 확인"
-                    )
+                    ) from e
 
         # 토크나이저 설정
         self._configure_tokenizer(tokenizer)
@@ -237,7 +236,7 @@ class HfTransformersTokenizer(BaseComponent):
                 tokenizer.add_special_tokens({"pad_token": "[PAD]"})
                 logger.debug("새로운 [PAD] 토큰 추가")
 
-    def run(self, ctx: dict[str, Any]) -> dict[str, Any]:
+    def run(self, ctx: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG002
         """
         토크나이저 및 관련 정보 반환.
 
@@ -325,7 +324,7 @@ class HfTransformersTokenizer(BaseComponent):
         remove_columns: list[str] | None = None,
         load_from_cache_file: bool = True,
         num_proc: int | None = None,
-        **kwargs,
+        **kwargs,  # noqa: ARG002
     ) -> Dataset:
         """
         HuggingFace Dataset 토크나이징.

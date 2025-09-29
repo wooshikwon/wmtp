@@ -142,7 +142,7 @@ class S3Manager:
             return s3_uri
 
         except ClientError as e:
-            raise RuntimeError(f"Failed to upload to S3: {e}")
+            raise RuntimeError(f"Failed to upload to S3: {e}") from e
 
     def upload_artifact(
         self,
@@ -199,7 +199,7 @@ class S3Manager:
             return s3_uri
 
         except ClientError as e:
-            raise RuntimeError(f"Failed to upload to S3: {e}")
+            raise RuntimeError(f"Failed to upload to S3: {e}") from e
 
     def download_to_bytes(self, s3_key: str) -> bytes:
         """
@@ -229,9 +229,9 @@ class S3Manager:
             if error_code == "NoSuchKey":
                 raise FileNotFoundError(
                     f"S3 object not found: s3://{self.bucket}/{full_key}"
-                )
+                ) from e
             else:
-                raise RuntimeError(f"Failed to download from S3: {e}")
+                raise RuntimeError(f"Failed to download from S3: {e}") from e
 
     def stream_model(self, s3_key: str) -> io.BytesIO:
         """

@@ -29,6 +29,7 @@ from src.components.trainer.base_wmtp_trainer import (
     BaseWmtpTrainer,
     compute_weighted_mtp_loss,
 )
+import contextlib
 
 console = Console()
 
@@ -60,7 +61,7 @@ class BaselineMtpTrainer(BaseWmtpTrainer):
     def compute_head_weights(
         self,
         logits: torch.Tensor,
-        target_labels: torch.Tensor,
+        target_labels: torch.Tensor,  # noqa: ARG002
         **kwargs,  # noqa: ARG002
     ) -> torch.Tensor:
         """균등 헤드 가중치 계산 - 모든 헤드에 1.0 가중치.
@@ -176,7 +177,7 @@ class BaselineMtpTrainer(BaseWmtpTrainer):
                             )
                             continue
                         logits_k = logits[:, :valid_len, k, :]
-                        labels_k = target_ids[:, shift : shift + valid_len]
+                        labels_k = target_labels[:, shift : shift + valid_len]
                         ce_k = F.cross_entropy(
                             logits_k.transpose(1, 2),
                             labels_k,
@@ -235,12 +236,10 @@ class BaselineMtpTrainer(BaseWmtpTrainer):
             or not torch.isfinite(head_weights).all()
         ):
             if self.mlflow is not None:
-                try:
+                with contextlib.suppress(Exception):
                     self.mlflow.log_metrics(
                         {"train/failure": 1.0}, step=self.global_step
                     )
-                except Exception:
-                    pass
             raise RuntimeError(
                 "Detected NaN/Inf in loss or inputs; aborting training step."
             )

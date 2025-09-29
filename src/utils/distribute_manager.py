@@ -296,7 +296,8 @@ class DistributedManager:
                 checkpoint_wrapper,
             )
 
-            check_fn = lambda submodule: isinstance(submodule, LlamaDecoderLayer)
+            def check_fn(submodule):
+                return isinstance(submodule, LlamaDecoderLayer)
 
             apply_activation_checkpointing(
                 model,

@@ -29,7 +29,7 @@ def extract_hidden_states(outputs: Any) -> torch.Tensor:
         if isinstance(outputs, dict) and "hidden_states" in outputs:
             hs = outputs["hidden_states"]
             # list/tuple인 경우 마지막 레이어 선택
-            hidden_states = hs[-1] if isinstance(hs, (list, tuple)) else hs
+            hidden_states = hs[-1] if isinstance(hs, list | tuple) else hs
 
         # Case 2: dict 형태에서 last_hidden_state 키 접근
         elif isinstance(outputs, dict) and "last_hidden_state" in outputs:
@@ -38,7 +38,7 @@ def extract_hidden_states(outputs: Any) -> torch.Tensor:
         # Case 3: object 형태에서 hidden_states 속성 접근
         elif hasattr(outputs, "hidden_states") and outputs.hidden_states is not None:
             hs = outputs.hidden_states
-            hidden_states = hs[-1] if isinstance(hs, (list, tuple)) else hs
+            hidden_states = hs[-1] if isinstance(hs, list | tuple) else hs
 
         # Case 4: object 형태에서 last_hidden_state 속성 접근
         elif (
@@ -58,7 +58,7 @@ def extract_hidden_states(outputs: Any) -> torch.Tensor:
                 if hasattr(outputs, attr_name):
                     attr_value = getattr(outputs, attr_name)
                     if attr_value is not None:
-                        if isinstance(attr_value, (list, tuple)):
+                        if isinstance(attr_value, list | tuple):
                             hidden_states = attr_value[-1]
                         else:
                             hidden_states = attr_value
@@ -125,7 +125,7 @@ def get_model_output_info(outputs: Any) -> dict[str, Any]:
         if "hidden_states" in outputs:
             hs = outputs["hidden_states"]
             info["hidden_states_type"] = str(type(hs))
-            if isinstance(hs, (list, tuple)):
+            if isinstance(hs, list | tuple):
                 info["hidden_states_length"] = len(hs)
                 if len(hs) > 0:
                     info["hidden_states_last_shape"] = getattr(
@@ -141,7 +141,7 @@ def get_model_output_info(outputs: Any) -> dict[str, Any]:
         if hasattr(outputs, "hidden_states"):
             hs = outputs.hidden_states
             info["hidden_states_type"] = str(type(hs))
-            if isinstance(hs, (list, tuple)):
+            if isinstance(hs, list | tuple):
                 info["hidden_states_length"] = len(hs)
                 if len(hs) > 0:
                     info["hidden_states_last_shape"] = getattr(

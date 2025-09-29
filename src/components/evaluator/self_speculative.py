@@ -420,7 +420,7 @@ class SelfSpeculativeEvaluator(BaseComponent):
 
         # 위치별 수락률
         for i, rate in enumerate(acceptance_metrics["position_acceptance_rates"]):
-            table.add_row(f"Head {i+1} Acceptance Rate", f"{rate:.2%}")
+            table.add_row(f"Head {i + 1} Acceptance Rate", f"{rate:.2%}")
 
         # 실제 속도 향상 (있는 경우)
         if speedup_metrics:

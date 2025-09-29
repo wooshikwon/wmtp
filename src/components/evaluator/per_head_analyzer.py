@@ -104,7 +104,7 @@ class PerHeadAnalyzer(BaseComponent):
 
         # 헤드별 메트릭 초기화
         head_metrics = {
-            f"head_{i+1}": {
+            f"head_{i + 1}": {
                 "accuracies": [],
                 "perplexities": [],
                 "confidences": [],
@@ -121,7 +121,7 @@ class PerHeadAnalyzer(BaseComponent):
 
                 # 각 헤드별 결과 수집
                 for head_idx in range(4):
-                    head_key = f"head_{head_idx+1}"
+                    head_key = f"head_{head_idx + 1}"
 
                     # 정확도 수집
                     if batch_results[head_key]["accuracy"] is not None:
@@ -194,7 +194,7 @@ class PerHeadAnalyzer(BaseComponent):
         if hasattr(outputs, "prediction_logits"):
             # 각 헤드별 분석
             for head_idx in range(4):
-                head_key = f"head_{head_idx+1}"
+                head_key = f"head_{head_idx + 1}"
                 head_logits = outputs.prediction_logits[:, :, head_idx, :]
 
                 # 타겟 위치 계산 (t+head_idx+1)
@@ -267,7 +267,7 @@ class PerHeadAnalyzer(BaseComponent):
         else:
             # MTP 출력이 아닌 경우
             for head_idx in range(4):
-                batch_results[f"head_{head_idx+1}"] = {
+                batch_results[f"head_{head_idx + 1}"] = {
                     "accuracy": None,
                     "perplexity": None,
                     "confidence": None,
@@ -354,7 +354,7 @@ class PerHeadAnalyzer(BaseComponent):
 
         # 헤드별 트렌드 추출
         for i in range(4):
-            head_key = f"head_{i+1}"
+            head_key = f"head_{i + 1}"
             if head_key in results:
                 comparison["accuracy_trend"].append(
                     results[head_key]["accuracy"]["mean"]
@@ -377,8 +377,8 @@ class PerHeadAnalyzer(BaseComponent):
                         if base_accuracy > 0
                         else 0
                     )
-                    comparison["relative_performance"][f"head_{i+1}_vs_head_1"] = float(
-                        relative
+                    comparison["relative_performance"][f"head_{i + 1}_vs_head_1"] = (
+                        float(relative)
                     )
 
         # 성능 감소율 계산
@@ -445,10 +445,12 @@ class PerHeadAnalyzer(BaseComponent):
 
         # 헤드별 정확도
         for i in range(4):
-            head_key = f"head_{i+1}"
+            head_key = f"head_{i + 1}"
             if head_key in results:
-                metrics[f"head_{i+1}_accuracy"] = results[head_key]["accuracy"]["mean"]
-                metrics[f"head_{i+1}_perplexity"] = results[head_key]["perplexity"][
+                metrics[f"head_{i + 1}_accuracy"] = results[head_key]["accuracy"][
+                    "mean"
+                ]
+                metrics[f"head_{i + 1}_perplexity"] = results[head_key]["perplexity"][
                     "mean"
                 ]
 

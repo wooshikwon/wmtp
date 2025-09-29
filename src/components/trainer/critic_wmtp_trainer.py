@@ -112,10 +112,13 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
 
         # 모델 hidden size 가져오기 (모델에서 직접 추출)
         hidden_size = None
-        if hasattr(self.model, 'config'):
+        if hasattr(self.model, "config"):
             # HuggingFace 스타일 모델
-            hidden_size = getattr(self.model.config, 'hidden_size',
-                                getattr(self.model.config, 'n_embd', None))
+            hidden_size = getattr(
+                self.model.config,
+                "hidden_size",
+                getattr(self.model.config, "n_embd", None),
+            )
 
         if hidden_size is None:
             # ctx에서 시도
@@ -332,7 +335,10 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
         return returns
 
     def compute_head_weights(
-        self, logits: torch.Tensor, target_labels: torch.Tensor, **kwargs
+        self,
+        logits: torch.Tensor,  # noqa: ARG002
+        target_labels: torch.Tensor,
+        **kwargs  # noqa: ARG002
     ) -> torch.Tensor:
         """Value Head를 사용한 직접 헤드 가중치 계산.
 
@@ -468,7 +474,7 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
                 raise RuntimeError(
                     f"CriticWmtpTrainer requires valid hidden_states [B,S,D] from model outputs. "
                     f"Error: {e}. Ensure your model is configured to return hidden states."
-                )
+                ) from e
 
             # 🎯 Critic WMTP: 가치함수 델타 기반 동적 가중치 계산
             head_weights = self.compute_head_weights(
