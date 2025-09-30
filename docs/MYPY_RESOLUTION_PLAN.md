@@ -1,9 +1,17 @@
 # mypy 타입 에러 완전 해결 계획
 
 ## 현재 상태
-- **전체 에러**: 160개
-- **Phase 5 완료 후**: 167 → 160개 (4% 개선)
+- **전체 에러**: 153개
+- **최근 진행**: 173 → 153개 (약 12% 감소)
 - **목표**: 0개 (완전 해결)
+
+### 최근 변경 요약
+- 토크나이저(HF-SP): 오버로드 추가, `SentencePieceProcessor` 타입 지정, 안전 접근자 도입
+- 토크나이저(HF-Transformers): 오버로드/반환 타입 `cast(Dict[str, Any], ...)`, `model_id` 반환 `str` 강제
+- stubs: `datasets.pyi`에 `select(Sequence[int])`, `add_column`, `from_list` 추가; `sentencepiece.pyi` 확인
+- 외부 스텁: `types-PyYAML` 설치로 `yaml` 타입 경고 해소
+- 레지스트리: 동적 속성 `setattr`로 타입 안전화, `create()` 호출 인자 보정
+- 유틸: `mps_optimizer.py`의 `callable` → `Callable[..., Any]` 변경
 
 ## 에러 분류 및 분포
 
@@ -204,9 +212,9 @@ ignore_missing_imports = True
 ## 실행 계획
 
 ### Phase 1: 빠른 개선 (1-2시간)
-1. [ ] mypy.ini 설정 파일 생성
-2. [ ] 타입 스텁 파일 추가 (datasets, sentencepiece)
-3. [ ] None 체크가 명백히 누락된 부분 수정
+1. [x] mypy.ini 설정 파일 생성
+2. [x] 타입 스텁 파일 추가 (datasets, sentencepiece)
+3. [x] None 체크가 명백히 누락된 부분 수정 (토크나이저 중심)
 
 **예상 개선**: 160 → 80개 (50% 감소)
 

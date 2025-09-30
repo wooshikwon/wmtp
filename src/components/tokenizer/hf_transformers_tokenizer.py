@@ -15,7 +15,7 @@ SentencePiece 의존성 없이 다양한 모델을 지원합니다.
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, overload, cast, Dict
 
 from transformers import AutoTokenizer, PreTrainedTokenizer
 
@@ -85,11 +85,11 @@ class HfTransformersTokenizer(BaseComponent):
         """설정에서 모델 ID 추출"""
         # 직접 지정된 model_id
         if "model_id" in config:
-            return config["model_id"]
+            return str(config["model_id"])
 
         # base_id에서 추출
         if "base_id" in config:
-            return config["base_id"]
+            return str(config["base_id"])
 
         # 경로에서 추출
         if "model_path" in config:
@@ -268,12 +268,36 @@ class HfTransformersTokenizer(BaseComponent):
             "model_id": self.model_id,
         }
 
+    @overload
+    def __call__(
+        self,
+        text: str,
+        truncation: bool | None = ...,
+        max_length: int | None = ...,
+        padding: bool | str | None = ...,
+        return_attention_mask: bool = ...,
+        return_tensors: str | None = ...,
+        **kwargs,
+    ) -> dict[str, Any]: ...
+
+    @overload
+    def __call__(
+        self,
+        text: list[str],
+        truncation: bool | None = ...,
+        max_length: int | None = ...,
+        padding: bool | str | None = ...,
+        return_attention_mask: bool = ...,
+        return_tensors: str | None = ...,
+        **kwargs,
+    ) -> dict[str, Any]: ...
+
     def __call__(
         self,
         text: str | list[str],
         truncation: bool | None = None,
         max_length: int | None = None,
-        padding: bool | str = None,
+        padding: bool | str | None = None,
         return_attention_mask: bool = True,
         return_tensors: str | None = None,
         **kwargs,
@@ -306,7 +330,7 @@ class HfTransformersTokenizer(BaseComponent):
         if padding is True:
             padding = "max_length"
 
-        return tokenizer(
+        return cast(Dict[str, Any], tokenizer(
             text,
             truncation=truncation,
             max_length=max_length,
@@ -314,7 +338,7 @@ class HfTransformersTokenizer(BaseComponent):
             return_attention_mask=return_attention_mask,
             return_tensors=return_tensors,
             **kwargs,
-        )
+        ))
 
     def tokenize_dataset(
         self,

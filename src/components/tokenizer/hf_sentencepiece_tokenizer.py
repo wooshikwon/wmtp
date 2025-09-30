@@ -14,11 +14,12 @@ ComponentFactory 패턴 호환 토크나이저입니다.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Optional, overload
 
 from datasets import Dataset
 from src.components.base import BaseComponent
 from src.components.registry import tokenizer_registry
+from sentencepiece import SentencePieceProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -45,13 +46,13 @@ class HfSentencePieceTokenizer(BaseComponent):
             config: 컴포넌트 설정 (tokenizer_path 등)
         """
         super().__init__(config)
-        self.sentence_piece_tokenizer = None
-        self.sp = None
-        self.vocab_size = None
-        self.bos_id = None
-        self.eos_id = None
-        self.pad_id = None
-        self.unk_id = None
+        self.sentence_piece_tokenizer: Optional[Any] = None
+        self.sp: Optional[SentencePieceProcessor] = None
+        self.vocab_size: Optional[int] = None
+        self.bos_id: Optional[int] = None
+        self.eos_id: Optional[int] = None
+        self.pad_id: Optional[int] = None
+        self.unk_id: Optional[int] = None
 
     def setup(self, ctx: dict[str, Any]) -> None:
         """컴포넌트 초기화 - SentencePieceTokenizer 생성 및 설정
@@ -87,6 +88,22 @@ class HfSentencePieceTokenizer(BaseComponent):
             f"  - UNK ID: {self.unk_id}"
         )
 
+
+    def _has_processor(self) -> bool:
+        """타입 가드: processor가 초기화되었는지 확인"""
+        return self.sp is not None
+
+    def _ensure_processor(self) -> None:
+        """processor 초기화 확인 및 에러 발생"""
+        if self.sp is None:
+            raise RuntimeError("토크나이저가 초기화되지 않았습니다. setup()을 먼저 호출하세요.")
+
+    def _get_processor(self) -> SentencePieceProcessor:
+        """초기화된 SentencePieceProcessor를 반환한다."""
+        self._ensure_processor()
+        # mypy가 Non-None으로 추론하도록 보장
+        assert self.sp is not None
+        return self.sp
     def run(self, ctx: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG002
         """ComponentFactory 패턴 실행 메서드
 
@@ -97,6 +114,7 @@ class HfSentencePieceTokenizer(BaseComponent):
             토크나이저 정보가 포함된 딕셔너리
         """
         self.validate_initialized()
+        self._ensure_processor()
 
         return {
             "tokenizer": self,  # HF 호환 인터페이스를 가진 자기 자신 반환
@@ -110,6 +128,30 @@ class HfSentencePieceTokenizer(BaseComponent):
             "source": "Registry/HfSentencePieceTokenizer",
         }
 
+    @overload
+    def __call__(
+        self,
+        text: str,
+        truncation: bool = ...,
+        max_length: int = ...,
+        padding: bool | str = ...,
+        return_attention_mask: bool = ...,
+        return_tensors: str | None = ...,
+        **kwargs,
+    ) -> dict[str, list[int]]: ...
+
+    @overload
+    def __call__(
+        self,
+        text: list[str],
+        truncation: bool = ...,
+        max_length: int = ...,
+        padding: bool | str = ...,
+        return_attention_mask: bool = ...,
+        return_tensors: str | None = ...,
+        **kwargs,
+    ) -> dict[str, list[list[int]]]: ...
+
     def __call__(
         self,
         text: str | list[str],
@@ -119,7 +161,7 @@ class HfSentencePieceTokenizer(BaseComponent):
         return_attention_mask: bool = True,
         return_tensors: str | None = None,  # noqa: ARG002
         **kwargs,  # noqa: ARG002
-    ) -> dict[str, list[int]]:
+    ) -> dict[str, list[int]] | dict[str, list[list[int]]]:
         """HuggingFace 스타일 토크나이징 메서드
 
         기존 파이프라인에서 사용하던 tokenizer() 호출과 완전 호환되도록
@@ -162,8 +204,9 @@ class HfSentencePieceTokenizer(BaseComponent):
         self, text: str, truncation: bool, max_length: int, return_attention_mask: bool
     ) -> dict[str, list[int]]:
         """단일 텍스트 인코딩"""
+        sp = self._get_processor()
         # SentencePiece로 토큰화
-        tokens = self.sp.encode(text, out_type=int)
+        tokens = sp.encode(text, out_type=int)
 
         # Truncation 처리
         if truncation and len(tokens) > max_length:
@@ -264,7 +307,8 @@ class HfSentencePieceTokenizer(BaseComponent):
 
     def decode(self, token_ids: list[int], **kwargs) -> str:  # noqa: ARG002
         """토큰 ID를 텍스트로 디코딩"""
-        return self.sp.decode(token_ids)
+        sp = self._get_processor()
+        return sp.decode(token_ids)
 
     def batch_decode(self, batch_token_ids: list[list[int]], **kwargs) -> list[str]:
         """배치 토큰 ID들을 텍스트 리스트로 디코딩"""
@@ -310,21 +354,33 @@ class HfSentencePieceTokenizer(BaseComponent):
     @property
     def pad_token_id(self) -> int:
         """패딩 토큰 ID"""
+        self._ensure_processor()
+        if self.pad_id is None:
+            raise RuntimeError("Pad ID가 초기화되지 않았습니다.")
         return self.pad_id
 
     @property
     def eos_token_id(self) -> int:
         """문장 끝 토큰 ID"""
+        self._ensure_processor()
+        if self.eos_id is None:
+            raise RuntimeError("EOS ID가 초기화되지 않았습니다.")
         return self.eos_id
 
     @property
     def bos_token_id(self) -> int:
         """문장 시작 토큰 ID"""
+        self._ensure_processor()
+        if self.bos_id is None:
+            raise RuntimeError("BOS ID가 초기화되지 않았습니다.")
         return self.bos_id
 
     @property
     def unk_token_id(self) -> int:
         """알 수 없는 토큰 ID"""
+        self._ensure_processor()
+        if self.unk_id is None:
+            raise RuntimeError("UNK ID가 초기화되지 않았습니다.")
         return self.unk_id
 
     def __repr__(self) -> str:

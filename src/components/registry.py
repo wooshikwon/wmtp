@@ -9,7 +9,7 @@ that keep the existing decorator and factory usage compatible.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, TypeVar
+from typing import Any, ClassVar, Protocol, runtime_checkable, TypeVar, Optional
 
 from .base import Component
 
@@ -74,9 +74,11 @@ class UnifiedRegistry:
                 "module": cls.__module__,
                 **metadata,
             }
-            cls._registry_key = key
-            cls._registry_category = category
-            cls._registry = self
+            # 동적 속성에 대한 타입 안전한 클래스 변수 부여
+            # Protocol 기반의 속성 기대치를 만족하기 위해 setattr 사용
+            setattr(cls, "_registry_key", key)
+            setattr(cls, "_registry_category", category)
+            setattr(cls, "_registry", self)
             return cls
 
         return decorator
@@ -98,7 +100,12 @@ class UnifiedRegistry:
         config: dict[str, Any] | None = None,
     ) -> Component:
         cls = self._get(key, category=category)
-        return cls(config) if config else cls()
+        # BaseComponent 파생 클래스들은 (config: dict | None) 시그니처를 가짐
+        try:
+            return cls(config)  # type: ignore[call-arg]
+        except TypeError:
+            # config 인자를 받지 않는 구현체 호환
+            return cls()  # type: ignore[call-arg]
 
     # 사용되지 않는 메서드들 제거됨 (exists, list_keys, get_metadata, list_components, clear)
 

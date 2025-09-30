@@ -29,7 +29,7 @@ WMTP(Weighted Multi-Token Prediction)는 4D 텐서 [B, S, H, V]를 사용하여
     >>> mtp_logits = MPSOptimizer.optimize_4d_stack(tensors, dim=2, use_mps=use_mps)
 """
 
-from typing import Any
+from typing import Any, Callable
 
 import torch
 
@@ -262,7 +262,7 @@ class MPSOptimizer:
 
     @staticmethod
     def benchmark_operation(
-        operation_func: callable, *args, num_iterations: int = 10, warmup: int = 3
+        operation_func: Callable[..., Any], *args, num_iterations: int = 10, warmup: int = 3
     ) -> float:
         """
         특정 연산의 성능 벤치마크
