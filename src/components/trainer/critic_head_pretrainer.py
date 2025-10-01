@@ -148,11 +148,12 @@ class CriticHeadPretrainer(BaseComponent):
 
         # Hidden size 추출
         hidden_size = None
-        if hasattr(base_model, 'config'):
+        if hasattr(base_model, "config"):
             # HuggingFace 스타일 모델
             config = base_model.config
-            hidden_size = getattr(config, 'hidden_size',
-                                getattr(config, 'n_embd', None))
+            hidden_size = getattr(
+                config, "hidden_size", getattr(config, "n_embd", None)
+            )
 
         if hidden_size is None:
             raise ValueError(
@@ -214,20 +215,22 @@ class CriticHeadPretrainer(BaseComponent):
                     attention_mask = attention_mask.to(device)
 
                 # 📊 Hidden states 추출 (gradient 불필요)
-                with torch.no_grad():
-                    with torch.autocast(
+                with (
+                    torch.no_grad(),
+                    torch.autocast(
                         device_type=("cuda" if torch.cuda.is_available() else "cpu"),
                         dtype=torch.bfloat16,
-                    ):
-                        outputs = base_model(
-                            input_ids=input_ids,
-                            attention_mask=attention_mask,
-                            output_hidden_states=True,
-                        )
-                        # 안전한 hidden_states 추출
-                        from src.utils.model_utils import extract_hidden_states
+                    ),
+                ):
+                    outputs = base_model(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        output_hidden_states=True,
+                    )
+                    # 안전한 hidden_states 추출
+                    from src.utils.model_utils import extract_hidden_states
 
-                        hidden_states = extract_hidden_states(outputs)
+                    hidden_states = extract_hidden_states(outputs)
 
                 # 🎁 RM으로부터 시퀀스 보상 계산 (공통 유틸리티 사용)
                 reward_tensor = compute_sequence_rewards(

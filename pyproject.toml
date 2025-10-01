@@ -66,9 +66,27 @@ ignore = [
     "B008",   # do not perform function calls in argument defaults
     "B905",   # zip without explicit strict parameter
     "SIM105", # use contextlib.suppress
+    "UP038",  # isinstance modernization (deprecated by ruff)
 ]
 fixable = ["ALL"]
 unfixable = []
+
+[tool.ruff.lint.per-file-ignores]
+# Interface/wrapper functions - intentional unused parameters
+"src/components/loader/base_loader.py" = ["ARG002"]
+"src/components/loader/data_loader.py" = ["ARG002"]
+"src/components/loader/model_loader.py" = ["ARG001", "ARG002"]
+"src/components/tokenizer/*.py" = ["ARG002", "ARG003", "ARG004"]
+"src/components/trainer/*.py" = ["ARG002"]
+"src/components/optimizer/*.py" = ["ARG002", "F401"]
+"src/components/evaluator/*.py" = ["ARG002"]
+"src/utils/optimized_s3_transfer.py" = ["ARG002"]
+"src/cli/*.py" = ["ARG001"]
+"tests/**/*.py" = ["ARG001", "ARG002"]
+# Re-export modules for clean API
+"src/components/trainer/__init__.py" = ["F401"]
+# Factory pattern - interface uniformity
+"src/factory/component_factory.py" = ["ARG004"]
 
 [tool.ruff.format]
 quote-style = "double"

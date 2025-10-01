@@ -18,7 +18,7 @@ from rich.panel import Panel
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.utils.distributed_s3_transfer import DistributedS3Transfer
+from src.utils.distributed_s3_transfer import DistributedS3Transfer  # noqa: E402
 
 console = Console()
 

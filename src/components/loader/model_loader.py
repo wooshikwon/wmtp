@@ -148,9 +148,9 @@ class ModelLoader(BaseModelLoader):
         )
 
         # S3에서 다운로드
-        bucket, key_prefix = self.path_resolver.extract_bucket_and_key(resolved)
+        _, key_prefix = self.path_resolver.extract_bucket_and_key(resolved)
         for filename in required_files:
-            self._download_file_from_s3(bucket, key_prefix, filename, local_path)
+            self._download_file_from_s3(key_prefix, filename, local_path)
 
         return local_path
 
@@ -391,9 +391,7 @@ class ModelLoader(BaseModelLoader):
         except Exception:
             return {}
 
-    def _download_file_from_s3(
-        self, bucket: str, key_prefix: str, filename: str, local_path: Path
-    ):
+    def _download_file_from_s3(self, key_prefix: str, filename: str, local_path: Path):
         """S3에서 단일 파일 다운로드"""
         if not self.s3_manager:
             return
@@ -412,5 +410,5 @@ class ModelLoader(BaseModelLoader):
         except Exception as e:
             # 필수 파일이 아니면 경고만
             if filename in ["config.json", "model.safetensors"]:
-                raise RuntimeError(f"Required file {filename} not found: {e}")
+                raise RuntimeError(f"Required file {filename} not found: {e}") from e
             print(f"      → {filename} 스킵 (옵션)")

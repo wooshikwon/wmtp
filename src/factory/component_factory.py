@@ -332,7 +332,7 @@ class ComponentFactory:
         return loader_registry.create("checkpoint-loader", loader_config)
 
     @staticmethod
-    def create_evaluator(recipe: Recipe, config: Config) -> Evaluator:  # noqa: ARG004
+    def create_evaluator(recipe: Recipe, config: Config) -> Evaluator:
         """평가 프로토콜별 특화된 평가기 생성.
 
         각 벤치마크마다 다른 평가 방식과 메트릭이 필요합니다:
@@ -432,7 +432,7 @@ class ComponentFactory:
     #   - Reward 모델: create_model_loader(config, recipe, "rm")
 
     @staticmethod
-    def create_tokenizer(recipe: Recipe, config: Config) -> Any:  # noqa: ARG004
+    def create_tokenizer(recipe: Recipe, config: Config) -> Any:
         """토크나이저 생성 - 환경 기반 자동 선택.
 
         환경(test/production)에 따라 토크나이저 자동 선택:
@@ -475,7 +475,7 @@ class ComponentFactory:
     def create_evaluator_by_type(
         eval_type: str,
         recipe: Recipe,
-        config: Config,  # noqa: ARG004
+        config: Config,
     ) -> Evaluator:
         """평가 타입별 특화된 평가기 생성 (Meta 논문 지원).
 

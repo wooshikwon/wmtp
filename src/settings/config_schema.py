@@ -291,20 +291,11 @@ class CheckpointConfig(BaseModel):
 
     base_path: str = Field(
         default="file://./checkpoints",
-        description="체크포인트 기본 저장 경로 (file:// 또는 s3://)"
+        description="체크포인트 기본 저장 경로 (file:// 또는 s3://)",
     )
-    save_interval: int = Field(
-        default=500,
-        description="체크포인트 저장 간격 (steps)"
-    )
-    keep_last: int = Field(
-        default=3,
-        description="보관할 체크포인트 개수"
-    )
-    save_final: bool = Field(
-        default=True,
-        description="최종 모델 저장 여부"
-    )
+    save_interval: int = Field(default=500, description="체크포인트 저장 간격 (steps)")
+    keep_last: int = Field(default=3, description="보관할 체크포인트 개수")
+    save_final: bool = Field(default=True, description="최종 모델 저장 여부")
 
 
 class Paths(BaseModel):
@@ -393,7 +384,7 @@ class Paths(BaseModel):
                     raise ValueError(
                         f"{field_name}.{attr_name}: 잘못된 경로 형식: {path}\n"
                         f"오류: {str(e)}"
-                    )
+                    ) from e
 
         return v
 
@@ -837,10 +828,9 @@ class Devices(BaseModel):
             self.mixed_precision = "fp16"
 
         # 단일 GPU 환경에서는 FSDP 불필요 - 자동 비활성화
-        if self.device_ids and len(self.device_ids) == 1:
-            if self.fsdp.enabled:
-                print("정보: 단일 GPU 환경에서 FSDP를 자동으로 비활성화합니다.")
-                self.fsdp.enabled = False
+        if self.device_ids and len(self.device_ids) == 1 and self.fsdp.enabled:
+            print("정보: 단일 GPU 환경에서 FSDP를 자동으로 비활성화합니다.")
+            self.fsdp.enabled = False
 
         # CPU 모드에서는 mixed precision 의미 없음
         if self.compute_backend == "cpu" and self.mixed_precision != "fp32":

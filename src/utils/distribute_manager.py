@@ -291,12 +291,12 @@ class DistributedManager:
         """활성화 체크포인팅 활성화로 메모리 효율 개선."""
         try:
             from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
-                CheckpointImpl,
                 apply_activation_checkpointing,
                 checkpoint_wrapper,
             )
 
-            check_fn = lambda submodule: isinstance(submodule, LlamaDecoderLayer)
+            def check_fn(submodule):
+                return isinstance(submodule, LlamaDecoderLayer)
 
             apply_activation_checkpointing(
                 model,

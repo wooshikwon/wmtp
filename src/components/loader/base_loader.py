@@ -208,7 +208,7 @@ class DatasetLoader(BaseLoader):
         train_ratio: float = 0.8,
         val_ratio: float = 0.1,
         test_ratio: float = 0.1,
-        seed: int = 42,  # noqa: ARG002
+        seed: int = 42,
     ) -> dict[str, Any]:
         """
         Create train/val/test splits from data.
