@@ -84,16 +84,20 @@ class DataLoader(DatasetLoader):
         print(f"\n🚀 데이터셋 로딩 시작: {dataset_path}")
 
         # Step 1: 데이터셋 소스 확인
-        dataset_type, path_type, resolved_path = self.step1_identify_source(dataset_path)
+        dataset_type, path_type, resolved_path = self.step1_identify_source(
+            dataset_path
+        )
 
         # Step 2: 메타데이터 확인
         metadata = self.step2_check_metadata(resolved_path, dataset_type, path_type)
 
         # Step 3: 데이터 로드
-        raw_dataset = self.step3_load_data(resolved_path, dataset_type, path_type)
+        raw_dataset = self.step3_load_data(resolved_path, path_type)
 
         # Step 4: 포맷 정규화 및 전처리
-        dataset = self.step4_normalize_and_preprocess(raw_dataset, dataset_type, metadata)
+        dataset = self.step4_normalize_and_preprocess(
+            raw_dataset, dataset_type, metadata
+        )
 
         print(f"✅ 데이터셋 로딩 완료: {len(dataset)} samples\n")
         return dataset
@@ -107,10 +111,7 @@ class DataLoader(DatasetLoader):
         path_type, resolved_path = self.path_resolver.resolve(dataset_path)
 
         # 데이터셋 타입 결정 (Factory에서 전달 또는 자동 감지)
-        if self.dataset_type:
-            dataset_type = self.dataset_type
-        else:
-            dataset_type = self._detect_dataset_type(dataset_path)
+        dataset_type = self.dataset_type or self._detect_dataset_type(dataset_path)
 
         print(f"      → {dataset_type} 데이터셋, {path_type} 경로")
         return dataset_type, path_type, resolved_path
@@ -151,16 +152,14 @@ class DataLoader(DatasetLoader):
         return metadata
 
     # ============= STEP 3: 데이터 로드 =============
-    def step3_load_data(
-        self, resolved_path: str, dataset_type: str, path_type: str
-    ) -> Dataset:
+    def step3_load_data(self, resolved_path: str, path_type: str) -> Dataset:
         """Step 3: 실제 데이터 로드"""
         print("  [3/4] 데이터 로드 중...")
 
         if path_type == "s3":
-            dataset = self._load_from_s3(resolved_path, dataset_type)
+            dataset = self._load_from_s3(resolved_path)
         else:
-            dataset = self._load_from_local(resolved_path, dataset_type)
+            dataset = self._load_from_local(resolved_path)
 
         # 샘플 수 제한
         if self.max_samples and len(dataset) > self.max_samples:
@@ -171,7 +170,10 @@ class DataLoader(DatasetLoader):
 
     # ============= STEP 4: 정규화 및 전처리 =============
     def step4_normalize_and_preprocess(
-        self, raw_dataset: Dataset, dataset_type: str, metadata: dict
+        self,
+        raw_dataset: Dataset,
+        dataset_type: str,
+        metadata: dict,
     ) -> Dataset:
         """Step 4: 데이터 포맷 정규화 및 전처리"""
         print("  [4/4] 데이터 정규화 및 전처리 중...")
@@ -268,7 +270,7 @@ class DataLoader(DatasetLoader):
         else:
             return "custom"
 
-    def _load_from_local(self, path: str, dataset_type: str) -> Dataset:
+    def _load_from_local(self, path: str) -> Dataset:
         """로컬에서 데이터셋 로드"""
         path_obj = Path(path)
 
@@ -292,7 +294,7 @@ class DataLoader(DatasetLoader):
 
         raise ValueError(f"Cannot load dataset from {path}")
 
-    def _load_from_s3(self, s3_path: str, dataset_type: str) -> Dataset:
+    def _load_from_s3(self, s3_path: str) -> Dataset:
         """S3에서 데이터셋 로드"""
         if not self.s3_manager:
             raise RuntimeError("S3 manager not available")

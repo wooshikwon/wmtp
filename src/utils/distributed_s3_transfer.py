@@ -396,7 +396,7 @@ class DistributedS3Transfer:
                 )
 
                 # 각 파일 다운로드
-                for s3_key, file_size in files_to_download:
+                for s3_key, _file_size in files_to_download:
                     # 로컬 경로 계산
                     relative_path = s3_key[len(s3_prefix) :].lstrip("/")
                     local_path = local_dir / relative_path
@@ -415,7 +415,7 @@ class DistributedS3Transfer:
                     progress.update(overall_task, advance=1)
         else:
             # 진행률 없이 다운로드
-            for s3_key, file_size in files_to_download:
+            for s3_key, _file_size in files_to_download:
                 relative_path = s3_key[len(s3_prefix) :].lstrip("/")
                 local_path = local_dir / relative_path
                 local_path.parent.mkdir(parents=True, exist_ok=True)
@@ -454,7 +454,7 @@ class DistributedS3Transfer:
             # 테스트 파일 생성 (없으면)
             try:
                 self.get_file_info(test_key)
-            except:
+            except Exception:  # noqa: S110
                 console.print("[yellow]Creating test file in S3...[/yellow]")
                 test_data = os.urandom(test_file_size_mb * 1024 * 1024)
                 self.s3_client.put_object(

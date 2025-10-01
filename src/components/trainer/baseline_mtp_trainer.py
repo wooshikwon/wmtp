@@ -61,7 +61,7 @@ class BaselineMtpTrainer(BaseWmtpTrainer):
         self,
         logits: torch.Tensor,
         target_labels: torch.Tensor,
-        **kwargs,  # noqa: ARG002
+        **kwargs,
     ) -> torch.Tensor:
         """균등 헤드 가중치 계산 - 모든 헤드에 1.0 가중치.
 
@@ -176,7 +176,7 @@ class BaselineMtpTrainer(BaseWmtpTrainer):
                             )
                             continue
                         logits_k = logits[:, :valid_len, k, :]
-                        labels_k = target_ids[:, shift : shift + valid_len]
+                        labels_k = target_labels[:, shift : shift + valid_len]
                         ce_k = F.cross_entropy(
                             logits_k.transpose(1, 2),
                             labels_k,

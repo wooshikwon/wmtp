@@ -87,7 +87,7 @@ class HfSentencePieceTokenizer(BaseComponent):
             f"  - UNK ID: {self.unk_id}"
         )
 
-    def run(self, ctx: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG002
+    def run(self, ctx: dict[str, Any]) -> dict[str, Any]:
         """ComponentFactory 패턴 실행 메서드
 
         Args:
@@ -115,10 +115,10 @@ class HfSentencePieceTokenizer(BaseComponent):
         text: str | list[str],
         truncation: bool = True,
         max_length: int = 512,
-        padding: bool | str = False,  # noqa: ARG002
+        padding: bool | str = False,
         return_attention_mask: bool = True,
-        return_tensors: str = None,  # noqa: ARG002
-        **kwargs,  # noqa: ARG002
+        return_tensors: str = None,
+        **kwargs,
     ) -> dict[str, list[int]]:
         """HuggingFace 스타일 토크나이징 메서드
 
@@ -183,7 +183,7 @@ class HfSentencePieceTokenizer(BaseComponent):
     ) -> dict[str, list[list[int]]]:
         """배치 결과 병합"""
         merged = {}
-        for key in results[0].keys():
+        for key in results[0]:
             merged[key] = [result[key] for result in results]
         return merged
 
@@ -262,7 +262,7 @@ class HfSentencePieceTokenizer(BaseComponent):
 
         return tokenized_dataset
 
-    def decode(self, token_ids: list[int], **kwargs) -> str:  # noqa: ARG002
+    def decode(self, token_ids: list[int], **kwargs) -> str:
         """토큰 ID를 텍스트로 디코딩"""
         return self.sp.decode(token_ids)
 

@@ -100,16 +100,16 @@ class SentencePieceTokenizer(BaseComponent):
             logger.info(f"✅ S3 다운로드 완료: {len(model_bytes)} bytes")
             return model_bytes
 
-        except FileNotFoundError:
+        except FileNotFoundError as e:
             raise FileNotFoundError(
                 f"S3에서 토크나이저 모델을 찾을 수 없습니다: {self.S3_TOKENIZER_PATH}\n"
                 f"S3 버킷: {self.s3_manager.bucket}\n"
                 f"먼저 다음 명령으로 업로드하세요:\n"
                 f"  aws s3 cp models/7b_1t_4/tokenizer.model "
                 f"s3://{self.s3_manager.bucket}/{self.S3_TOKENIZER_PATH}"
-            )
+            ) from e
         except Exception as e:
-            raise RuntimeError(f"S3 다운로드 실패: {e}")
+            raise RuntimeError(f"S3 다운로드 실패: {e}") from e
 
     def _ensure_processor_loaded(self) -> None:
         """
@@ -125,11 +125,11 @@ class SentencePieceTokenizer(BaseComponent):
         # SentencePiece import
         try:
             from sentencepiece import SentencePieceProcessor
-        except ImportError:
+        except ImportError as e:
             raise ImportError(
                 "sentencepiece 패키지가 필요합니다.\n"
                 "설치: uv pip install sentencepiece"
-            )
+            ) from e
 
         # S3에서 로드 시도
         if self.s3_manager and self.s3_manager.connected:
