@@ -145,12 +145,8 @@ class MetricsVisualizer(BaseComponent):
         x = np.arange(len(batch_sizes))
         width = 0.35
 
-        ax1.bar(
-            x - width / 2, mtp_speeds, width, label="MTP", color=META_COLORS["mtp"]
-        )
-        ax1.bar(
-            x + width / 2, ntp_speeds, width, label="NTP", color=META_COLORS["ntp"]
-        )
+        ax1.bar(x - width / 2, mtp_speeds, width, label="MTP", color=META_COLORS["mtp"])
+        ax1.bar(x + width / 2, ntp_speeds, width, label="NTP", color=META_COLORS["ntp"])
 
         ax1.set_xlabel("Batch Size")
         ax1.set_ylabel("Tokens/Second")

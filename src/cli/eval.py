@@ -71,7 +71,7 @@ def evaluate(
         "--save-report",
         help="Generate and save detailed evaluation report",
     ),
-    batch_size: int | None = typer.Option(  # noqa: ARG001
+    batch_size: int | None = typer.Option(
         None,
         "--batch-size",
         "-b",

@@ -80,7 +80,7 @@ class MBPPEvaluator(EvaluationProtocol):
         model: Any,
         tokenizer: Any,
         dataset: Any | None = None,
-        batch_size: int = 8,  # noqa: ARG002
+        batch_size: int = 8,
         num_samples: int | None = None,
     ) -> dict[str, float]:
         """
