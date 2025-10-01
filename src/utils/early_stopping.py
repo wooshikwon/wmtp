@@ -256,52 +256,56 @@ class ValueHeadEarlyStopping(BaseEarlyStopping):
 
         # 필수 메트릭 확인
         value_loss = metrics.get(self.monitor)
+        if value_loss is None:
+            return False
+
+        # loss_only 모드는 여기서 조기 처리
+        if self.mode == "loss_only":
+            if self._check_loss_convergence(value_loss):
+                self.should_stop_flag = True
+                self.stop_reason = (
+                    f"Stage 1 early stop (loss_only mode): "
+                    f"loss converged ({value_loss:.6f}, patience={self.patience})"
+                )
+                return True
+            return False
+
+        # any/all 모드만 여기 도달 - 모든 메트릭 가져오기
         grad_norm = metrics.get("grad_norm")
         value_variance = metrics.get("value_variance")
 
-        if value_loss is None:
-            # Loss 메트릭이 없으면 조기 종료하지 않음
-            return False
-
-        # 🎯 각 조건 독립적으로 체크
+        # 모든 체크 함수 호출
         loss_converged = self._check_loss_convergence(value_loss)
         grad_unstable = self._check_gradient_instability(grad_norm)
         variance_invalid = self._check_variance_invalid(value_variance)
 
-        # 🎯 Mode별 중단 결정 및 이유 수집
+        # Mode별 중단 결정
         should_stop = False
         reasons = []
 
         if self.mode == "any":
-            # 하나라도 만족하면 중단 (실용적)
+            # 하나라도 만족하면 중단
             if loss_converged:
                 reasons.append(
                     f"loss converged ({value_loss:.6f}, patience={self.patience})"
                 )
             if grad_unstable:
                 reasons.append(
-                    f"gradient unstable (threshold={self.grad_norm_threshold}, ratio={self.grad_norm_threshold_ratio})"
+                    f"gradient unstable (threshold={self.grad_norm_threshold}, "
+                    f"ratio={self.grad_norm_threshold_ratio})"
                 )
             if variance_invalid:
                 reasons.append(
-                    f"variance out of range ({value_variance:.4f}, range=[{self.variance_min}, {self.variance_max}])"
+                    f"variance out of range ({value_variance:.4f}, "
+                    f"range=[{self.variance_min}, {self.variance_max}])"
                 )
-
             should_stop = len(reasons) > 0
 
         elif self.mode == "all":
-            # 모두 만족해야 중단 (보수적)
+            # 모두 만족해야 중단
             if loss_converged and not grad_unstable and not variance_invalid:
                 reasons.append(
                     f"all conditions met: loss={value_loss:.6f}, grad stable, variance valid"
-                )
-                should_stop = True
-
-        else:  # "loss_only"
-            # Loss convergence만 체크
-            if loss_converged:
-                reasons.append(
-                    f"loss converged ({value_loss:.6f}, patience={self.patience})"
                 )
                 should_stop = True
 
@@ -382,8 +386,12 @@ class ValueHeadEarlyStopping(BaseEarlyStopping):
         Returns:
             분산이 범위를 벗어났는지 여부 (True면 조기 종료 사유)
         """
+        # 설정이 없으면 체크하지 않음
+        if self.variance_min is None or self.variance_max is None:
+            return False
+
+        # Variance가 없으면 체크하지 않음
         if variance is None:
-            # Variance가 없으면 체크하지 않음 (유효함)
             return False
 
         # 범위를 벗어났으면 True (invalid)
