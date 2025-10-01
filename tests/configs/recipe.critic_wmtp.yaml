@@ -10,12 +10,37 @@ run:
     - "critic"
     - "wmtp"
 
-# Training configuration
+# Pretraining configuration (Stage 1)
+pretrain:
+  enabled: true
+  num_epochs: 3
+  max_steps: 30
+  lr: 1e-4
+  save_value_head: true
+
+  early_stopping:
+    enabled: true
+    mode: "any"
+    patience: 10
+    min_delta: 1e-4
+    monitor: "value_loss"
+    grad_norm_threshold: 50.0
+    grad_norm_window_size: 10
+    grad_norm_threshold_ratio: 0.7
+    variance_min: 0.1
+    variance_max: 5.0
+
+# Training configuration (Stage 2)
 train:
-  algo: "critic-wmtp"  # Value-based dynamic weighting
+  algo: "critic-wmtp"
   full_finetune: true
   max_steps: 2
-  # checkpointing moved to config.paths.checkpoints in Phase 2
+
+  early_stopping:
+    enabled: false
+    patience: 100
+    min_delta: 1e-5
+    monitor: "wmtp_loss"
 
 # Optimizer configuration
 optim:
@@ -50,22 +75,16 @@ loss:
 
 # Critic-specific configuration
 critic:
-  # Phase 2.2: Clean loss structure (main loss always 1.0)
-  auxiliary_loss_coef: 0.1
-  value_lr: 5e-5
-  use_pseudo_rewards: true
-
-  # Phase 2.1: TD error discount (previously hardcoded)
-  discount_lambda: 0.95  # Short-term discount for delta computation
-  # GAE parameters
-  gamma: 0.99           # Long-term reward discount
-  gae_lambda: 0.95      # GAE lambda parameter
-
-  # Other parameters
   target: "rm_sequence"
   token_spread: "gae"
   delta_mode: "td"
   normalize: "zscore"
+  discount_lambda: 0.95
+  gamma: 0.99
+  gae_lambda: 0.95
+  auxiliary_loss_coef: 0.1
+  value_lr: 5e-5
+  use_pseudo_rewards: true
 
 # Evaluation configuration
 eval:

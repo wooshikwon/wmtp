@@ -23,9 +23,9 @@ paths:
 
 # MLflow configuration - Production tracking
 mlflow:
-  experiment: "wmtp/prod_critic"
-  tracking_uri: "s3://wmtp/mlflow"
-  registry_uri: "s3://wmtp/mlflow"
+  experiment: "wmtp/prod"
+  tracking_uri: "file://./tmp_checkpoints"
+  registry_uri: "file://./tmp_checkpoints"
 
 # Launcher configuration - VESSL A100x4
 launcher:

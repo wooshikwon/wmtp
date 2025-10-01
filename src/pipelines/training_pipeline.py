@@ -277,6 +277,12 @@ def run_training_pipeline(
                 "[yellow]⚠ Stage 1 skipped or failed, proceeding without pretrained Value Head[/yellow]"
             )
 
+        # Early stopping 결과 확인
+        if stage1_result.get("early_stopped"):
+            console.print(
+                f"[yellow]⚠ Stage 1 early stopped: {stage1_result.get('stop_reason')}[/yellow]"
+            )
+
     console.print(f"[dim]🔍 Stage1 사전훈련 완료: {recipe.train.algo}[/dim]")
 
     # Step 11: 메인 Trainer 생성 및 초기화

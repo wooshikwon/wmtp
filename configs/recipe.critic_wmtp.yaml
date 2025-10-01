@@ -12,6 +12,26 @@ run:
     - "a100"
     - "value-function"
 
+# Pretraining configuration (Stage 1: Value Head Pretraining)
+pretrain:
+  enabled: true
+  num_epochs: 3
+  max_steps: 10000
+  lr: 1e-4
+  save_value_head: true
+
+  early_stopping:
+    enabled: true
+    mode: "any"
+    patience: 50
+    min_delta: 1e-4
+    monitor: "value_loss"
+    grad_norm_threshold: 50.0
+    grad_norm_window_size: 20
+    grad_norm_threshold_ratio: 0.7
+    variance_min: 0.1
+    variance_max: 5.0
+
 # Data configuration
 data:
   train:
@@ -27,14 +47,32 @@ data:
     pack_sequences: false
     num_workers: 4
 
-# Training configuration
+# Training configuration (Stage 2: Main Training)
 train:
-  algo: "critic-wmtp"  # Value function delta-based weighting
+  algo: "critic-wmtp"
   full_finetune: true
   max_steps: 10000
   eval_interval: 500
   save_interval: 1000
-  # checkpointing moved to config.paths.checkpoints in Phase 2
+
+  early_stopping:
+    enabled: true
+    patience: 200
+    min_delta: 1e-5
+    monitor: "wmtp_loss"
+
+# Critic-specific configuration
+critic:
+  target: "rm_sequence"
+  token_spread: "gae"
+  delta_mode: "td"
+  normalize: "zscore"
+  discount_lambda: 0.95
+  gamma: 0.99
+  gae_lambda: 0.95
+  auxiliary_loss_coef: 0.1
+  value_lr: 5.0e-5
+  use_pseudo_rewards: true
 
 # Optimizer configuration
 optim:
@@ -46,26 +84,13 @@ optim:
   scheduler: "cosine"
   warmup_ratio: 0.03
 
-# Loss configuration (Phase 2.2: lambda not used in critic-wmtp)
+# Loss configuration
 loss:
   weight_norm: "mean1.0_clip"
-  lambda: 0.3  # Not used in critic-wmtp (main loss always 1.0)
-  weight_temperature: 0.7  # Weight softmax temperature
+  lambda: 0.3
+  weight_temperature: 0.7
   epsilon: 0.05
   max_weight: 3.0
-
-# Critic-specific configuration (Phase 2: fully parameterized)
-critic:
-  discount_lambda: 0.95  # Short-term discount for delta computation
-  gamma: 0.99           # Long-term reward discount
-  gae_lambda: 0.95      # GAE lambda parameter
-  auxiliary_loss_coef: 0.1  # Value head auxiliary loss coefficient
-  target: "rm_sequence"
-  token_spread: "gae"
-  delta_mode: "td"
-  normalize: "zscore"
-  value_lr: 5.0e-5
-  use_pseudo_rewards: true
 
 # Evaluation configuration
 eval:
@@ -73,7 +98,7 @@ eval:
   sampling:
     temperature: 0.7
     top_p: 0.9
-    n: 20  # For pass@k evaluation
+    n: 20
   metrics:
     - "mbpp_exact"
     - "humaneval_exact"

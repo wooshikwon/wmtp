@@ -77,22 +77,65 @@ class Run(BaseModel):
     tags: list[str] = Field(default_factory=list, description="MLflow 태그")
 
 
-# Phase 2 리팩토링: Model, MTPConfig 클래스 제거됨
-# MTP 설정은 ComponentFactory.MTP_CONFIG 상수로 고정 (n_heads=4, horizon=4)
+class EarlyStoppingConfig(BaseModel):
+    """Early stopping configuration.
+
+    Supports both pretraining (Stage 1) and main training (Stage 2).
+    Stage 1 can use multi-criteria stopping (loss, gradient, variance).
+    Stage 2 typically uses loss-only stopping.
+    """
+
+    enabled: bool = Field(default=False, description="Enable early stopping")
+
+    # Common settings
+    patience: int = Field(default=100, ge=1, description="Steps without improvement")
+    min_delta: float = Field(default=1e-4, gt=0, description="Minimum improvement")
+    monitor: str = Field(default="loss", description="Metric to monitor")
+
+    # Mode (pretraining specific)
+    mode: Literal["any", "all", "loss_only"] = Field(
+        default="any",
+        description="Stopping mode: any (one condition), all (all conditions), loss_only",
+    )
+
+    # Gradient stability (window-based)
+    grad_norm_threshold: float | None = Field(
+        default=None, description="Gradient norm threshold"
+    )
+    grad_norm_window_size: int = Field(
+        default=10, ge=1, description="Gradient check window size"
+    )
+    grad_norm_threshold_ratio: float = Field(
+        default=0.7, gt=0, le=1, description="Gradient threshold ratio in window"
+    )
+
+    # Variance range
+    variance_min: float | None = Field(default=None, description="Min value variance")
+    variance_max: float | None = Field(default=None, description="Max value variance")
 
 
-# Checkpointing class removed in Phase 2: moved to Config schema
-# All checkpoint settings now managed in config.paths.checkpoints
+class PretrainConfig(BaseModel):
+    """Pretraining configuration (Stage 1).
 
+    Used for critic-wmtp to pretrain the value head before main training.
+    GAE parameters (gamma, gae_lambda) are in the critic section.
+    """
 
-class Stage1Config(BaseModel):
-    """Stage 1 pretraining configuration for critic-wmtp."""
+    enabled: bool = Field(default=True, description="Enable pretraining")
 
-    enabled: bool = Field(default=True, description="Enable Stage 1 pretraining")
-    max_steps: int = Field(default=2000, ge=1, description="Stage 1 max steps")
-    lr: float = Field(default=1.0e-4, gt=0, description="Stage 1 learning rate")
+    # Training parameters
+    num_epochs: int = Field(default=3, ge=1, description="Number of epochs")
+    max_steps: int = Field(default=2000, ge=1, description="Maximum steps")
+    lr: float = Field(default=1e-4, gt=0, description="Learning rate")
+
+    # Output
     save_value_head: bool = Field(
-        default=True, description="Save value head after Stage 1"
+        default=True, description="Save value head after pretraining"
+    )
+
+    # Early stopping
+    early_stopping: EarlyStoppingConfig | None = Field(
+        default=None, description="Early stopping configuration"
     )
 
 
@@ -108,9 +151,10 @@ class Train(BaseModel):
     )
     eval_interval: int = Field(default=500, ge=1, description="Evaluation interval")
     save_interval: int = Field(default=1000, ge=1, description="Save interval")
-    # checkpointing field removed in Phase 2: moved to config.paths.checkpoints
-    stage1: Stage1Config | None = Field(
-        default=None, description="Stage 1 configuration for critic-wmtp"
+
+    # Early stopping for main training (Stage 2)
+    early_stopping: EarlyStoppingConfig | None = Field(
+        default=None, description="Early stopping configuration for main training"
     )
 
 
@@ -312,14 +356,14 @@ class Eval(BaseModel):
 class Recipe(BaseModel):
     """Root recipe schema for training configuration.
 
-    Phase 2 리팩토링: model 섹션 제거됨
-    - 모델 경로는 config.paths.models에서 관리
-    - MTP 설정은 고정값 사용 (n_heads=4, horizon=4)
-    - 토크나이저는 환경 기반 자동 선택
+    Pretraining is now a top-level configuration separate from train.
+    This provides clearer separation between Stage 1 (pretraining) and Stage 2 (main training).
     """
 
     run: Run = Field(..., description="Run metadata")
-    # model: Model = Field(...) <- Phase 2에서 제거됨
+    pretrain: PretrainConfig | None = Field(
+        default=None, description="Pretraining configuration (Stage 1)"
+    )
     train: Train = Field(..., description="Training configuration")
     optim: Optim = Field(..., description="Optimizer configuration")
     data: Data = Field(..., description="Data configuration")

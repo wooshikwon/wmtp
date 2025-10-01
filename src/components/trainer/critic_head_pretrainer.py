@@ -64,6 +64,9 @@ class CriticHeadPretrainer(BaseComponent):
         self.gae_lambda = self.config.get("gae_lambda", 0.95)  # GAE lambda
         self.max_steps = self.config.get("max_steps", 1000)
 
+        # Early stopping 설정
+        self.early_stopping_config = self.config.get("early_stopping")
+
         # Value Head는 run()에서 생성
         self.value_head: nn.Module | None = None
 
@@ -192,8 +195,20 @@ class CriticHeadPretrainer(BaseComponent):
         console.print(f"  - Learning rate: {self.lr}")
         console.print(f"  - Max steps: {self.max_steps}")
 
+        # Early stopping 초기화
+        early_stopping = None
+        if self.early_stopping_config and self.early_stopping_config.get(
+            "enabled", False
+        ):
+            from src.utils.early_stopping import ValueHeadEarlyStopping
+
+            early_stopping = ValueHeadEarlyStopping(self.early_stopping_config)
+            mode = self.early_stopping_config.get("mode", "any")
+            console.print(f"[cyan]  - Early stopping enabled (mode={mode})[/cyan]")
+
         total_loss = 0.0
         step_count = 0
+        early_stopped = False
 
         # 🔄 Training loop
         for epoch in range(self.num_epochs):
@@ -258,13 +273,15 @@ class CriticHeadPretrainer(BaseComponent):
 
                 # 🎯 Value Head 학습
                 # Flatten: [B, S, H] → [B*S, H]
-                hs_flat = hidden_states.reshape(B * S, H)
+                hs_flat = hidden_states.reshape(
+                    B * S, H
+                ).float()  # Cast to float32 for value head
 
                 # 가치 목표값 텐서 생성
                 vt_flat = torch.tensor(
                     np.concatenate(value_targets, axis=0),
                     device=device,
-                    dtype=hs_flat.dtype,
+                    dtype=torch.float32,
                 ).view(B * S, 1)
 
                 # Forward pass
@@ -296,12 +313,34 @@ class CriticHeadPretrainer(BaseComponent):
                 total_loss += loss.item()
                 step_count += 1
 
+                # Early stopping 체크
+                if early_stopping:
+                    # Variance 계산
+                    pred_variance = pred_values.var().item()
+
+                    # Metrics 준비
+                    metrics = {
+                        "value_loss": loss.item(),
+                        "grad_norm": total_norm,
+                        "value_variance": pred_variance,
+                    }
+
+                    if early_stopping.should_stop(metrics):
+                        reason = early_stopping.stop_reason
+                        console.print(f"[yellow]⚠ Early stopping: {reason}[/yellow]")
+                        early_stopped = True
+                        break
+
                 if step % 100 == 0:
                     avg_loss = total_loss / max(step_count, 1)
                     console.print(
                         f"  Step {step}: Loss = {loss.item():.4f}, "
                         f"Avg Loss = {avg_loss:.4f}"
                     )
+
+            # Outer loop 종료 체크
+            if early_stopped:
+                break
 
         # 🔚 Hidden states 설정 복원
         if hasattr(base_model, "config"):
@@ -313,12 +352,20 @@ class CriticHeadPretrainer(BaseComponent):
         avg_final_loss = total_loss / max(step_count, 1)
         console.print("\n[green]✅ Stage 1 Training Complete[/green]")
         console.print(f"  - Final avg loss: {avg_final_loss:.4f}")
+        console.print(f"  - Total steps: {step_count}")
         console.print(f"  - Value Head saved to: {save_location}")
+
+        if early_stopped:
+            console.print(f"  - Early stopped: {early_stopping.stop_reason}")
 
         return {
             "saved": save_location,
             "final_loss": avg_final_loss,
             "total_steps": step_count,
+            "early_stopped": early_stopped,
+            "stop_reason": early_stopping.stop_reason
+            if early_stopping and early_stopped
+            else None,
         }
 
     def _save_value_head(self, run_name: str) -> str:

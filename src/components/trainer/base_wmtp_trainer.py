@@ -184,6 +184,9 @@ class BaseWmtpTrainer(BaseComponent):
         # Scorer 출력 캐싱 (성능 최적화용)
         self._last_score_out: dict[str, Any] | None = None
 
+        # Early stopping (setup에서 초기화됨)
+        self.early_stopping = None  # LossEarlyStopping 인스턴스
+
     def setup(self, ctx: dict[str, Any]) -> None:
         """트레이너 초기화 - 모델, 분산 훈련, Scorer 등 모든 컴포넌트 설정.
 
@@ -294,6 +297,23 @@ class BaseWmtpTrainer(BaseComponent):
         # 저장된 체크포인트 목록 관리
         self.saved_checkpoints = []
 
+        # Early stopping 초기화 (Stage 2 Main Training)
+        if recipe and hasattr(recipe.train, "early_stopping"):
+            es_config = recipe.train.early_stopping
+            if es_config and es_config.enabled:
+                from src.utils.early_stopping import LossEarlyStopping
+
+                es_config_dict = (
+                    es_config.model_dump()
+                    if hasattr(es_config, "model_dump")
+                    else es_config
+                )
+
+                self.early_stopping = LossEarlyStopping(es_config_dict)
+                console.print(
+                    f"[cyan]Early stopping enabled (monitor={es_config.monitor}, patience={es_config.patience})[/cyan]"
+                )
+
         # 재개 처리 로직
         self.start_step = 0
         self.resume_metrics = {}
@@ -308,6 +328,13 @@ class BaseWmtpTrainer(BaseComponent):
 
             self.start_step = checkpoint_data.get("step", 0)
             self.resume_metrics = checkpoint_data.get("metrics", {})
+
+            # Early stopping 상태 복원
+            if self.early_stopping and checkpoint_data:
+                es_state = checkpoint_data.get("early_stopping_state")
+                if es_state:
+                    self.early_stopping.load_state(es_state)
+                    console.print("[cyan]Early stopping state restored[/cyan]")
 
             console.print(
                 f"[green]Model and optimizer states restored from step {self.start_step}[/green]"
@@ -413,6 +440,36 @@ class BaseWmtpTrainer(BaseComponent):
             out = self.train_step(batch)
             metrics = out
 
+            # Early stopping 체크
+            if self.early_stopping:
+                should_stop = self.early_stopping.should_stop(metrics)
+
+                # 분산 학습: rank 0 결정을 모든 rank에 브로드캐스트
+                if (
+                    torch.distributed.is_available()
+                    and torch.distributed.is_initialized()
+                ):
+                    should_stop_tensor = torch.tensor(
+                        [should_stop], dtype=torch.bool, device=self.device
+                    )
+                    torch.distributed.broadcast(should_stop_tensor, src=0)
+                    should_stop = should_stop_tensor.item()
+
+                if should_stop:
+                    reason = self.early_stopping.stop_reason
+                    console.print(f"[yellow]⚠ Early stopping: {reason}[/yellow]")
+
+                    # MLflow 로깅
+                    if self.mlflow:
+                        self.mlflow.log_metrics(
+                            {
+                                "early_stopping/final_step": current_step,
+                                "early_stopping/best_value": self.early_stopping.best_value,
+                                "early_stopping/counter": self.early_stopping.counter,
+                            }
+                        )
+                    break
+
             # 주기적 체크포인트 저장
             if current_step % self.save_interval == 0:
                 try:
@@ -478,6 +535,9 @@ class BaseWmtpTrainer(BaseComponent):
             # 로컬 경로: Path 객체 사용
             checkpoint_path = str(self.checkpoint_dir / f"checkpoint_step_{step}.pt")
 
+        # Early stopping 상태 수집
+        es_state = self.early_stopping.get_state() if self.early_stopping else None
+
         # FSDP 호환 체크포인트 저장 (MLflow 통합)
         self.dist_manager.save_checkpoint(
             model=self.model,
@@ -489,6 +549,7 @@ class BaseWmtpTrainer(BaseComponent):
             metrics=metrics,
             algorithm=getattr(self, "algorithm", "wmtp"),
             mlflow_run_id=self.mlflow.get_run_id() if self.mlflow else None,
+            early_stopping_state=es_state,  # Early stopping 상태 포함
         )
 
         # MLflow 업로드는 분산 매니저에서 수행함 (중복 제거)
