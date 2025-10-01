@@ -146,8 +146,13 @@ class Train(BaseModel):
         ..., description="Training algorithm"
     )
     full_finetune: bool = Field(default=True, description="Full fine-tuning mode")
+    num_epochs: int = Field(
+        default=3, ge=1, description="Number of training epochs (SFT standard: 3)"
+    )
     max_steps: int | None = Field(
-        default=None, ge=1, description="Maximum training steps (None for unlimited)"
+        default=None,
+        ge=1,
+        description="Maximum training steps across all epochs (None for unlimited)",
     )
     eval_interval: int = Field(default=500, ge=1, description="Evaluation interval")
     save_interval: int = Field(default=1000, ge=1, description="Save interval")
@@ -192,9 +197,6 @@ class DataConfig(BaseModel):
     batch_size: int | None = Field(default=8, ge=1, description="Batch size")
     pack_sequences: bool = Field(
         default=True, description="Pack sequences for efficiency"
-    )
-    num_workers: int = Field(
-        default=8, ge=0, description="Number of data loader workers"
     )
 
     @field_validator("sources")

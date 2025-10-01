@@ -744,7 +744,12 @@ class Devices(BaseModel):
         default="bf16", description="혼합 정밀도 모드"
     )
 
-    # 🆕 분산 학습 설정 추가
+    num_proc: int | None = Field(
+        default=None,
+        ge=0,
+        description="토크나이저 병렬 처리용 CPU 프로세스 수 (None=단일 프로세스, 0=단일, >0=멀티프로세스)",
+    )
+
     distributed: DistributedConfig = Field(
         default_factory=DistributedConfig, description="분산 학습 설정"
     )
