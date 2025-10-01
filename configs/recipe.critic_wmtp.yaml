@@ -46,7 +46,8 @@ pretrain:
 train:
   algo: "critic-wmtp"
   full_finetune: true
-  max_steps: 10000
+  num_epochs: 3  # SFT 표준: 데이터 3회 반복
+  max_steps: 30000  # 안전장치 (10K samples * 3 epochs = 30K steps 예상)
   eval_interval: 500
   save_interval: 1000
 

@@ -198,6 +198,7 @@ class DataConfig(BaseModel):
     pack_sequences: bool = Field(
         default=True, description="Pack sequences for efficiency"
     )
+    num_workers: int = Field(default=2, ge=0, description="DataLoader num_workers")
 
     @field_validator("sources")
     @classmethod

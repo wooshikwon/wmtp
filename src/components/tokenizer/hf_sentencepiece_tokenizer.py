@@ -191,13 +191,14 @@ class HfSentencePieceTokenizer(BaseComponent):
         self,
         dataset: Dataset,
         max_length: int,
-        text_column: str = None,
-        remove_columns: list[str] = None,
+        text_column: str | None = None,
+        remove_columns: list[str] | None = None,
+        load_from_cache_file: bool = True,
+        num_proc: int | None = None,
         **kwargs,
     ) -> Dataset:
         """Dataset 전체를 토크나이징하는 유틸리티 메서드
 
-        기존 파이프라인의 중첩 함수를 대체하는 깔끔한 메서드입니다.
         Dataset.map()과 함께 사용되어 전체 데이터셋을 효율적으로 처리합니다.
 
         Args:
@@ -205,6 +206,8 @@ class HfSentencePieceTokenizer(BaseComponent):
             max_length: 최대 토큰 길이
             text_column: 텍스트가 들어있는 컬럼명 (자동 감지)
             remove_columns: 제거할 컬럼들 (자동으로 원본 텍스트 컬럼 제거)
+            load_from_cache_file: 캐시된 데이터 사용 여부
+            num_proc: 토크나이징 병렬 처리 CPU 프로세스 수 (None=단일 프로세스)
             **kwargs: Dataset.map() 추가 파라미터
 
         Returns:
@@ -248,8 +251,13 @@ class HfSentencePieceTokenizer(BaseComponent):
             tokenize_function,
             remove_columns=remove_columns,
             desc="HF호환 토크나이저로 데이터셋 토크나이징",
-            load_from_cache_file=kwargs.get("load_from_cache_file", True),
-            **{k: v for k, v in kwargs.items() if k != "load_from_cache_file"},
+            load_from_cache_file=load_from_cache_file,
+            num_proc=num_proc,
+            **{
+                k: v
+                for k, v in kwargs.items()
+                if k not in ["load_from_cache_file", "num_proc"]
+            },
         )
 
         logger.info(

@@ -165,12 +165,11 @@ def run_training_pipeline(
 
     console.print(f"[dim]🔍 알고리즘별 추가 모델 로딩 완료: {recipe.train.algo}[/dim]")
 
-    # Step 5: 옵티마이저 설정 (예외: .run() 없는 패턴)
+    # Step 5: 옵티마이저 생성 (setup은 데이터셋 크기 확정 후 수행)
     # AdamW + BF16 + FSDP 조합으로 대규모 모델 훈련 최적화
     optimizer = ComponentFactory.create_optimizer(recipe, base.parameters())
-    optimizer.setup({"num_training_steps": recipe.train.max_steps or 0})
 
-    console.print(f"[dim]🔍 옵티마이저 설정 완료: {recipe.train.algo}[/dim]")
+    console.print(f"[dim]🔍 옵티마이저 생성 완료: {recipe.train.algo}[/dim]")
 
     # Step 6: 데이터셋 로딩
     # MBPP, CodeContests, HumanEval 등 코드 생성 벤치마크 지원
@@ -193,6 +192,7 @@ def run_training_pipeline(
         max_length=recipe.data.train.max_length,
         remove_columns=train_ds.column_names,
         load_from_cache_file=True,
+        num_proc=config.devices.num_proc,
     )
 
     console.print(
@@ -238,11 +238,31 @@ def run_training_pipeline(
         shuffle=(sampler is None),
         sampler=sampler,
         collate_fn=collator,  # ← Factory에서 생성된 collator
-        num_workers=recipe.data.train.num_workers or 2,
+        num_workers=0,  # fork 방지, tokenizer 병렬화 우선
         pin_memory=torch.cuda.is_available(),
     )
 
     console.print(f"[dim]🔍 PyTorch DataLoader 생성 완료: {recipe.train.algo}[/dim]")
+
+    # Step 9-3: 옵티마이저 setup (데이터셋 크기 기반 num_training_steps 계산)
+    # LR scheduler가 올바른 total steps로 동작하도록 정확한 계산 필요
+    dataset_size = len(tokenized)
+    num_epochs = recipe.train.num_epochs
+    max_steps = recipe.train.max_steps
+
+    if max_steps is None:
+        # max_steps가 None이면 전체 epoch 기준
+        num_training_steps = dataset_size * num_epochs
+    else:
+        # max_steps와 전체 epoch 중 작은 값
+        num_training_steps = min(max_steps, dataset_size * num_epochs)
+
+    optimizer.setup({"num_training_steps": num_training_steps})
+
+    console.print(
+        f"[dim]🔍 옵티마이저 setup 완료: {num_training_steps} steps "
+        f"(dataset={dataset_size}, epochs={num_epochs}, max_steps={max_steps})[/dim]"
+    )
 
     # Step 10: Stage1 사전훈련 (Critic 전용, 조건부)
     # Critic 알고리즘의 특별한 2단계 학습 - Value Head 훈련을 S3에 직접 저장
@@ -327,7 +347,11 @@ def run_training_pipeline(
     # Step 13: 메인 WMTP 훈련 실행
     # L_WMTP = Σ w_{t+k} × CE_k 공식으로 토큰별 중요도 반영 훈련
     metrics = trainer.run(
-        {"train_dataloader": train_dl, "max_steps": recipe.train.max_steps}
+        {
+            "train_dataloader": train_dl,
+            "num_epochs": recipe.train.num_epochs,
+            "max_steps": recipe.train.max_steps,
+        }
     )
 
     console.print(f"[dim]🔍 메인 WMTP 훈련 실행 완료: {recipe.train.algo}[/dim]")
