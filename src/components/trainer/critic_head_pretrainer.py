@@ -142,6 +142,10 @@ class CriticHeadPretrainer(BaseComponent):
         rm_model = ctx.get("rm_model")
         train_loader = ctx["train_dataloader"]
         run_name = ctx.get("run_name", "default")
+        config = ctx.get("config")
+
+        # Log interval 가져오기 (config에서, 없으면 100)
+        log_interval = getattr(config, "log_interval", 100) if config else 100
 
         if rm_model is None:
             console.print(
@@ -194,6 +198,7 @@ class CriticHeadPretrainer(BaseComponent):
         console.print(f"  - Hidden size: {hidden_size}")
         console.print(f"  - Learning rate: {self.lr}")
         console.print(f"  - Max steps: {self.max_steps}")
+        console.print(f"  - Log interval: {log_interval} steps")
 
         # Early stopping 초기화
         early_stopping = None
@@ -290,28 +295,46 @@ class CriticHeadPretrainer(BaseComponent):
                 # MSE Loss: L_VF(ϕ) = E_t[(V_ϕ(s_t) - R_t)²]
                 loss = loss_fn(pred_values, vt_flat)
 
-                # Backward pass - 연구 취지에 맞게 자연스러운 학습 허용
+                # Backward pass
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
 
-                # 연구 취지 유지: gradient clipping 대신 모니터링만
-                total_norm = 0.0
+                # Gradient norm 계산 (모니터링)
+                grad_norm = 0.0
                 for p in self.value_head.parameters():
                     if p.grad is not None:
                         param_norm = p.grad.data.norm(2)
-                        total_norm += param_norm.item() ** 2
-                total_norm = total_norm ** (1.0 / 2)
-
-                if total_norm > 50.0:  # High threshold for Stage 1
-                    console.print(
-                        f"[yellow]⚠ Stage 1 large gradient: {total_norm:.2f}[/yellow]"
-                    )
+                        grad_norm += param_norm.item() ** 2
+                grad_norm = grad_norm ** (1.0 / 2)
 
                 optimizer.step()
 
                 # 통계
                 total_loss += loss.item()
                 step_count += 1
+                current_step = step_count
+
+                # Perplexity 계산 (overflow 방지)
+                perplexity = float(
+                    torch.exp(torch.clamp(loss.detach(), max=20.0)).item()
+                )
+
+                # Console 로깅 (Stage 2와 동일한 형식)
+                if current_step % log_interval == 0 or current_step == 1:
+                    avg_loss = total_loss / step_count
+                    log_msg = (
+                        f"[cyan]Step {current_step:>5}[/cyan] │ "
+                        f"Loss: [yellow]{loss.item():.4f}[/yellow] │ "
+                        f"PPL: [yellow]{perplexity:>7.2f}[/yellow] │ "
+                        f"Grad: [green]{grad_norm:>6.2f}[/green] │ "
+                        f"LR: [dim]{self.lr:.2e}[/dim] │ "
+                        f"Avg: [dim]{avg_loss:.4f}[/dim]"
+                    )
+                    console.print(log_msg)
+
+                # 극단적 gradient만 경고
+                if grad_norm > 100.0:
+                    console.print(f"[yellow]⚠ Large gradient: {grad_norm:.2f}[/yellow]")
 
                 # Early stopping 체크
                 if early_stopping:
@@ -321,7 +344,7 @@ class CriticHeadPretrainer(BaseComponent):
                     # Metrics 준비
                     metrics = {
                         "value_loss": loss.item(),
-                        "grad_norm": total_norm,
+                        "grad_norm": grad_norm,
                         "value_variance": pred_variance,
                     }
 
@@ -330,13 +353,6 @@ class CriticHeadPretrainer(BaseComponent):
                         console.print(f"[yellow]⚠ Early stopping: {reason}[/yellow]")
                         early_stopped = True
                         break
-
-                if step % 100 == 0:
-                    avg_loss = total_loss / max(step_count, 1)
-                    console.print(
-                        f"  Step {step}: Loss = {loss.item():.4f}, "
-                        f"Avg Loss = {avg_loss:.4f}"
-                    )
 
             # Outer loop 종료 체크
             if early_stopped:

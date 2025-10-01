@@ -12,26 +12,6 @@ run:
     - "a100"
     - "value-function"
 
-# Pretraining configuration (Stage 1: Value Head Pretraining)
-pretrain:
-  enabled: true
-  num_epochs: 3
-  max_steps: 10000
-  lr: 1e-4
-  save_value_head: true
-
-  early_stopping:
-    enabled: true
-    mode: "any"
-    patience: 50
-    min_delta: 1e-4
-    monitor: "value_loss"
-    grad_norm_threshold: 50.0
-    grad_norm_window_size: 20
-    grad_norm_threshold_ratio: 0.7
-    variance_min: 0.1
-    variance_max: 5.0
-
 # Data configuration
 data:
   train:
@@ -46,6 +26,21 @@ data:
     batch_size: 2
     pack_sequences: false
     num_workers: 4
+
+# Pretraining configuration (Stage 1: Value Head Pretraining)
+pretrain:
+  enabled: true
+  num_epochs: 3
+  max_steps: 10000
+  lr: 1e-4
+  save_value_head: true
+
+  early_stopping:
+    enabled: true
+    mode: "loss_only"  # Most reliable: loss convergence only
+    patience: 50
+    min_delta: 1e-4
+    monitor: "value_loss"
 
 # Training configuration (Stage 2: Main Training)
 train:

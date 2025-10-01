@@ -4,6 +4,7 @@
 # Project metadata
 project: "wmtp_m3_test_critic"
 seed: 42
+log_interval: 1  # 테스트: 모든 step 출력
 
 # Path configurations
 paths:

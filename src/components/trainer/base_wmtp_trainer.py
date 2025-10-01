@@ -424,10 +424,18 @@ class BaseWmtpTrainer(BaseComponent):
         epoch = 0  # 단순화를 위해 epoch=0으로 설정
         metrics = {}
 
+        # Config에서 log_interval 가져오기 (기본값 100)
+        log_interval = (
+            getattr(self.config, "log_interval", 100)
+            if hasattr(self, "config") and self.config
+            else 100
+        )
+
         console.print(
             f"[green]체크포인트 저장 활성화: 매 {self.save_interval}스텝마다 저장[/green]"
         )
         console.print(f"[green]체크포인트 디렉토리: {self.checkpoint_dir}[/green]")
+        console.print(f"[green]로깅 간격: 매 {log_interval} step마다 출력[/green]")
 
         for step, batch in enumerate(dataloader):
             current_step = step + 1
@@ -439,6 +447,28 @@ class BaseWmtpTrainer(BaseComponent):
             # 각 알고리즘별 훈련 스텝 실행 (추상 메서드)
             out = self.train_step(batch)
             metrics = out
+
+            # Console 로깅 (주기적 출력)
+            if current_step % log_interval == 0 or current_step == 1:
+                loss = metrics.get("loss", 0.0)
+                lr = metrics.get("lr", 0.0)
+                grad_norm = metrics.get("grad_norm", 0.0)
+                ppl = metrics.get("perplexity", 0.0)
+
+                log_msg = (
+                    f"[cyan]Step {current_step:>5}[/cyan] │ "
+                    f"Loss: [yellow]{loss:.4f}[/yellow] │ "
+                    f"PPL: [yellow]{ppl:>7.2f}[/yellow] │ "
+                    f"Grad: [green]{grad_norm:>6.2f}[/green] │ "
+                    f"LR: [dim]{lr:.2e}[/dim]"
+                )
+
+                # WMTP만: weight_entropy 추가
+                if "weight_entropy" in metrics:
+                    w_ent = metrics["weight_entropy"]
+                    log_msg += f" │ W_Ent: [magenta]{w_ent:.3f}[/magenta]"
+
+                console.print(log_msg)
 
             # Early stopping 체크
             if self.early_stopping:

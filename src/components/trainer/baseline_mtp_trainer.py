@@ -150,15 +150,21 @@ class BaselineMtpTrainer(BaseWmtpTrainer):
         # 역전파 및 최적화
         loss.backward()
 
-        # 그래디언트 클리핑
+        # 그래디언트 클리핑 및 norm 계산
         grad_clip = float(getattr(self.optimizer, "grad_clip", 1.0))
+        grad_norm = 0.0
         if math.isfinite(grad_clip) and grad_clip > 0:
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), grad_clip)
+            grad_norm = float(
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), grad_clip)
+            )
 
         self.optimizer.step()
         self.optimizer.zero_grad()
 
         self.global_step += 1
+
+        # Perplexity 계산 (overflow 방지)
+        perplexity = float(torch.exp(torch.clamp(loss.detach(), max=20.0)).item())
 
         # MLflow 로깅 (선택적)
         if self.mlflow is not None:
@@ -213,6 +219,8 @@ class BaselineMtpTrainer(BaseWmtpTrainer):
                         {
                             "train/baseline_uniform_weight": 1.0,  # 항상 1.0
                             "train/baseline_algorithm": 1,  # Baseline 플래그
+                            "train/grad_norm": grad_norm,  # Gradient norm
+                            "train/perplexity": perplexity,  # Perplexity
                         }
                     )
 
@@ -247,5 +255,11 @@ class BaselineMtpTrainer(BaseWmtpTrainer):
 
         return {
             "loss": float(loss.detach().item()),
-            "lr": float(getattr(self.optimizer, "_last_lr", 0.0)),
+            "lr": float(
+                getattr(self.optimizer, "_last_lr", [0.0])[0]
+                if isinstance(getattr(self.optimizer, "_last_lr", [0.0]), list)
+                else getattr(self.optimizer, "_last_lr", 0.0)
+            ),
+            "grad_norm": grad_norm,
+            "perplexity": perplexity,
         }

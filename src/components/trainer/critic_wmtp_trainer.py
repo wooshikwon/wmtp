@@ -539,18 +539,18 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
 
         # 연구 취지: Critic TD의 자연스러운 신호를 보존 (no gradient clipping)
 
-        # 대신 gradient 안정성 체크 (연구 취지 유지하면서 안정성 확보)
-        total_norm = 0.0
+        # Gradient norm 계산 (연구 취지 유지하면서 모니터링)
+        grad_norm = 0.0
         for p in list(self.model.parameters()) + list(self.value_head.parameters()):
             if p.grad is not None:
                 param_norm = p.grad.data.norm(2)
-                total_norm += param_norm.item() ** 2
-        total_norm = total_norm ** (1.0 / 2)
+                grad_norm += param_norm.item() ** 2
+        grad_norm = grad_norm ** (1.0 / 2)
 
-        # 극단적인 경우만 체크 (자연스러운 학습은 허용)
-        if total_norm > 100.0:  # Very high threshold for research integrity
+        # 극단적인 경우만 경고 (자연스러운 학습은 허용)
+        if grad_norm > 100.0:  # Very high threshold for research integrity
             console.print(
-                f"[yellow]⚠ Large gradient norm detected: {total_norm:.2f} at step {self.global_step}[/yellow]"
+                f"[yellow]⚠ Large gradient norm detected: {grad_norm:.2f} at step {self.global_step}[/yellow]"
             )
 
         self.optimizer.step()
@@ -558,14 +558,38 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
 
         self.global_step += 1
 
+        # Perplexity 계산 (overflow 방지)
+        perplexity = float(torch.exp(torch.clamp(loss.detach(), max=20.0)).item())
+
+        # Weight entropy 계산 (WMTP 가중치 분포의 엔트로피)
+        with torch.no_grad():
+            # head_weights: [B, S, H], valid_mask: [B, S]
+            valid_weights = head_weights[
+                valid_mask.unsqueeze(-1).expand(-1, -1, self.horizon)
+            ].view(-1, self.horizon)  # [N, H]
+            if valid_weights.numel() > 0:
+                # 엔트로피: H(w) = -Σ w_i log(w_i)
+                weight_probs = valid_weights + 1e-10
+                weight_entropy = float(
+                    (-(weight_probs * torch.log(weight_probs)))
+                    .sum(dim=-1)
+                    .mean()
+                    .item()
+                )
+            else:
+                weight_entropy = 0.0
+
         # MLflow 로깅 (100 step마다 + 핵심 메트릭만)
         if self.mlflow is not None and self.global_step % 100 == 0:
             try:
-                # 핵심 메트릭만 로깅
+                # 핵심 메트릭 로깅
                 metrics = {
                     "train/loss": float(loss.detach().item()),
                     "train/wmtp_loss": float(weighted_loss.item()),
                     "train/value_loss": float(value_loss.item()),
+                    "train/grad_norm": grad_norm,
+                    "train/perplexity": perplexity,
+                    "train/weight_entropy": weight_entropy,
                 }
 
                 # Critic 특화 메트릭 (중요한 것만)
@@ -579,6 +603,8 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
                     ]
                     if w_eff.numel() > 0:
                         metrics["train/weight_mean"] = float(w_eff.mean().item())
+                        metrics["train/weight_max"] = float(w_eff.max().item())
+                        metrics["train/weight_min"] = float(w_eff.min().item())
 
                 self.mlflow.log_metrics(metrics, step=self.global_step)
             except Exception:
@@ -594,5 +620,12 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
             "loss": float(loss.detach().item()),
             "wmtp_loss": float(weighted_loss.item()),
             "value_loss": float(value_loss.item()),
-            "lr": float(getattr(self.optimizer, "_last_lr", 0.0)),
+            "lr": float(
+                getattr(self.optimizer, "_last_lr", [0.0])[0]
+                if isinstance(getattr(self.optimizer, "_last_lr", [0.0]), list)
+                else getattr(self.optimizer, "_last_lr", 0.0)
+            ),
+            "grad_norm": grad_norm,
+            "perplexity": perplexity,
+            "weight_entropy": weight_entropy,
         }

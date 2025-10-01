@@ -4,6 +4,7 @@
 # Project metadata
 project: "wmtp_prod_critic"
 seed: 42
+log_interval: 100  # Production: 100 step마다 출력
 
 # Path configurations - Container mounted paths
 paths:

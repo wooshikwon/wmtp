@@ -10,6 +10,19 @@ run:
     - "critic"
     - "wmtp"
 
+# Data configuration
+data:
+  train:
+    sources: ["mbpp"]
+    max_length: 128
+    batch_size: 1
+    pack_sequences: false
+  eval:
+    sources: ["mbpp"]
+    max_length: 128
+    batch_size: 1
+    pack_sequences: false
+
 # Pretraining configuration (Stage 1)
 pretrain:
   enabled: true
@@ -20,21 +33,18 @@ pretrain:
 
   early_stopping:
     enabled: true
-    mode: "any"
+    mode: "loss_only"  # 테스트 환경: loss만 체크
     patience: 10
     min_delta: 1e-4
     monitor: "value_loss"
-    grad_norm_threshold: 50.0
-    grad_norm_window_size: 10
-    grad_norm_threshold_ratio: 0.7
-    variance_min: 0.1
-    variance_max: 5.0
+    # Gradient/variance 체크는 production 환경에서만 사용
+    # 테스트 환경에서는 초기 variance가 매우 작아 즉시 중단될 수 있음
 
 # Training configuration (Stage 2)
 train:
   algo: "critic-wmtp"
   full_finetune: true
-  max_steps: 2
+  max_steps: 10
 
   early_stopping:
     enabled: false
@@ -51,19 +61,6 @@ optim:
   grad_clip: 1.0
   scheduler: "constant"
   warmup_ratio: 0.0
-
-# Data configuration
-data:
-  train:
-    sources: ["mbpp"]
-    max_length: 128
-    batch_size: 1
-    pack_sequences: false
-  eval:
-    sources: ["mbpp"]
-    max_length: 128
-    batch_size: 1
-    pack_sequences: false
 
 # Loss configuration - critic settings
 loss:

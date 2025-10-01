@@ -263,6 +263,7 @@ def run_training_pipeline(
                 "rm_model": rm_model,
                 "train_dataloader": train_dl,
                 "run_name": recipe.run.name or "default",  # S3 경로 생성용 실행 이름
+                "config": config,  # Log interval 등 전역 설정 전달
             }
         )
 

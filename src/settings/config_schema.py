@@ -923,6 +923,11 @@ class Config(BaseModel):
 
     project: str = Field(default="mtp_ft", description="프로젝트 이름")
     seed: int = Field(default=42, description="재현성을 위한 난수 시드")
+    log_interval: int = Field(
+        default=100,
+        ge=1,
+        description="Console 및 MLflow 로깅 간격 (steps)",
+    )
     s3_auth: S3AuthConfig | None = Field(
         default=None, description="S3 인증 설정 (S3 경로 사용 시 필요)"
     )
