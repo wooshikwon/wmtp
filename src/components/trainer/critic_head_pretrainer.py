@@ -194,7 +194,7 @@ class CriticHeadPretrainer(BaseComponent):
         base_model.eval()
         self.value_head.train()
 
-        console.print("[cyan]Starting Stage 1: Value Head Pretraining[/cyan]")
+        console.print("Stage 1 설정:")
         console.print(f"  - Hidden size: {hidden_size}")
         console.print(f"  - Learning rate: {self.lr}")
         console.print(f"  - Max steps: {self.max_steps}")
@@ -217,7 +217,9 @@ class CriticHeadPretrainer(BaseComponent):
 
         # 🔄 Training loop
         for epoch in range(self.num_epochs):
-            console.print(f"\n[bold]Epoch {epoch + 1}/{self.num_epochs}[/bold]")
+            console.print(
+                f"\n[bold cyan]📊 Epoch {epoch + 1}/{self.num_epochs}[/bold cyan]"
+            )
 
             for step, batch in enumerate(track(train_loader, description="Training")):
                 if step >= self.max_steps:
@@ -321,14 +323,12 @@ class CriticHeadPretrainer(BaseComponent):
 
                 # Console 로깅 (Stage 2와 동일한 형식)
                 if current_step % log_interval == 0 or current_step == 1:
-                    avg_loss = total_loss / step_count
                     log_msg = (
                         f"[cyan]Step {current_step:>5}[/cyan] │ "
                         f"Loss: [yellow]{loss.item():.4f}[/yellow] │ "
                         f"PPL: [yellow]{perplexity:>7.2f}[/yellow] │ "
                         f"Grad: [green]{grad_norm:>6.2f}[/green] │ "
-                        f"LR: [dim]{self.lr:.2e}[/dim] │ "
-                        f"Avg: [dim]{avg_loss:.4f}[/dim]"
+                        f"LR: [dim]{self.lr:.2e}[/dim]"
                     )
                     console.print(log_msg)
 
@@ -366,10 +366,11 @@ class CriticHeadPretrainer(BaseComponent):
         save_location = self._save_value_head(run_name)
 
         avg_final_loss = total_loss / max(step_count, 1)
-        console.print("\n[green]✅ Stage 1 Training Complete[/green]")
-        console.print(f"  - Final avg loss: {avg_final_loss:.4f}")
-        console.print(f"  - Total steps: {step_count}")
-        console.print(f"  - Value Head saved to: {save_location}")
+        console.print("\n[bold green]✅ Stage 1 완료[/bold green]")
+        console.print("결과 요약:")
+        console.print(f"  - 평균 Loss: {avg_final_loss:.4f}")
+        console.print(f"  - 총 Step 수: {step_count}")
+        console.print(f"  - Value Head 저장 위치: {save_location}")
 
         if early_stopped:
             console.print(f"  - Early stopped: {early_stopping.stop_reason}")

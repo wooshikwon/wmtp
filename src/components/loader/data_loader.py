@@ -14,11 +14,15 @@ import json
 from pathlib import Path
 from typing import Any
 
+from rich.console import Console
+
 from datasets import Dataset, load_dataset, load_from_disk
 from src.components.loader.base_loader import DatasetLoader
 from src.components.registry import loader_registry
 from src.utils.path_resolver import PathResolver
 from src.utils.s3 import create_s3_manager
+
+console = Console()
 
 
 @loader_registry.register(
@@ -81,7 +85,7 @@ class DataLoader(DatasetLoader):
         데이터셋 로딩의 전체 흐름을 관리하는 메인 메서드
         4단계를 순차적으로 실행
         """
-        print(f"\n🚀 데이터셋 로딩 시작: {dataset_path}")
+        console.print(f"\n🚀 데이터셋 로딩 시작: {dataset_path}")
 
         # Step 1: 데이터셋 소스 확인
         dataset_type, path_type, resolved_path = self.step1_identify_source(
@@ -99,13 +103,13 @@ class DataLoader(DatasetLoader):
             raw_dataset, dataset_type, metadata
         )
 
-        print(f"✅ 데이터셋 로딩 완료: {len(dataset)} samples\n")
+        console.print(f"[green]✅ 데이터셋 로딩 완료: {len(dataset)} samples[/green]\n")
         return dataset
 
     # ============= STEP 1: 소스 확인 =============
     def step1_identify_source(self, dataset_path: str) -> tuple[str, str, str]:
         """Step 1: 데이터셋 소스와 경로 타입 확인"""
-        print("  [1/4] 데이터셋 소스 확인 중...")
+        console.print("  [1/4] 데이터셋 소스 확인 중...")
 
         # 경로 타입 해석 (s3 또는 local)
         path_type, resolved_path = self.path_resolver.resolve(dataset_path)
@@ -113,7 +117,7 @@ class DataLoader(DatasetLoader):
         # 데이터셋 타입 결정 (Factory에서 전달 또는 자동 감지)
         dataset_type = self.dataset_type or self._detect_dataset_type(dataset_path)
 
-        print(f"      → {dataset_type} 데이터셋, {path_type} 경로")
+        console.print(f"      → {dataset_type} 데이터셋, {path_type} 경로")
         return dataset_type, path_type, resolved_path
 
     # ============= STEP 2: 메타데이터 확인 =============
@@ -121,7 +125,7 @@ class DataLoader(DatasetLoader):
         self, resolved_path: str, dataset_type: str, path_type: str
     ) -> dict:
         """Step 2: 데이터셋 메타데이터 및 가용성 확인"""
-        print("  [2/4] 메타데이터 확인 중...")
+        console.print("  [2/4] 메타데이터 확인 중...")
 
         metadata = {}
 
@@ -148,13 +152,13 @@ class DataLoader(DatasetLoader):
             # Custom 데이터셋은 메타데이터 파일 확인
             metadata = self._load_custom_metadata(resolved_path, path_type)
 
-        print(f"      → 포맷: {metadata.get('format', 'unknown')}")
+        console.print(f"      → 포맷: {metadata.get('format', 'unknown')}")
         return metadata
 
     # ============= STEP 3: 데이터 로드 =============
     def step3_load_data(self, resolved_path: str, path_type: str) -> Dataset:
         """Step 3: 실제 데이터 로드"""
-        print("  [3/4] 데이터 로드 중...")
+        console.print("  [3/4] 데이터 로드 중...")
 
         if path_type == "s3":
             dataset = self._load_from_s3(resolved_path)
@@ -164,7 +168,7 @@ class DataLoader(DatasetLoader):
         # 샘플 수 제한
         if self.max_samples and len(dataset) > self.max_samples:
             dataset = dataset.select(range(self.max_samples))
-            print(f"      → {self.max_samples}개 샘플로 제한")
+            console.print(f"      → {self.max_samples}개 샘플로 제한")
 
         return dataset
 
@@ -176,7 +180,7 @@ class DataLoader(DatasetLoader):
         metadata: dict,
     ) -> Dataset:
         """Step 4: 데이터 포맷 정규화 및 전처리"""
-        print("  [4/4] 데이터 정규화 및 전처리 중...")
+        console.print("  [4/4] 데이터 정규화 및 전처리 중...")
 
         # 데이터셋별 정규화
         if dataset_type == "mbpp":
@@ -192,7 +196,7 @@ class DataLoader(DatasetLoader):
         # 공통 필드 확인 및 추가
         dataset = self._ensure_common_fields(dataset)
 
-        print(f"      → 정규화 완료: {len(dataset.column_names)} 필드")
+        console.print(f"      → 정규화 완료: {len(dataset.column_names)} 필드")
         return dataset
 
     # ============= 데이터셋별 정규화 메서드 =============

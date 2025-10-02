@@ -140,7 +140,11 @@ class PretrainConfig(BaseModel):
 
 
 class Train(BaseModel):
-    """Training configuration."""
+    """Training configuration.
+
+    Note: Checkpointing configuration (save_interval, keep_last, save_final)
+    is managed in config.paths.checkpoints, not here.
+    """
 
     algo: Literal["baseline-mtp", "critic-wmtp", "rho1-wmtp"] = Field(
         ..., description="Training algorithm"
@@ -154,8 +158,6 @@ class Train(BaseModel):
         ge=1,
         description="Maximum training steps across all epochs (None for unlimited)",
     )
-    eval_interval: int = Field(default=500, ge=1, description="Evaluation interval")
-    save_interval: int = Field(default=1000, ge=1, description="Save interval")
 
     # Early stopping for main training (Stage 2)
     early_stopping: EarlyStoppingConfig | None = Field(
@@ -198,7 +200,6 @@ class DataConfig(BaseModel):
     pack_sequences: bool = Field(
         default=True, description="Pack sequences for efficiency"
     )
-    num_workers: int = Field(default=2, ge=0, description="DataLoader num_workers")
 
     @field_validator("sources")
     @classmethod

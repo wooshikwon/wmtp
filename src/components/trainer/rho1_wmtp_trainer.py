@@ -375,18 +375,7 @@ class Rho1WmtpTrainer(BaseWmtpTrainer):
         if input_ids is None:
             raise ValueError("Rho1WmtpTrainer requires 'input_ids' in batch")
 
-        # autocast 디바이스 타입 결정
-        if torch.cuda.is_available():
-            autocast_device = "cuda"
-        elif torch.backends.mps.is_available() and str(self.device).startswith("mps"):
-            autocast_device = "cpu"  # MPS는 아직 autocast 미지원
-        else:
-            autocast_device = "cpu"
-
-        with torch.autocast(
-            device_type=autocast_device,
-            dtype=self._amp_dtype,
-        ):
+        with self._get_autocast_context():
             # 모델 forward pass
             outputs: dict[str, Any] | torch.Tensor = self.model(**batch)
 

@@ -183,8 +183,6 @@ def run_training_pipeline(
         }
     )["dataset"]
 
-    console.print(f"[dim]🔍 데이터셋 토크나이징 완료: {recipe.train.algo}[/dim]")
-
     # Step 7: 데이터셋 토크나이징
     # HuggingFace 호환 토크나이저로 텍스트를 모델 입력 형식으로 변환
     tokenized = tokenizer.tokenize_dataset(
@@ -195,9 +193,7 @@ def run_training_pipeline(
         num_proc=config.devices.num_proc,
     )
 
-    console.print(
-        f"[dim]🔍 분산 훈련용 데이터 샘플러 설정 완료: {recipe.train.algo}[/dim]"
-    )
+    console.print("[green]✅ 데이터셋 토크나이징 완료[/green]")
 
     # Step 8: 분산 훈련용 데이터 샘플러 설정
     # 다중 GPU 환경에서 데이터를 효율적으로 분배하기 위한 샘플러 구성
@@ -210,10 +206,6 @@ def run_training_pipeline(
             sampler = DistributedSampler(tokenized, shuffle=True)
     except Exception:
         sampler = None
-
-    console.print(
-        f"[dim]🔍 분산 훈련용 데이터 샘플러 설정 완료: {recipe.train.algo}[/dim]"
-    )
 
     # Step 9-1: Data Collator 생성 (구조적 해결)
     # 모든 WMTP 알고리즘이 MTPDataCollator 사용하므로 직접 생성
@@ -269,9 +261,7 @@ def run_training_pipeline(
     value_head_path = None  # Stage 2에 전달할 경로
 
     if recipe.train.algo == "critic-wmtp" and rm_model is not None and not dry_run:
-        console.print(
-            "[cyan]🔬 Starting Critic-WMTP Stage 1: Value Head Pretraining[/cyan]"
-        )
+        console.print("[bold cyan]🚀 Stage 1 시작: Value Head 사전학습[/bold cyan]")
 
         pretrainer = ComponentFactory.create_pretrainer(recipe)
         pretrainer.setup({})
@@ -290,21 +280,16 @@ def run_training_pipeline(
         # Stage 1에서 저장된 Value Head 경로 추출
         if stage1_result.get("saved"):
             value_head_path = stage1_result["saved"]
-            console.print(
-                f"[green]✅ Stage 1 complete, Value Head saved at: {value_head_path}[/green]"
-            )
         else:
             console.print(
-                "[yellow]⚠ Stage 1 skipped or failed, proceeding without pretrained Value Head[/yellow]"
+                "[yellow]⚠️ Stage 1 skipped or failed, proceeding without pretrained Value Head[/yellow]"
             )
 
         # Early stopping 결과 확인
         if stage1_result.get("early_stopped"):
             console.print(
-                f"[yellow]⚠ Stage 1 early stopped: {stage1_result.get('stop_reason')}[/yellow]"
+                f"[yellow]⚠️ Stage 1 early stopped: {stage1_result.get('stop_reason')}[/yellow]"
             )
-
-    console.print(f"[dim]🔍 Stage1 사전훈련 완료: {recipe.train.algo}[/dim]")
 
     # Step 11: 메인 Trainer 생성 및 초기화
     # 모든 WMTP 알고리즘의 독립된 Trainer 생성
@@ -351,6 +336,7 @@ def run_training_pipeline(
             "train_dataloader": train_dl,
             "num_epochs": recipe.train.num_epochs,
             "max_steps": recipe.train.max_steps,
+            "config": config,  # Config 객체 전달 (log_interval 등)
         }
     )
 

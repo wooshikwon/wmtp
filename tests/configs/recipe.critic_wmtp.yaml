@@ -17,13 +17,11 @@ data:
     max_length: 128
     batch_size: 1
     pack_sequences: false
-    num_workers: 0  # Local test: no multiprocessing to avoid fork warnings
   eval:
     sources: ["mbpp"]
     max_length: 128
     batch_size: 1
     pack_sequences: false
-    num_workers: 0
 
 # Pretraining configuration (Stage 1)
 pretrain:

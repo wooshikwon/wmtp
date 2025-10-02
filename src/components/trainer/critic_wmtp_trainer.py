@@ -146,7 +146,9 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
             try:
                 # GPU 환경 일관성: 현재 device에 맞게 로드
                 map_location = self.device if self.device else "cpu"
-                state = torch.load(value_head_path, map_location=map_location)
+                state = torch.load(
+                    value_head_path, map_location=map_location, weights_only=True
+                )
                 self.value_head.load_state_dict(state)
                 console.print(
                     f"[green]✓ Loaded Stage 1 Value Head from {value_head_path} to {map_location}[/green]"
@@ -435,18 +437,7 @@ class CriticWmtpTrainer(BaseWmtpTrainer):
         ]  # [B, S, H] - MTPDataCollator 생성
         attention_mask = batch.get("attention_mask")
 
-        # autocast 디바이스 타입 결정
-        if torch.cuda.is_available():
-            autocast_device = "cuda"
-        elif torch.backends.mps.is_available() and str(self.device).startswith("mps"):
-            autocast_device = "cpu"  # MPS는 아직 autocast 미지원
-        else:
-            autocast_device = "cpu"
-
-        with torch.autocast(
-            device_type=autocast_device,
-            dtype=self._amp_dtype,
-        ):
+        with self._get_autocast_context():
             # 모델 forward pass (hidden_states 포함 반환 필요)
             outputs: dict[str, Any] | torch.Tensor = self.model(**batch)
 

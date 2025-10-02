@@ -20,13 +20,11 @@ data:
     max_length: 2048
     batch_size: 2  # Per GPU: 2 x 4 = 8 total
     pack_sequences: true
-    num_workers: 8
   eval:
     sources: ["mbpp", "humaneval"]
     max_length: 2048
     batch_size: 2
     pack_sequences: false
-    num_workers: 4
 
 # Training configuration
 train:
@@ -34,9 +32,6 @@ train:
   full_finetune: true
   num_epochs: 3  # SFT 표준: 데이터 3회 반복
   max_steps: 30000  # 안전장치 (10K samples * 3 epochs = 30K steps 예상)
-  eval_interval: 500
-  save_interval: 1000
-  # checkpointing moved to config.paths.checkpoints in Phase 2
 
 # Optimizer configuration
 optim:
