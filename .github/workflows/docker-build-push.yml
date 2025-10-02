@@ -56,13 +56,13 @@ jobs:
           uv run mypy src/ --ignore-missing-imports
         continue-on-error: true  # 타입 체크 실패해도 계속 진행
 
-  # Job 2: 테스트 실행 (dry-run)
+  # Job 2: 테스트 실행
   test:
     runs-on: ubuntu-latest
     needs: lint-and-type-check
     strategy:
       matrix:
-        algorithm: [baseline-mtp, critic-wmtp, rho1-weighted, rho1-tokenskip]
+        recipe: [mtp_baseline, critic_wmtp, rho1_wmtp_weighted, rho1_wmtp_tokenskip]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -81,22 +81,43 @@ jobs:
         run: |
           uv sync --frozen
 
-      - name: Test ${{ matrix.algorithm }} (dry-run)
+      - name: Download test models from HuggingFace
         run: |
-          if [ "${{ matrix.algorithm }}" == "baseline-mtp" ]; then
-            RECIPE=configs/recipe.mtp_baseline.yaml
-          elif [ "${{ matrix.algorithm }}" == "critic-wmtp" ]; then
-            RECIPE=configs/recipe.critic_wmtp.yaml
-          elif [ "${{ matrix.algorithm }}" == "rho1-weighted" ]; then
-            RECIPE=configs/recipe.rho1_wmtp_weighted.yaml
-          else
-            RECIPE=configs/recipe.rho1_wmtp_tokenskip.yaml
-          fi
+          mkdir -p tests/test_models
 
+          # distilgpt2 다운로드
+          uv run python -c "
+          from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
+
+          models = [
+              ('distilgpt2', 'tests/test_models/distilgpt2'),
+              ('distilgpt2', 'tests/test_models/distilgpt2-mtp'),
+          ]
+
+          for model_name, save_path in models:
+              print(f'Downloading {model_name} to {save_path}...')
+              AutoConfig.from_pretrained(model_name).save_pretrained(save_path)
+              AutoTokenizer.from_pretrained(model_name).save_pretrained(save_path)
+              AutoModelForCausalLM.from_pretrained(model_name).save_pretrained(save_path)
+              print(f'✓ Downloaded {model_name}')
+
+          # tiny-reward-model-gpt2 다운로드 (존재하는 경우)
+          try:
+              save_path = 'tests/test_models/tiny-reward-model-gpt2'
+              print(f'Downloading tiny-reward-model to {save_path}...')
+              AutoConfig.from_pretrained('distilgpt2').save_pretrained(save_path)
+              AutoTokenizer.from_pretrained('distilgpt2').save_pretrained(save_path)
+              AutoModelForCausalLM.from_pretrained('distilgpt2').save_pretrained(save_path)
+              print(f'✓ Downloaded tiny-reward-model')
+          except Exception as e:
+              print(f'Warning: Could not download tiny-reward-model: {e}')
+          "
+
+      - name: Test ${{ matrix.recipe }}
+        run: |
           uv run python -m src.cli.train \
             --config tests/configs/config.local_test.yaml \
-            --recipe $RECIPE \
-            --dry-run \
+            --recipe tests/configs/recipe.${{ matrix.recipe }}.yaml \
             --verbose
 
   # Job 3: Docker 빌드 및 푸시
@@ -158,39 +179,3 @@ jobs:
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-
-  # Job 4: VESSL 자동 배포 (선택적, main 브랜치만)
-  vessl-deploy:
-    runs-on: ubuntu-latest
-    needs: docker-build-push
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    environment: production  # GitHub 환경 사용 (수동 승인 가능)
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install VESSL CLI
-        run: |
-          pip install vessl
-
-      - name: VESSL Login
-        env:
-          VESSL_API_TOKEN: ${{ secrets.VESSL_API_TOKEN }}
-        run: |
-          vessl configure --token $VESSL_API_TOKEN
-
-      - name: Deploy to VESSL
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: |
-          # 각 알고리즘에 대해 테스트 실행 (순차적)
-          for ALGO in baseline-mtp critic-wmtp rho1-weighted rho1-tokenskip; do
-            echo "Deploying $ALGO to VESSL..."
-            vessl run create \
-              --file docker/vessl.yaml \
-              --env WMTP_ALGO=$ALGO \
-              --env ENV_MODE=test \
-              --name "ci-test-$ALGO-${{ github.sha }}"
-          done
