@@ -314,16 +314,14 @@ class DistributedManager:
         checkpoint_path: str,
         epoch: int,
         step: int,
-        mlflow_manager=None,
         **kwargs,
     ) -> None:
         """
         체크포인트 저장 (FSDP/non-FSDP 모델 모두 지원).
 
-        WMTP 맥락:
-        학습 중간 상태를 저장하여 재개 가능하게 합니다.
-        특히 장시간 학습이 필요한 대규모 모델에서 중요합니다.
-        S3 경로 지원 및 MLflow 자동 업로드 기능이 추가되었습니다.
+        역할 분리:
+        - 주기적 checkpoint: paths.checkpoints에만 저장 (훈련 재개용)
+        - 최종 모델: base_wmtp_trainer._save_final_checkpoint에서 MLflow 처리
 
         매개변수:
             model: FSDP 래핑된 모델 또는 일반 torch.nn.Module
@@ -331,13 +329,11 @@ class DistributedManager:
             checkpoint_path: 저장 경로 (로컬 또는 s3://)
             epoch: 현재 에폭
             step: 현재 스텝
-            mlflow_manager: MLflow 매니저 (선택적)
             **kwargs: 추가 저장 데이터 (loss, metrics 등)
 
         주의사항:
             - rank0_only=True로 메인 프로세스만 저장
             - offload_to_cpu=True로 GPU 메모리 절약
-            - S3 경로시 직접 업로드, 로컬 경로시 파일 저장 후 MLflow 업로드
         """
         if self.is_main_process():
             # 모델 타입에 따른 분기 처리
@@ -370,50 +366,27 @@ class DistributedManager:
 
             # S3 또는 로컬 저장 처리
             if checkpoint_path.startswith("s3://"):
-                # S3에 직접 저장
+                # S3 저장 (훈련 재개용)
                 import io
-                import tempfile
-                from pathlib import Path
+
+                from src.utils.s3 import S3Manager
 
                 buffer = io.BytesIO()
                 torch.save(checkpoint, buffer)
                 buffer.seek(0)
 
-                if mlflow_manager:
-                    # MLflow를 통해 아티팩트로 업로드 (임시 파일 경유)
-                    with tempfile.TemporaryDirectory() as tmpdir:
-                        tmp_path = Path(tmpdir) / f"checkpoint_step_{step}.pt"
-                        with open(tmp_path, "wb") as f:
-                            f.write(buffer.getvalue())
-                        mlflow_manager.log_artifact(
-                            local_path=str(tmp_path),
-                            artifact_path=f"checkpoints/step_{step}",
-                        )
-                    console.print(
-                        f"[green]Checkpoint uploaded to MLflow: step_{step}[/green]"
-                    )
-                else:
-                    # S3Manager를 사용하여 직접 저장
-                    from src.utils.s3 import S3Manager
-
-                    s3_manager = S3Manager()
-                    s3_key = checkpoint_path.replace("s3://wmtp/", "")
-                    s3_manager.upload_from_bytes(buffer.getvalue(), s3_key)
-                    console.print(
-                        f"[green]Checkpoint saved to S3: {checkpoint_path}[/green]"
-                    )
+                s3_manager = S3Manager()
+                s3_key = checkpoint_path.replace("s3://wmtp/", "")
+                s3_manager.upload_from_bytes(buffer.getvalue(), s3_key)
+                console.print(
+                    f"[green]Checkpoint saved to S3: {checkpoint_path}[/green]"
+                )
             else:
-                # 로컬 저장
+                # 로컬 저장 (훈련 재개용)
                 torch.save(checkpoint, checkpoint_path)
                 console.print(
                     f"[green]Checkpoint saved locally: {checkpoint_path}[/green]"
                 )
-
-                # MLflow에도 기록 (있는 경우)
-                if mlflow_manager:
-                    mlflow_manager.log_artifact(
-                        local_path=checkpoint_path, artifact_path="checkpoints"
-                    )
 
         self.barrier()
 

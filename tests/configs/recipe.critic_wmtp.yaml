@@ -10,23 +10,6 @@ run:
     - "critic"
     - "wmtp"
 
-# Training configuration
-train:
-  algo: "critic-wmtp"  # Value-based dynamic weighting
-  full_finetune: true
-  max_steps: 2
-  # checkpointing moved to config.paths.checkpoints in Phase 2
-
-# Optimizer configuration
-optim:
-  optimizer: "adamw"
-  lr: 5.0e-5
-  weight_decay: 0.01
-  betas: [0.9, 0.999]
-  grad_clip: 1.0
-  scheduler: "constant"
-  warmup_ratio: 0.0
-
 # Data configuration
 data:
   train:
@@ -40,6 +23,46 @@ data:
     batch_size: 1
     pack_sequences: false
 
+# Pretraining configuration (Stage 1)
+pretrain:
+  enabled: true
+  num_epochs: 3
+  max_steps: 30
+  lr: 1e-4
+  save_value_head: true
+
+  early_stopping:
+    enabled: true
+    mode: "loss_only"  # 테스트 환경: loss만 체크
+    patience: 10
+    min_delta: 1e-4
+    monitor: "value_loss"
+    # Gradient/variance 체크는 production 환경에서만 사용
+    # 테스트 환경에서는 초기 variance가 매우 작아 즉시 중단될 수 있음
+
+# Training configuration (Stage 2)
+train:
+  algo: "critic-wmtp"
+  full_finetune: true
+  num_epochs: 3  # SFT 표준: 데이터 3회 반복
+  max_steps: 30  # 안전장치 (10 samples * 3 epochs = 30 steps 예상)
+
+  early_stopping:
+    enabled: false
+    patience: 100
+    min_delta: 1e-5
+    monitor: "wmtp_loss"
+
+# Optimizer configuration
+optim:
+  optimizer: "adamw"
+  lr: 5.0e-5
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+  grad_clip: 1.0
+  scheduler: "constant"
+  warmup_ratio: 0.0
+
 # Loss configuration - critic settings
 loss:
   weight_norm: "mean1.0_clip"
@@ -50,22 +73,16 @@ loss:
 
 # Critic-specific configuration
 critic:
-  # Phase 2.2: Clean loss structure (main loss always 1.0)
-  auxiliary_loss_coef: 0.1
-  value_lr: 5e-5
-  use_pseudo_rewards: true
-
-  # Phase 2.1: TD error discount (previously hardcoded)
-  discount_lambda: 0.95  # Short-term discount for delta computation
-  # GAE parameters
-  gamma: 0.99           # Long-term reward discount
-  gae_lambda: 0.95      # GAE lambda parameter
-
-  # Other parameters
   target: "rm_sequence"
   token_spread: "gae"
   delta_mode: "td"
   normalize: "zscore"
+  discount_lambda: 0.95
+  gamma: 0.99
+  gae_lambda: 0.95
+  auxiliary_loss_coef: 0.1
+  value_lr: 5e-5
+  use_pseudo_rewards: true
 
 # Evaluation configuration
 eval:

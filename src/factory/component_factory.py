@@ -365,63 +365,58 @@ class ComponentFactory:
 
     @staticmethod
     def create_pretrainer(recipe: Recipe) -> Any:
-        """알고리즘별 사전훈련기 생성 - ComponentFactory 패턴 일관성 유지.
+        """Create pretrainer for algorithms that support multi-stage training.
 
-        현재는 critic-wmtp의 Stage1 pretrainer만 지원하지만,
-        향후 다른 알고리즘의 multi-stage 학습을 위해 확장 가능한 구조로 설계.
-
-        알고리즘별 Pretrainer 매핑:
-            - critic-wmtp: Stage1 Value Head 훈련기
-            - rho1-wmtp: 현재 미지원 (단일 스테이지)
-            - mtp-baseline: 현재 미지원 (단일 스테이지)
+        Currently only critic-wmtp uses pretraining for value head initialization.
 
         Args:
-            recipe: 훈련 레시피 설정 (알고리즘 및 critic 설정 포함)
+            recipe: Training recipe configuration
 
         Returns:
-            선택된 알고리즘에 맞는 Pretrainer 인스턴스
+            Pretrainer instance
 
         Raises:
-            ValueError: 지원되지 않는 알고리즘이 요청된 경우
+            ValueError: If algorithm doesn't support pretraining or pretrain config missing
         """
         algo = recipe.train.algo
 
         if algo == "critic-wmtp":
-            # Critic: Stage1 Value Head 훈련을 위한 설정
-            # Recipe에서 critic 설정 가져오기 (Pydantic으로 검증됨)
+            if not recipe.pretrain:
+                raise ValueError("critic-wmtp requires pretrain configuration")
+
             pretrainer_config = {
-                # Recipe critic 섹션의 설정 사용
-                "target": recipe.critic.target,  # "rm_sequence"
-                "token_spread": recipe.critic.token_spread,  # "gae"
-                "delta_mode": recipe.critic.delta_mode,  # "td"
-                "normalize": recipe.critic.normalize,  # "zscore"
-                "temperature": recipe.loss.weight_temperature,  # 소프트맥스 온도
-                # Stage1 전용 학습률 (recipe에서 가져오기)
-                "lr": (
-                    recipe.train.stage1.lr
-                    if hasattr(recipe.train, "stage1") and recipe.train.stage1
-                    else recipe.critic.value_lr
-                    if hasattr(recipe.critic, "value_lr")
-                    else 1e-4
+                # Pretrain section (top-level)
+                "num_epochs": recipe.pretrain.num_epochs,
+                "max_steps": recipe.pretrain.max_steps,
+                "lr": recipe.pretrain.lr,
+                # Loss section
+                "temperature": recipe.loss.weight_temperature,
+                # Critic section (GAE parameters)
+                "gamma": recipe.critic.gamma,
+                "gae_lambda": recipe.critic.gae_lambda,
+                "value_coef": recipe.critic.auxiliary_loss_coef,
+                # Critic section (other parameters)
+                "target": recipe.critic.target,
+                "token_spread": recipe.critic.token_spread,
+                "delta_mode": recipe.critic.delta_mode,
+                "normalize": recipe.critic.normalize,
+                # Early stopping
+                "early_stopping": (
+                    recipe.pretrain.early_stopping.model_dump()
+                    if recipe.pretrain.early_stopping
+                    else None
                 ),
-                # GAE 파라미터도 recipe에서 가져오기
-                "gamma": recipe.critic.gamma,  # 0.99
-                "gae_lambda": recipe.critic.gae_lambda,  # 0.95
-                "value_coef": recipe.critic.auxiliary_loss_coef,  # 0.1
             }
 
-            # Registry에서 Stage1 Pretrainer 인스턴스 생성 및 반환
             from src.components.registry import pretrainer_registry
 
             return pretrainer_registry.create(
                 "critic-head-pretrainer", pretrainer_config
             )
-
         else:
-            # 다른 알고리즘들은 단일 스테이지이므로 pretrainer 불필요
             raise ValueError(
-                f"Algorithm '{algo}' does not support multi-stage training. "
-                f"Only 'critic-wmtp' currently requires pretrainer."
+                f"Algorithm '{algo}' does not support pretraining. "
+                f"Only 'critic-wmtp' currently uses pretraining."
             )
 
     # Phase 3: create_aux_model_loader 메서드 제거됨

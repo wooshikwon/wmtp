@@ -18,6 +18,7 @@ BaseWmtpTrainer는 모든 WMTP 알고리즘(mtp-baseline, critic-wmtp, rho1-wmtp
 from __future__ import annotations  # Python 3.10+ 타입 힌트 호환성
 
 from abc import abstractmethod  # 추상 메서드
+from contextlib import contextmanager  # Context manager 데코레이터
 from pathlib import Path  # 경로 처리
 from typing import Any  # 범용 타입 힌트
 
@@ -25,9 +26,13 @@ import torch  # PyTorch 딥러닝 프레임워크
 import torch.nn as nn  # 신경망 모듈
 import torch.nn.functional as F  # 함수형 API (cross_entropy 등)
 from rich.console import Console  # 컬러풀한 콘솔 출력
+from rich.progress import track  # Progress bar
 
 from src.components.base import BaseComponent  # WMTP 컴포넌트 베이스 클래스
-from src.utils import get_dist_manager  # 분산 훈련 매니저
+from src.utils import (  # 콘솔 출력 및 분산 훈련 매니저
+    get_console_output,
+    get_dist_manager,
+)
 
 console = Console()  # 전역 콘솔 객체
 
@@ -184,6 +189,9 @@ class BaseWmtpTrainer(BaseComponent):
         # Scorer 출력 캐싱 (성능 최적화용)
         self._last_score_out: dict[str, Any] | None = None
 
+        # Early stopping (setup에서 초기화됨)
+        self.early_stopping = None  # LossEarlyStopping 인스턴스
+
     def setup(self, ctx: dict[str, Any]) -> None:
         """트레이너 초기화 - 모델, 분산 훈련, Scorer 등 모든 컴포넌트 설정.
 
@@ -294,6 +302,23 @@ class BaseWmtpTrainer(BaseComponent):
         # 저장된 체크포인트 목록 관리
         self.saved_checkpoints = []
 
+        # Early stopping 초기화 (Stage 2 Main Training)
+        if recipe and hasattr(recipe.train, "early_stopping"):
+            es_config = recipe.train.early_stopping
+            if es_config and es_config.enabled:
+                from src.utils.early_stopping import LossEarlyStopping
+
+                es_config_dict = (
+                    es_config.model_dump()
+                    if hasattr(es_config, "model_dump")
+                    else es_config
+                )
+
+                self.early_stopping = LossEarlyStopping(es_config_dict)
+                console.print(
+                    f"[cyan]Early stopping enabled (monitor={es_config.monitor}, patience={es_config.patience})[/cyan]"
+                )
+
         # 재개 처리 로직
         self.start_step = 0
         self.resume_metrics = {}
@@ -308,6 +333,13 @@ class BaseWmtpTrainer(BaseComponent):
 
             self.start_step = checkpoint_data.get("step", 0)
             self.resume_metrics = checkpoint_data.get("metrics", {})
+
+            # Early stopping 상태 복원
+            if self.early_stopping and checkpoint_data:
+                es_state = checkpoint_data.get("early_stopping_state")
+                if es_state:
+                    self.early_stopping.load_state(es_state)
+                    console.print("[cyan]Early stopping state restored[/cyan]")
 
             console.print(
                 f"[green]Model and optimizer states restored from step {self.start_step}[/green]"
@@ -347,6 +379,38 @@ class BaseWmtpTrainer(BaseComponent):
             checkpoint_dir = f"./checkpoints/{run_id}"
             return checkpoint_dir, False
 
+    @contextmanager
+    def _get_autocast_context(self):
+        """혼합 정밀도 학습을 위한 autocast context manager.
+
+        MPS + fp32 환경에서는 autocast를 비활성화하여 불필요한 warning을 제거합니다.
+        CUDA/CPU 환경에서는 설정된 precision에 맞춰 autocast를 적용합니다.
+
+        Yields:
+            autocast context 또는 no-op context
+        """
+        # fp32인 경우 autocast 불필요 (no-op context)
+        if self._amp_dtype == torch.float32:
+            yield
+            return
+
+        # MPS 환경 체크
+        is_mps = torch.backends.mps.is_available() and str(self.device).startswith(
+            "mps"
+        )
+
+        if is_mps:
+            # MPS는 autocast 미지원 → no-op context
+            yield
+        elif torch.cuda.is_available():
+            # CUDA: autocast 활성화
+            with torch.autocast(device_type="cuda", dtype=self._amp_dtype):
+                yield
+        else:
+            # CPU: autocast 활성화
+            with torch.autocast(device_type="cpu", dtype=self._amp_dtype):
+                yield
+
     @abstractmethod
     def compute_head_weights(
         self, logits: torch.Tensor, target_ids: torch.Tensor, **kwargs
@@ -381,7 +445,7 @@ class BaseWmtpTrainer(BaseComponent):
         주기적 체크포인트 저장과 최종 모델 저장을 지원합니다.
 
         Args:
-            ctx: 'train_dataloader'와 'max_steps' 포함
+            ctx: 'train_dataloader', 'num_epochs', 'max_steps' 포함
 
         Returns:
             훈련 메트릭 딕셔너리
@@ -392,59 +456,119 @@ class BaseWmtpTrainer(BaseComponent):
         dataloader = ctx.get("train_dataloader")
         if dataloader is None:
             raise ValueError("Trainer.run expects 'train_dataloader' in ctx")
-        max_steps: int | None = ctx.get("max_steps")
 
-        epoch = 0  # 단순화를 위해 epoch=0으로 설정
+        num_epochs: int = ctx.get("num_epochs", 1)
+        max_steps: int | None = ctx.get("max_steps")
         metrics = {}
 
-        console.print(
-            f"[green]체크포인트 저장 활성화: 매 {self.save_interval}스텝마다 저장[/green]"
-        )
-        console.print(f"[green]체크포인트 디렉토리: {self.checkpoint_dir}[/green]")
+        # Global step 관리 (재개 지원)
+        global_step = self.start_step
 
-        for step, batch in enumerate(dataloader):
-            current_step = step + 1
+        # Config에서 log_interval 가져오기 (기본값 100)
+        config = ctx.get("config")
+        log_interval = getattr(config, "log_interval", 100) if config else 100
+        console_out = get_console_output()
 
-            # 재개시 이미 완료된 스텝 건너뛰기
-            if current_step <= self.start_step:
-                continue
+        # Epoch 루프
+        for epoch in range(num_epochs):
+            for _step, batch in enumerate(track(dataloader, description="Training")):
+                global_step += 1
 
-            # 각 알고리즘별 훈련 스텝 실행 (추상 메서드)
-            out = self.train_step(batch)
-            metrics = out
+                # 재개시 이미 완료된 스텝 건너뛰기
+                if global_step <= self.start_step:
+                    continue
 
-            # 주기적 체크포인트 저장
-            if current_step % self.save_interval == 0:
-                try:
-                    checkpoint_path = self._save_checkpoint(
-                        epoch, current_step, metrics
+                # 각 알고리즘별 훈련 스텝 실행 (추상 메서드)
+                out = self.train_step(batch)
+                metrics = out
+
+                # Console 로깅 (주기적 출력)
+                if global_step % log_interval == 0 or global_step == 1:
+                    loss = metrics.get("loss", 0.0)
+                    lr = metrics.get("lr", 0.0)
+                    grad_norm = metrics.get("grad_norm", 0.0)
+                    ppl = metrics.get("perplexity", 0.0)
+
+                    log_msg = (
+                        f"Epoch {epoch + 1}/{num_epochs} Step {global_step:>5} │ "
+                        f"Loss: {loss:.4f} │ "
+                        f"PPL: {ppl:>7.2f} │ "
+                        f"Grad: {grad_norm:>6.2f} │ "
+                        f"LR: {lr:.2e}"
                     )
-                    self.saved_checkpoints = self._manage_checkpoints(
-                        self.saved_checkpoints, checkpoint_path
-                    )
-                except Exception as e:
-                    # 실제 파일 저장 여부 확인
-                    checkpoint_path = (
-                        self.checkpoint_dir / f"checkpoint_step_{current_step}.pt"
-                    )
-                    if checkpoint_path.exists():
-                        console.print(
-                            f"[yellow]체크포인트 저장 완료, 부가 기능 오류 (스텝 {current_step}): {repr(e)}[/yellow]"
+
+                    # WMTP만: weight_entropy 추가
+                    if "weight_entropy" in metrics:
+                        w_ent = metrics["weight_entropy"]
+                        log_msg += f" │ W_Ent: {w_ent:.3f}"
+
+                    console_out.detail(log_msg)
+
+                # Early stopping 체크
+                if self.early_stopping:
+                    should_stop = self.early_stopping.should_stop(metrics)
+
+                    # 분산 학습: rank 0 결정을 모든 rank에 브로드캐스트
+                    if (
+                        torch.distributed.is_available()
+                        and torch.distributed.is_initialized()
+                    ):
+                        should_stop_tensor = torch.tensor(
+                            [should_stop], dtype=torch.bool, device=self.device
                         )
-                    else:
-                        console.print(
-                            f"[red]체크포인트 저장 실패 (스텝 {current_step}): {repr(e)}[/red]"
-                        )
+                        torch.distributed.broadcast(should_stop_tensor, src=0)
+                        should_stop = should_stop_tensor.item()
 
-            # 최대 스텝 도달 시 종료
-            if max_steps is not None and current_step >= max_steps:
+                    if should_stop:
+                        reason = self.early_stopping.stop_reason
+                        console.print(f"[yellow]⚠ Early stopping: {reason}[/yellow]")
+
+                        # MLflow 로깅
+                        if self.mlflow:
+                            self.mlflow.log_metrics(
+                                {
+                                    "early_stopping/final_step": global_step,
+                                    "early_stopping/best_value": self.early_stopping.best_value,
+                                    "early_stopping/counter": self.early_stopping.counter,
+                                }
+                            )
+                        break
+
+                # 주기적 체크포인트 저장
+                if global_step % self.save_interval == 0:
+                    try:
+                        checkpoint_path = self._save_checkpoint(
+                            epoch, global_step, metrics
+                        )
+                        self.saved_checkpoints = self._manage_checkpoints(
+                            self.saved_checkpoints, checkpoint_path
+                        )
+                    except Exception as e:
+                        # 실제 파일 저장 여부 확인
+                        checkpoint_path = (
+                            self.checkpoint_dir / f"checkpoint_step_{global_step}.pt"
+                        )
+                        if checkpoint_path.exists():
+                            console.print(
+                                f"[yellow]체크포인트 저장 완료, 부가 기능 오류 (스텝 {global_step}): {repr(e)}[/yellow]"
+                            )
+                        else:
+                            console.print(
+                                f"[red]체크포인트 저장 실패 (스텝 {global_step}): {repr(e)}[/red]"
+                            )
+
+                # 최대 스텝 도달 시 종료
+                if max_steps is not None and global_step >= max_steps:
+                    break
+
+            # Outer loop 종료 체크
+            if max_steps is not None and global_step >= max_steps:
                 break
 
         # 최종 체크포인트 저장
         if self.save_final:
             try:
-                final_step = step + 1 if "step" in locals() else 1
-                final_path = self._save_final_checkpoint(epoch, final_step, metrics)
+                final_path = self._save_final_checkpoint(epoch, global_step, metrics)
                 console.print(f"[green]최종 모델 저장 완료: {final_path}[/green]")
             except Exception as e:
                 # 실제 파일 저장 여부 확인
@@ -478,20 +602,21 @@ class BaseWmtpTrainer(BaseComponent):
             # 로컬 경로: Path 객체 사용
             checkpoint_path = str(self.checkpoint_dir / f"checkpoint_step_{step}.pt")
 
-        # FSDP 호환 체크포인트 저장 (MLflow 통합)
+        # Early stopping 상태 수집
+        es_state = self.early_stopping.get_state() if self.early_stopping else None
+
+        # FSDP 호환 체크포인트 저장
         self.dist_manager.save_checkpoint(
             model=self.model,
             optimizer=self.optimizer,
             checkpoint_path=checkpoint_path,
             epoch=epoch,
             step=step,
-            mlflow_manager=self.mlflow,  # MLflow 매니저 전달
             metrics=metrics,
             algorithm=getattr(self, "algorithm", "wmtp"),
             mlflow_run_id=self.mlflow.get_run_id() if self.mlflow else None,
+            early_stopping_state=es_state,
         )
-
-        # MLflow 업로드는 분산 매니저에서 수행함 (중복 제거)
 
         storage_type = "S3" if self.is_s3_checkpoint else "로컬"
         console.print(
@@ -547,7 +672,11 @@ class BaseWmtpTrainer(BaseComponent):
 
     def _save_final_checkpoint(self, epoch: int, step: int, metrics: dict) -> str:
         """
-        최종 모델 저장 (Phase 3: S3/로컬 자동 판단)
+        최종 모델 저장 및 MLflow 등록
+
+        역할:
+        - paths.checkpoints에 final_model.pt 저장 (훈련 재개용)
+        - MLflow에 모델 등록 및 artifact 업로드 (실험 추적용)
 
         Args:
             epoch: 최종 에폭
@@ -555,61 +684,72 @@ class BaseWmtpTrainer(BaseComponent):
             metrics: 최종 메트릭
 
         Returns:
-            저장된 최종 모델 경로 (문자열)
+            저장된 최종 모델 경로
         """
-        # S3/로컬 자동 판단하여 최종 모델 경로 생성
+        # 1. paths.checkpoints에 저장
         if self.is_s3_checkpoint:
-            # S3 경로: 문자열 결합
             final_path = f"{self.checkpoint_dir}/final_model.pt"
         else:
-            # 로컬 경로: Path 객체 사용
             final_path = str(self.checkpoint_dir / "final_model.pt")
 
-        # 최종 체크포인트 저장 (MLflow 통합)
+        # Early stopping 상태 수집
+        es_state = self.early_stopping.get_state() if self.early_stopping else None
+
+        # 체크포인트 저장 (MLflow는 아래에서 별도 처리)
         self.dist_manager.save_checkpoint(
             model=self.model,
             optimizer=self.optimizer,
             checkpoint_path=final_path,
             epoch=epoch,
             step=step,
-            mlflow_manager=self.mlflow,  # MLflow 매니저 전달
             metrics=metrics,
-            algorithm=getattr(self, "algorithm", "wmtp"),
-            final_model=True,
+            algorithm=self.algorithm,
             mlflow_run_id=self.mlflow.get_run_id() if self.mlflow else None,
+            early_stopping_state=es_state,
         )
-
-        # MLflow 모델 레지스트리 등록 및 아티팩트 업로드
-        if self.mlflow is not None:
-            try:
-                # 모델 이름 생성 (recipe에서 알고리즘 정보 사용)
-                model_name = f"wmtp-{self.algorithm}"
-
-                # 모델 레지스트리 등록
-                self.mlflow.log_model(
-                    model=self.model,
-                    name="final_model",
-                    registered_model_name=model_name,
-                )
-
-                # 체크포인트 파일 업로드 (로컬 경로만 지원)
-                if not self.is_s3_checkpoint:
-                    self.mlflow.log_artifact(
-                        local_path=final_path, artifact_path="final_checkpoint"
-                    )
-                else:
-                    console.print(
-                        "[blue]S3 체크포인트는 MLflow artifact 업로드 생략[/blue]"
-                    )
-
-                console.print(f"[green]MLflow 모델 등록 완료: {model_name}[/green]")
-            except Exception as e:
-                console.print(
-                    f"[yellow]MLflow model registration warning: {e}[/yellow]"
-                )
 
         storage_type = "S3" if self.is_s3_checkpoint else "로컬"
         console.print(
             f"[green]{storage_type} 최종 모델 저장 완료: {final_path}[/green]"
         )
+
+        # 2. MLflow에 모델 등록 및 artifact 업로드
+        if self.mlflow:
+            try:
+                # 2-1. PyTorch 모델 등록 (Model Registry)
+                model_name = f"wmtp_{self.algorithm}"
+                self.mlflow.log_model(
+                    model=self.model,
+                    name="final_model",
+                    registered_model_name=model_name,
+                )
+                console.print(f"[cyan]MLflow 모델 등록 완료: {model_name}[/cyan]")
+
+                # 2-2. Checkpoint artifact 업로드 (로컬인 경우만)
+                if not self.is_s3_checkpoint:
+                    self.mlflow.log_artifact(
+                        local_path=final_path,
+                        artifact_path="checkpoints",
+                    )
+                    console.print(
+                        "[cyan]MLflow artifact 업로드: checkpoints/final_model.pt[/cyan]"
+                    )
+                else:
+                    # S3 경로는 참조만 기록
+                    self.mlflow.log_param("final_checkpoint_s3_path", final_path)
+                    console.print(f"[cyan]MLflow에 S3 경로 기록: {final_path}[/cyan]")
+
+                # 2-3. 최종 메트릭 기록
+                self.mlflow.log_metrics(
+                    {
+                        "final/epoch": epoch,
+                        "final/step": step,
+                        **{f"final/{k}": v for k, v in metrics.items()},
+                    }
+                )
+            except Exception as e:
+                console.print(
+                    f"[yellow]MLflow 등록 실패 (체크포인트는 저장됨): {e}[/yellow]"
+                )
+
         return final_path

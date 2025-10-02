@@ -4,6 +4,7 @@
 # Project metadata
 project: "wmtp_m3_test_critic"
 seed: 42
+log_interval: 1  # 테스트: 모든 step 출력
 
 # Path configurations
 paths:
@@ -17,7 +18,7 @@ paths:
     humaneval: "file://tests/test_dataset/humaneval"
   checkpoints:
     base_path: "file://./test_checkpoints"  # Local test checkpoint storage
-    save_interval: 100                      # 체크포인트 저장 간격 늘림
+    save_interval: 10                      # 체크포인트 저장 간격 늘림
     keep_last: 1                           # 1개만 유지
     save_final: false                      # 최종 모델 저장 비활성화
 
@@ -41,6 +42,7 @@ launcher:
 devices:
   compute_backend: "mps"
   mixed_precision: "fp32"
+  num_proc: 0  # Tokenizer 병렬 처리 비활성화 (로컬 테스트, fork 방지)
   fsdp:
     enabled: false
     auto_wrap: false

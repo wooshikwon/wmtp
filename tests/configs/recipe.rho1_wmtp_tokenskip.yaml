@@ -15,7 +15,8 @@ run:
 train:
   algo: "rho1-wmtp"  # Reference CE comparison based weighting
   full_finetune: true
-  max_steps: 10
+  num_epochs: 3  # SFT 표준: 데이터 3회 반복
+  max_steps: 30  # 안전장치 (10 samples * 3 epochs = 30 steps 예상)
   # checkpointing moved to config.paths.checkpoints in Phase 2
 
 # Optimizer configuration
@@ -35,13 +36,11 @@ data:
     max_length: 128
     batch_size: 1
     pack_sequences: false
-    num_workers: 4
   eval:
     sources: ["mbpp"]
     max_length: 128
     batch_size: 1
     pack_sequences: false
-    num_workers: 4
 
 # Loss configuration (Phase 1 integration)
 loss:

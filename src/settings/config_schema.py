@@ -744,7 +744,12 @@ class Devices(BaseModel):
         default="bf16", description="혼합 정밀도 모드"
     )
 
-    # 🆕 분산 학습 설정 추가
+    num_proc: int | None = Field(
+        default=None,
+        ge=0,
+        description="토크나이저 병렬 처리용 CPU 프로세스 수 (None=단일 프로세스, 0=단일, >0=멀티프로세스)",
+    )
+
     distributed: DistributedConfig = Field(
         default_factory=DistributedConfig, description="분산 학습 설정"
     )
@@ -923,6 +928,11 @@ class Config(BaseModel):
 
     project: str = Field(default="mtp_ft", description="프로젝트 이름")
     seed: int = Field(default=42, description="재현성을 위한 난수 시드")
+    log_interval: int = Field(
+        default=100,
+        ge=1,
+        description="Console 및 MLflow 로깅 간격 (steps)",
+    )
     s3_auth: S3AuthConfig | None = Field(
         default=None, description="S3 인증 설정 (S3 경로 사용 시 필요)"
     )

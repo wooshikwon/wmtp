@@ -375,18 +375,7 @@ class Rho1WmtpTrainer(BaseWmtpTrainer):
         if input_ids is None:
             raise ValueError("Rho1WmtpTrainer requires 'input_ids' in batch")
 
-        # autocast 디바이스 타입 결정
-        if torch.cuda.is_available():
-            autocast_device = "cuda"
-        elif torch.backends.mps.is_available() and str(self.device).startswith("mps"):
-            autocast_device = "cpu"  # MPS는 아직 autocast 미지원
-        else:
-            autocast_device = "cpu"
-
-        with torch.autocast(
-            device_type=autocast_device,
-            dtype=self._amp_dtype,
-        ):
+        with self._get_autocast_context():
             # 모델 forward pass
             outputs: dict[str, Any] | torch.Tensor = self.model(**batch)
 
@@ -450,23 +439,50 @@ class Rho1WmtpTrainer(BaseWmtpTrainer):
         # 역전파 및 최적화
         loss.backward()
 
-        # 그래디언트 클리핑
+        # 그래디언트 클리핑 및 norm 계산
         grad_clip = float(getattr(self.optimizer, "grad_clip", 1.0))
+        grad_norm = 0.0
         if math.isfinite(grad_clip) and grad_clip > 0:
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), grad_clip)
+            grad_norm = float(
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), grad_clip)
+            )
 
         self.optimizer.step()
         self.optimizer.zero_grad()
 
         self.global_step += 1
 
+        # Perplexity 계산 (overflow 방지)
+        perplexity = float(torch.exp(torch.clamp(loss.detach(), max=20.0)).item())
+
+        # Weight entropy 계산 (WMTP 가중치 분포의 엔트로피)
+        with torch.no_grad():
+            # head_weights: [B, S, H], valid_mask: [B, S]
+            valid_weights = head_weights[
+                valid_mask.unsqueeze(-1).expand(-1, -1, H)
+            ].view(-1, H)  # [N, H]
+            if valid_weights.numel() > 0:
+                # 엔트로피: H(w) = -Σ w_i log(w_i)
+                weight_probs = valid_weights + 1e-10
+                weight_entropy = float(
+                    (-(weight_probs * torch.log(weight_probs)))
+                    .sum(dim=-1)
+                    .mean()
+                    .item()
+                )
+            else:
+                weight_entropy = 0.0
+
         # MLflow 로깅 (100 step마다 + 핵심 메트릭만)
         if self.mlflow is not None and self.global_step % 100 == 0:
             try:
-                # 핵심 메트릭만 로깅
+                # 핵심 메트릭 로깅
                 metrics = {
                     "train/loss": float(loss.detach().item()),
                     "train/wmtp_loss": float(weighted_loss.item()),
+                    "train/grad_norm": grad_norm,
+                    "train/perplexity": perplexity,
+                    "train/weight_entropy": weight_entropy,
                 }
 
                 # Rho-1 특화 메트릭 (핵심만)
@@ -475,6 +491,8 @@ class Rho1WmtpTrainer(BaseWmtpTrainer):
                     w_eff = head_weights[valid_mask.unsqueeze(-1).expand(-1, -1, H)]
                     if w_eff.numel() > 0:
                         metrics["train/weight_mean"] = float(w_eff.mean().item())
+                        metrics["train/weight_max"] = float(w_eff.max().item())
+                        metrics["train/weight_min"] = float(w_eff.min().item())
 
                     # 유효 토큰 비율
                     total_tokens = float(valid_mask.numel())
@@ -511,5 +529,12 @@ class Rho1WmtpTrainer(BaseWmtpTrainer):
 
         return {
             "loss": float(loss.detach().item()),
-            "lr": float(getattr(self.optimizer, "_last_lr", 0.0)),
+            "lr": float(
+                getattr(self.optimizer, "_last_lr", [0.0])[0]
+                if isinstance(getattr(self.optimizer, "_last_lr", [0.0]), list)
+                else getattr(self.optimizer, "_last_lr", 0.0)
+            ),
+            "grad_norm": grad_norm,
+            "perplexity": perplexity,
+            "weight_entropy": weight_entropy,
         }

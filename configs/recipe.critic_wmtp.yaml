@@ -19,22 +19,52 @@ data:
     max_length: 2048
     batch_size: 2  # Per GPU: 2 x 4 = 8 total
     pack_sequences: true
-    num_workers: 8
   eval:
     sources: ["mbpp", "humaneval"]
     max_length: 2048
     batch_size: 2
     pack_sequences: false
-    num_workers: 4
 
-# Training configuration
-train:
-  algo: "critic-wmtp"  # Value function delta-based weighting
-  full_finetune: true
+# Pretraining configuration (Stage 1: Value Head Pretraining)
+pretrain:
+  enabled: true
+  num_epochs: 3
   max_steps: 10000
-  eval_interval: 500
-  save_interval: 1000
-  # checkpointing moved to config.paths.checkpoints in Phase 2
+  lr: 1e-4
+  save_value_head: true
+
+  early_stopping:
+    enabled: true
+    mode: "loss_only"  # Most reliable: loss convergence only
+    patience: 50
+    min_delta: 1e-4
+    monitor: "value_loss"
+
+# Training configuration (Stage 2: Main Training)
+train:
+  algo: "critic-wmtp"
+  full_finetune: true
+  num_epochs: 3  # SFT 표준: 데이터 3회 반복
+  max_steps: 30000  # 안전장치 (10K samples * 3 epochs = 30K steps 예상)
+
+  early_stopping:
+    enabled: true
+    patience: 200
+    min_delta: 1e-5
+    monitor: "wmtp_loss"
+
+# Critic-specific configuration
+critic:
+  target: "rm_sequence"
+  token_spread: "gae"
+  delta_mode: "td"
+  normalize: "zscore"
+  discount_lambda: 0.95
+  gamma: 0.99
+  gae_lambda: 0.95
+  auxiliary_loss_coef: 0.1
+  value_lr: 2.0e-6
+  use_pseudo_rewards: true
 
 # Optimizer configuration
 optim:
@@ -46,26 +76,13 @@ optim:
   scheduler: "cosine"
   warmup_ratio: 0.03
 
-# Loss configuration (Phase 2.2: lambda not used in critic-wmtp)
+# Loss configuration
 loss:
   weight_norm: "mean1.0_clip"
-  lambda: 0.3  # Not used in critic-wmtp (main loss always 1.0)
-  weight_temperature: 0.7  # Weight softmax temperature
+  lambda: 0.3
+  weight_temperature: 0.7
   epsilon: 0.05
   max_weight: 3.0
-
-# Critic-specific configuration (Phase 2: fully parameterized)
-critic:
-  discount_lambda: 0.95  # Short-term discount for delta computation
-  gamma: 0.99           # Long-term reward discount
-  gae_lambda: 0.95      # GAE lambda parameter
-  auxiliary_loss_coef: 0.1  # Value head auxiliary loss coefficient
-  target: "rm_sequence"
-  token_spread: "gae"
-  delta_mode: "td"
-  normalize: "zscore"
-  value_lr: 5.0e-5
-  use_pseudo_rewards: true
 
 # Evaluation configuration
 eval:
@@ -73,7 +90,7 @@ eval:
   sampling:
     temperature: 0.7
     top_p: 0.9
-    n: 20  # For pass@k evaluation
+    n: 20
   metrics:
     - "mbpp_exact"
     - "humaneval_exact"

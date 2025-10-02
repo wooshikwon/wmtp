@@ -46,6 +46,11 @@ models/
 *.bin
 *.safetensors
 
+# Exception: Include test models in Docker image
+!tests/test_models/**/*.bin
+!tests/test_models/**/*.safetensors
+!tests/test_models/**/*.pt
+
 # Test artifacts
 test_output/
 coverage.xml

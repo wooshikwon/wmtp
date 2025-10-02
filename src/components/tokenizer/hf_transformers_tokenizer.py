@@ -20,6 +20,7 @@ from typing import Any
 from transformers import AutoTokenizer, PreTrainedTokenizer
 
 from datasets import Dataset
+from src.utils import get_console_output
 
 from ..base import BaseComponent
 from ..registry import tokenizer_registry
@@ -341,9 +342,12 @@ class HfTransformersTokenizer(BaseComponent):
         Returns:
             토크나이징된 데이터셋
         """
+        console_out = get_console_output()
         tokenizer = HfTransformersTokenizer._tokenizers.get(self.model_id)
         if tokenizer is None:
             raise RuntimeError(f"토크나이저가 초기화되지 않았습니다: {self.model_id}")
+
+        console_out.detail(f"{len(dataset)} samples, max_length={max_length}")
 
         def tokenize_function(examples):
             # 텍스트 컬럼 결정
@@ -384,7 +388,7 @@ class HfTransformersTokenizer(BaseComponent):
             remove_columns=remove_columns,
             load_from_cache_file=load_from_cache_file,
             num_proc=num_proc,
-            desc=f"HuggingFace 토크나이징 ({self.model_id})",
+            desc=None,
         )
 
     # 일반적인 토크나이저 속성들 위임

@@ -1,14 +1,13 @@
 # WMTP Docker 배포 가이드
 
-이 문서는 WMTP(Weighted Multi-Token Prediction) 프로젝트를 Docker 컨테이너로 빌드하고 VESSL GPU 클러스터에서 실행하기 위한 완전한 가이드입니다.
+이 문서는 WMTP(Weighted Multi-Token Prediction) 프로젝트를 Docker 컨테이너로 빌드하고 배포하기 위한 완전한 가이드입니다.
 
 ## 📋 사전 요구사항
 
 - Docker Desktop 설치 (로컬 빌드용)
-- VESSL CLI 설치 및 로그인
 - GitHub Container Registry (ghcr.io) 접근 권한
-- AWS S3 접근 권한 (MLflow 추적용)
-- HuggingFace 토큰 (모델 다운로드용)
+- AWS S3 접근 권한 (모델/MLflow용, 선택적)
+- HuggingFace 토큰 (모델 다운로드용, 선택적)
 
 ## 🏗️ Docker 이미지 빌드
 
@@ -46,108 +45,46 @@ docker push ghcr.io/wooshikwon/wmtp:latest
 docker push ghcr.io/wooshikwon/wmtp:v1.0.0
 ```
 
-## 🚀 VESSL 실행 가이드
+## 🚀 Docker 실행 가이드
 
-### 1. VESSL Secrets 설정
-
-VESSL 웹 콘솔에서 다음 시크릿을 설정하세요:
-
-```yaml
-AWS_ACCESS_KEY_ID: "your-aws-key"
-AWS_SECRET_ACCESS_KEY: "your-aws-secret"
-HF_TOKEN: "your-huggingface-token"
-```
-
-### 2. VESSL 클러스터 설정
+### 1. 로컬에서 컨테이너 실행
 
 ```bash
-# VESSL CLI 로그인
-vessl login
+# Baseline MTP 테스트
+docker run --rm \
+  -v $(pwd)/tests:/app/tests \
+  -v $(pwd)/configs:/app/configs \
+  ghcr.io/wooshikwon/wmtp:latest \
+  uv run python -m src.cli.train \
+    --config tests/configs/config.local_test.yaml \
+    --recipe tests/configs/recipe.mtp_baseline.yaml \
+    --verbose
 
-# 사용 가능한 클러스터 확인
-vessl cluster list
-
-# 기본 클러스터 설정
-vessl configure
+# Critic WMTP 테스트
+docker run --rm \
+  -v $(pwd)/tests:/app/tests \
+  -v $(pwd)/configs:/app/configs \
+  ghcr.io/wooshikwon/wmtp:latest \
+  uv run python -m src.cli.train \
+    --config tests/configs/config.local_test.yaml \
+    --recipe tests/configs/recipe.critic_wmtp.yaml \
+    --verbose
 ```
 
-### 3. 4가지 알고리즘 테스트 실행
-
-#### Baseline MTP (균등 가중치 기준선)
-```bash
-vessl run \
-  --image ghcr.io/wooshikwon/wmtp:latest \
-  --cluster default \
-  --resource v1-a100-1-pod \
-  --env WMTP_ALGO=baseline-mtp \
-  --env ENV_MODE=test \
-  --env AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID \
-  --env AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY \
-  --env HF_TOKEN=$HF_TOKEN \
-  --command "cd /app && uv run python -m src.cli.train --config tests/configs/config.local_test.yaml --recipe configs/recipe.mtp_baseline.yaml --run-name vessl_baseline_test --tags vessl,baseline,test --verbose"
-```
-
-#### Critic WMTP (Value Function 기반)
-```bash
-vessl run \
-  --image ghcr.io/wooshikwon/wmtp:latest \
-  --cluster default \
-  --resource v1-a100-1-pod \
-  --env WMTP_ALGO=critic-wmtp \
-  --env ENV_MODE=test \
-  --env AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID \
-  --env AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY \
-  --env HF_TOKEN=$HF_TOKEN \
-  --command "cd /app && uv run python -m src.cli.train --config tests/configs/config.local_test.yaml --recipe configs/recipe.critic_wmtp.yaml --run-name vessl_critic_test --tags vessl,critic,test --verbose"
-```
-
-#### Rho1 WMTP Weighted (연속 가중치)
-```bash
-vessl run \
-  --image ghcr.io/wooshikwon/wmtp:latest \
-  --cluster default \
-  --resource v1-a100-1-pod \
-  --env WMTP_ALGO=rho1-weighted \
-  --env ENV_MODE=test \
-  --env AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID \
-  --env AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY \
-  --env HF_TOKEN=$HF_TOKEN \
-  --command "cd /app && uv run python -m src.cli.train --config tests/configs/config.local_test.yaml --recipe configs/recipe.rho1_wmtp_weighted.yaml --run-name vessl_rho1_weighted_test --tags vessl,rho1,weighted,test --verbose"
-```
-
-#### Rho1 WMTP Token Skip (이진 선택)
-```bash
-vessl run \
-  --image ghcr.io/wooshikwon/wmtp:latest \
-  --cluster default \
-  --resource v1-a100-1-pod \
-  --env WMTP_ALGO=rho1-tokenskip \
-  --env ENV_MODE=test \
-  --env AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID \
-  --env AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY \
-  --env HF_TOKEN=$HF_TOKEN \
-  --command "cd /app && uv run python -m src.cli.train --config tests/configs/config.local_test.yaml --recipe configs/recipe.rho1_wmtp_tokenskip.yaml --run-name vessl_rho1_tokenskip_test --tags vessl,rho1,tokenskip,test --verbose"
-```
-
-### 4. YAML 파일을 통한 실행 (권장)
-
-`vessl.yaml`을 사용하여 더 간편하게 실행할 수 있습니다:
+### 2. GPU 환경에서 실행
 
 ```bash
-# vessl.yaml 수정 (알고리즘 선택)
-# env.WMTP_ALGO: baseline-mtp | critic-wmtp | rho1-weighted | rho1-tokenskip
-# env.ENV_MODE: test | production
-
-# VESSL 실행
-vessl run -f docker/vessl.yaml
-
-# 특정 알고리즘으로 오버라이드
-vessl run -f docker/vessl.yaml --env WMTP_ALGO=critic-wmtp
-
-# 프로덕션 모드로 실행 (더 큰 모델 사용)
-vessl run -f docker/vessl.yaml \
-  --env ENV_MODE=production \
-  --resource v1-a100-4-pod
+# GPU 사용 (nvidia-docker 필요)
+docker run --rm --gpus all \
+  -v $(pwd)/tests:/app/tests \
+  -v $(pwd)/configs:/app/configs \
+  -v $(pwd)/checkpoints:/app/checkpoints \
+  ghcr.io/wooshikwon/wmtp:latest \
+  uv run python -m src.cli.train \
+    --config configs/config.gpu.yaml \
+    --recipe configs/recipe.critic_wmtp.yaml \
+    --run-name production_run \
+    --verbose
 ```
 
 ## 📊 실험 모니터링
@@ -163,26 +100,29 @@ export AWS_SECRET_ACCESS_KEY=your-secret
 mlflow ui --backend-store-uri s3://wmtp/mlflow
 ```
 
-### VESSL 실행 로그 확인
+### Docker 컨테이너 로그 확인
 ```bash
-# 실행 중인 작업 목록
-vessl run list
+# 실행 중인 컨테이너 확인
+docker ps
 
-# 특정 실행의 로그 확인
-vessl run logs <run-id>
+# 컨테이너 로그 확인
+docker logs <container-id>
 
 # 실시간 로그 스트리밍
-vessl run logs <run-id> -f
+docker logs <container-id> -f
 ```
 
 ## 🔧 문제 해결
 
 ### GPU 메모리 부족
-```yaml
-# vessl.yaml에서 배치 크기 조정
-env:
-  BATCH_SIZE: 1
-  GRADIENT_ACCUMULATION: 32
+```bash
+# 설정 파일에서 배치 크기 조정
+# configs/config.your_env.yaml
+data:
+  train:
+    batch_size: 1
+train:
+  gradient_accumulation: 32
 ```
 
 ### 모델 다운로드 실패
@@ -237,10 +177,10 @@ tests/
 
 ## 📝 추가 참고사항
 
-- **테스트 환경**: `ENV_MODE=test`는 작은 DistilGPT2-MTP 모델 사용
-- **프로덕션 환경**: `ENV_MODE=production`은 전체 크기 모델 사용
-- **GPU 리소스**: 테스트는 A100 1개, 프로덕션은 A100 4개 권장
-- **실행 시간**: 테스트 ~30분, 프로덕션 ~4-8시간
+- **로컬 테스트**: `tests/configs/config.local_test.yaml` 사용 (작은 모델)
+- **프로덕션 배포**: `configs/config.gpu.yaml` 사용 (전체 크기 모델)
+- **GPU 리소스**: 테스트는 CPU/MPS 가능, 프로덕션은 GPU 권장
+- **실행 시간**: 테스트 ~10-30분, 프로덕션 ~4-8시간
 
 ## 🆘 지원
 
@@ -249,5 +189,4 @@ tests/
 2. [테스트 가이드](../tests/README.md)
 3. [메인 README](../README.md)
 
-VESSL 관련 문의: support@vessl.ai
 프로젝트 이슈: https://github.com/wooshikwon/wmtp/issues

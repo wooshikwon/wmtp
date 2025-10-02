@@ -1,6 +1,10 @@
 """Utility modules for S3, MLflow, HuggingFace, distributed training, evaluation, and I/O."""
 
 # Import main utilities to prevent direct external imports
+from .console_output import (
+    ConsoleOutput,
+    get_console_output,
+)
 from .distribute_manager import (
     DistributedManager,
     get_dist_manager,
@@ -32,6 +36,9 @@ from .mps_optimizer import MPSOptimizer
 from .s3 import S3Manager, create_s3_manager
 
 __all__ = [
+    # Console Output
+    "ConsoleOutput",
+    "get_console_output",
     # S3
     "S3Manager",
     "create_s3_manager",

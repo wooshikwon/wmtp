@@ -4,6 +4,7 @@
 # Project metadata
 project: "wmtp_prod_critic"
 seed: 42
+log_interval: 100  # Production: 100 step마다 출력
 
 # Path configurations - Container mounted paths
 paths:
@@ -17,15 +18,15 @@ paths:
     humaneval: "file:///app/datasets/humaneval"
   checkpoints:
     base_path: "s3://wmtp/checkpoints"  # S3 production checkpoint storage
-    save_interval: 500                  # Save every 500 steps for production
+    save_interval: 1000                  # Save every 100 steps for production
     keep_last: 5                       # Keep last 5 checkpoints for recovery
     save_final: true                   # Save final production model
 
 # MLflow configuration - Production tracking
 mlflow:
-  experiment: "wmtp/prod_critic"
-  tracking_uri: "s3://wmtp/mlflow"
-  registry_uri: "s3://wmtp/mlflow"
+  experiment: "wmtp/prod"
+  tracking_uri: "s3://wmtp/mlruns"
+  registry_uri: "s3://wmtp/mlruns"
 
 # Launcher configuration - VESSL A100x4
 launcher:
@@ -41,6 +42,7 @@ launcher:
 devices:
   compute_backend: "cuda"
   mixed_precision: "bf16"  # A100 supports bfloat16
+  num_proc: 8  # Tokenizer 병렬 처리용 CPU 프로세스 수 (A100x4 환경)
   distributed:
     enabled: true                 # 분산 학습 활성화
     backend: "nccl"               # GPU 간 고속 통신

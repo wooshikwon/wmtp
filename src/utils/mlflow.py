@@ -278,13 +278,27 @@ class MLflowManager:
             console.print("[yellow]Warning: No active MLflow run[/yellow]")
             return
 
-        mlflow.pytorch.log_model(
-            model,
-            name=name,
-            registered_model_name=registered_model_name,
-            signature=signature,
-            input_example=input_example,
-        )
+        import logging
+        import warnings
+
+        # MLflow warning 억제
+        mlflow_logger = logging.getLogger("mlflow")
+        original_level = mlflow_logger.level
+        mlflow_logger.setLevel(logging.ERROR)
+
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=UserWarning)
+
+                mlflow.pytorch.log_model(
+                    model,
+                    name=name,
+                    registered_model_name=registered_model_name,
+                    signature=signature,
+                    input_example=input_example,
+                )
+        finally:
+            mlflow_logger.setLevel(original_level)
 
         if registered_model_name:
             console.print(
