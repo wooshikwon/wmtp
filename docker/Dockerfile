@@ -26,9 +26,9 @@ COPY src/ ./src/
 COPY configs/ ./configs/
 COPY tests/ ./tests/
 
-# Environment variables (will be overridden at runtime by VESSL/local config)
+# Environment variables
 ENV PYTHONUNBUFFERED=1 \
-    PYTHONPATH=/app:$PYTHONPATH
+    PYTHONPATH=/app
 
 # Default command - can be overridden in vessl.yaml or docker run
 CMD ["uv", "run", "python", "-m", "src.cli.__main__", "--help"]

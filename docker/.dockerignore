@@ -14,12 +14,13 @@ dist/
 build/
 .eggs/
 
-# Virtual environments
+# Virtual environments (exclude from Docker build)
 .env
 .venv
 env/
 venv/
 ENV/
+*.venv/
 
 # IDE
 .vscode/
@@ -61,10 +62,10 @@ logs/
 
 # Development files
 Makefile
-scripts/
 vessl.yaml
 .dockerignore
 Dockerfile
+.github/
 
 # Temporary files
 tmp/
