@@ -6,45 +6,56 @@ WMTP는 모든 토큰을 동등하게 취급하는 기존 MTP(Multi-Token Predic
 
 ## 🚀 빠른 시작 (Quick Start)
 
-### 1. 환경 설정
+### 로컬 개발 (MacBook/Linux)
 ```bash
-# 1. 저장소 클론
-git clone https://github.com/wooshikwon/wmtp.git
-cd wmtp
-
-# 2. uv로 의존성 설치
+# 1. 저장소 클론 및 의존성 설치
+git clone https://github.com/wooshikwon/wmtp.git && cd wmtp
 curl -LsSf https://astral.sh/uv/install.sh | sh
 uv sync
 
-# 3. 활성화 확인
-uv run python -c "import torch; print(f'PyTorch: {torch.__version__}')"
-```
-
-### 2. 로컬 테스트 실행
-```bash
-# 4가지 알고리즘 중 하나 선택하여 테스트
+# 2. 로컬 테스트 실행 (4가지 알고리즘 중 선택)
 uv run python -m src.cli.train \
   --config tests/configs/config.local_test.yaml \
   --recipe configs/recipe.critic_wmtp.yaml \
-  --run-name test_critic \
-  --tags test,critic \
-  --dry-run
+  --dry-run --verbose
 ```
 
-### 3. Docker & CI 배포
+### 프로덕션 배포 (GPU Cluster)
 ```bash
-# GitHub Actions로 자동 빌드/배포
-git push origin main  # → 자동으로 ghcr.io/wooshikwon/wmtp:latest 생성
+# 1. Docker 이미지 Pull
+docker pull ghcr.io/wooshikwon/wmtp:latest
 
-# 또는 수동 빌드
-docker build -t wmtp:local -f docker/Dockerfile .
+# 2. S3에서 리소스 다운로드 및 훈련 실행
+docker run --gpus all \
+  -e AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID \
+  -e AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY \
+  ghcr.io/wooshikwon/wmtp:latest \
+  bash -c "python scripts/download_resources.py && \
+           uv run python -m src.cli.train \
+           --config configs/config.production.yaml \
+           --recipe configs/recipe.critic_wmtp.yaml"
 ```
 
-### 4. VESSL GPU 클러스터 실행
-```bash
-# VESSL 시크릿 설정 후
-vessl run -f docker/vessl.yaml --env WMTP_ALGO=critic-wmtp
-```
+> 💡 **상세 배포 가이드**: VESSL, RunPod, Kubernetes 등 다양한 GPU cluster에서 실행하는 방법은 [docs/SIMPLE_PRODUCTION_DEPLOYMENT.md](docs/SIMPLE_PRODUCTION_DEPLOYMENT.md)를 참고하세요.
+
+## 🌐 지원 플랫폼
+
+WMTP는 Docker 기반으로 다양한 GPU cluster에서 동일하게 실행됩니다:
+
+| 플랫폼 | 지원 여부 | 설정 난이도 |
+|--------|----------|-----------|
+| **VESSL** | ✅ | 쉬움 |
+| **RunPod** | ✅ | 쉬움 |
+| **Kubernetes** | ✅ | 중간 |
+| **AWS SageMaker** | ✅ | 중간 |
+| **Bare Metal** | ✅ | 쉬움 |
+
+**핵심 요구사항**:
+- Docker + NVIDIA Container Toolkit
+- 4x GPU (A100 권장)
+- S3 접근 가능한 AWS credentials
+
+**프로바이더별 실행 예제**: [docs/SIMPLE_PRODUCTION_DEPLOYMENT.md](docs/SIMPLE_PRODUCTION_DEPLOYMENT.md) 참조
 
 ## 📋 지원 알고리즘
 
@@ -79,14 +90,27 @@ wmtp/
 ### 로컬 개발
 1. **환경 설정**: `uv sync` → 의존성 자동 설치
 2. **코드 수정**: src/ 디렉토리에서 개발
-3. **테스트**: MacBook MPS 환경에서 빠른 검증
-4. **커밋**: git push → 자동 CI 실행
+3. **로컬 테스트**: MacBook MPS 또는 단일 GPU 환경에서 빠른 검증
+   ```bash
+   uv run python -m src.cli.train \
+     --config tests/configs/config.local_test.yaml \
+     --recipe configs/recipe.critic_wmtp.yaml \
+     --dry-run
+   ```
+
+### CI/CD 자동화
+1. **코드 푸시**: `git push origin main`
+2. **자동 빌드**: GitHub Actions가 Docker 이미지 빌드
+3. **자동 배포**: ghcr.io/wooshikwon/wmtp:latest 자동 푸시
+4. **테스트 매트릭스**: 4개 알고리즘 자동 테스트
 
 ### 프로덕션 배포
-1. **자동 빌드**: GitHub Actions → Docker 이미지 생성
-2. **테스트**: 4개 알고리즘 매트릭스 테스트
-3. **배포**: VESSL GPU 클러스터에서 실행
-4. **모니터링**: MLflow + S3 기반 실험 추적
+1. **이미지 Pull**: `docker pull ghcr.io/wooshikwon/wmtp:latest`
+2. **리소스 준비**: S3에 모델/데이터셋 업로드 (최초 1회)
+3. **GPU Cluster 실행**: 어떤 플랫폼이든 동일한 Docker 명령어
+4. **모니터링**: MLflow (S3 기반) + CloudWatch/Prometheus
+
+> 📖 **상세 CI/CD 가이드**: [.github/CI-CD-GUIDE.md](.github/CI-CD-GUIDE.md)
 
 ## 📚 상세 가이드
 
@@ -95,10 +119,11 @@ wmtp/
   - 4가지 알고리즘 테스트 명령어
   - 테스트 모델/데이터셋 구조
 
-- **🐳 Docker 배포**: [docker/README.md](docker/README.md)
-  - 컨테이너 빌드 및 레지스트리 푸시
-  - VESSL GPU 클러스터 실행
-  - 4가지 알고리즘별 실행 명령어
+- **🐳 프로덕션 배포**: [docs/SIMPLE_PRODUCTION_DEPLOYMENT.md](docs/SIMPLE_PRODUCTION_DEPLOYMENT.md)
+  - Docker 기반 범용 GPU cluster 배포
+  - VESSL, RunPod, Kubernetes, Bare Metal 예제
+  - S3 리소스 다운로드 가이드
+  - config.production.yaml 사용법
 
 - **⚙️ CI/CD 설정**: [.github/CI-CD-GUIDE.md](.github/CI-CD-GUIDE.md)
   - GitHub Actions 워크플로우
@@ -119,7 +144,7 @@ wmtp/
 
 ### 로컬 테스트 (MacBook MPS)
 ```bash
-# Critic WMTP 알고리즘 테스트
+# Critic WMTP 알고리즘 빠른 테스트
 uv run python -m src.cli.train \
   --config tests/configs/config.local_test.yaml \
   --recipe configs/recipe.critic_wmtp.yaml \
@@ -128,17 +153,36 @@ uv run python -m src.cli.train \
   --verbose
 ```
 
-### VESSL 클러스터 실행
+### 프로덕션 GPU Cluster 실행
+
+#### 기본 실행 (모든 플랫폼 공통)
 ```bash
-# 4개 알고리즘 순차 실행
-for ALGO in baseline-mtp critic-wmtp rho1-weighted rho1-tokenskip; do
-  vessl run -f docker/vessl.yaml --env WMTP_ALGO=$ALGO --env ENV_MODE=test
+docker run --gpus all \
+  -e AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID \
+  -e AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY \
+  ghcr.io/wooshikwon/wmtp:latest \
+  bash -c "python scripts/download_resources.py && \
+           uv run python -m src.cli.train \
+           --config configs/config.production.yaml \
+           --recipe configs/recipe.critic_wmtp.yaml \
+           --run-name prod_critic_run \
+           --tags production,critic"
+```
+
+#### 4개 알고리즘 순차 실행
+```bash
+for RECIPE in mtp_baseline critic_wmtp rho1_wmtp_weighted rho1_wmtp_tokenskip; do
+  docker run --gpus all \
+    -e AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID \
+    -e AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY \
+    ghcr.io/wooshikwon/wmtp:latest \
+    bash -c "python scripts/download_resources.py && \
+             uv run python -m src.cli.train \
+             --config configs/config.production.yaml \
+             --recipe configs/recipe.$RECIPE.yaml \
+             --run-name prod_$RECIPE \
+             --tags production,$RECIPE"
 done
 ```
 
-### CI/CD 자동화
-```bash
-# 브랜치 푸시만으로 전체 파이프라인 실행
-git push origin feature/new-algorithm
-# → 린트 검사 → 테스트 → Docker 빌드 → 선택적 배포
-```
+> 💡 **플랫폼별 상세 예제**: VESSL, RunPod, Kubernetes 등에서 실행하는 구체적인 방법은 [docs/SIMPLE_PRODUCTION_DEPLOYMENT.md](docs/SIMPLE_PRODUCTION_DEPLOYMENT.md) 참조
