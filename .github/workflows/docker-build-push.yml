@@ -1,12 +1,13 @@
-name: Docker Build and Push
+name: CI/CD Pipeline
 
-# 트리거 조건: main/master 브랜치 푸시 또는 수동 실행
+# 트리거 조건:
+# - push: 모든 브랜치에서 테스트 실행
+# - pull_request: PR에서 테스트 실행
+# - tag: v*.*.* 형식의 tag가 생성되면 Docker 이미지 빌드 및 푸시
 on:
   push:
     branches:
-      - main
-      - master
-      - downloading_and_mps  # 현재 작업 브랜치
+      - '**'  # 모든 브랜치
     paths:
       - 'src/**'
       - 'configs/**'
@@ -14,6 +15,8 @@ on:
       - 'docker/**'
       - 'pyproject.toml'
       - 'uv.lock'
+    tags:
+      - 'v*.*.*'  # v1.0.0, v0.1.0-alpha 등
   pull_request:
     branches:
       - main
@@ -85,32 +88,47 @@ jobs:
         run: |
           mkdir -p tests/test_models
 
-          # distilgpt2 다운로드
           uv run python -c "
+          import json
+          from pathlib import Path
           from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 
-          models = [
-              ('distilgpt2', 'tests/test_models/distilgpt2'),
-              ('distilgpt2', 'tests/test_models/distilgpt2-mtp'),
-          ]
+          # 1. distilgpt2 (reference model)
+          print('Downloading distilgpt2 (reference)...')
+          save_path = 'tests/test_models/distilgpt2'
+          AutoConfig.from_pretrained('distilgpt2').save_pretrained(save_path)
+          AutoTokenizer.from_pretrained('distilgpt2').save_pretrained(save_path)
+          AutoModelForCausalLM.from_pretrained('distilgpt2').save_pretrained(save_path)
+          print('✓ Downloaded distilgpt2')
 
-          for model_name, save_path in models:
-              print(f'Downloading {model_name} to {save_path}...')
-              AutoConfig.from_pretrained(model_name).save_pretrained(save_path)
-              AutoTokenizer.from_pretrained(model_name).save_pretrained(save_path)
-              AutoModelForCausalLM.from_pretrained(model_name).save_pretrained(save_path)
-              print(f'✓ Downloaded {model_name}')
+          # 2. distilgpt2-mtp (base model with MTP config)
+          print('Creating distilgpt2-mtp...')
+          save_path = 'tests/test_models/distilgpt2-mtp'
+          AutoConfig.from_pretrained('distilgpt2').save_pretrained(save_path)
+          AutoTokenizer.from_pretrained('distilgpt2').save_pretrained(save_path)
+          AutoModelForCausalLM.from_pretrained('distilgpt2').save_pretrained(save_path)
 
-          # tiny-reward-model-gpt2 다운로드 (존재하는 경우)
-          try:
-              save_path = 'tests/test_models/tiny-reward-model-gpt2'
-              print(f'Downloading tiny-reward-model to {save_path}...')
-              AutoConfig.from_pretrained('distilgpt2').save_pretrained(save_path)
-              AutoTokenizer.from_pretrained('distilgpt2').save_pretrained(save_path)
-              AutoModelForCausalLM.from_pretrained('distilgpt2').save_pretrained(save_path)
-              print(f'✓ Downloaded tiny-reward-model')
-          except Exception as e:
-              print(f'Warning: Could not download tiny-reward-model: {e}')
+          # config.json에 mtp_config 추가
+          config_path = Path(save_path) / 'config.json'
+          with open(config_path) as f:
+              config = json.load(f)
+          config['mtp_config'] = {
+              'n_future_tokens': 4,
+              'architecture': 'DistilGPT2MTP',
+              'base_model': 'distilgpt2'
+          }
+          config['architectures'] = ['DistilGPT2MTP']
+          with open(config_path, 'w') as f:
+              json.dump(config, f, indent=2)
+          print('✓ Created distilgpt2-mtp with mtp_config')
+
+          # 3. tiny-reward-model-gpt2 (reward model)
+          print('Creating tiny-reward-model-gpt2...')
+          save_path = 'tests/test_models/tiny-reward-model-gpt2'
+          AutoConfig.from_pretrained('distilgpt2').save_pretrained(save_path)
+          AutoTokenizer.from_pretrained('distilgpt2').save_pretrained(save_path)
+          AutoModelForCausalLM.from_pretrained('distilgpt2').save_pretrained(save_path)
+          print('✓ Created tiny-reward-model-gpt2')
           "
 
       - name: Test ${{ matrix.recipe }}
@@ -120,10 +138,11 @@ jobs:
             --recipe tests/configs/recipe.${{ matrix.recipe }}.yaml \
             --verbose
 
-  # Job 3: Docker 빌드 및 푸시
+  # Job 3: Docker 빌드 및 푸시 (tag 생성 시에만)
   docker-build-push:
     runs-on: ubuntu-latest
     needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: read
       packages: write
@@ -147,35 +166,37 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=sha,prefix={{branch}}-
-            type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value={{date 'YYYYMMDD'}}-{{sha}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./docker/Dockerfile
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64,linux/arm64
 
-      - name: Generate image report
-        if: github.event_name != 'pull_request'
+      - name: Generate release report
         run: |
-          echo "### 🐳 Docker Image Published" >> $GITHUB_STEP_SUMMARY
+          echo "### 🚀 Docker Image Released" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version**: \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
           echo "**Registry**: \`${{ env.REGISTRY }}\`" >> $GITHUB_STEP_SUMMARY
           echo "**Image**: \`${{ env.IMAGE_NAME }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Tags**:" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Pull Command**:" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
