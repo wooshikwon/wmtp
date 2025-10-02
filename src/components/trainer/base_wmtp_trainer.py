@@ -29,7 +29,10 @@ from rich.console import Console  # 컬러풀한 콘솔 출력
 from rich.progress import track  # Progress bar
 
 from src.components.base import BaseComponent  # WMTP 컴포넌트 베이스 클래스
-from src.utils import get_dist_manager  # 분산 훈련 매니저
+from src.utils import (  # 콘솔 출력 및 분산 훈련 매니저
+    get_console_output,
+    get_dist_manager,
+)
 
 console = Console()  # 전역 콘솔 객체
 
@@ -464,18 +467,10 @@ class BaseWmtpTrainer(BaseComponent):
         # Config에서 log_interval 가져오기 (기본값 100)
         config = ctx.get("config")
         log_interval = getattr(config, "log_interval", 100) if config else 100
-
-        console.print(
-            f"[green]체크포인트 저장 활성화: 매 {self.save_interval}스텝마다 저장[/green]"
-        )
-        console.print(f"[green]체크포인트 디렉토리: {self.checkpoint_dir}[/green]")
-        console.print(f"[green]로깅 간격: 매 {log_interval} step마다 출력[/green]")
-        console.print(f"[green]Epoch 설정: {num_epochs} epochs[/green]")
+        console_out = get_console_output()
 
         # Epoch 루프
         for epoch in range(num_epochs):
-            console.print(f"\n[bold cyan]📊 Epoch {epoch + 1}/{num_epochs}[/bold cyan]")
-
             for _step, batch in enumerate(track(dataloader, description="Training")):
                 global_step += 1
 
@@ -495,19 +490,19 @@ class BaseWmtpTrainer(BaseComponent):
                     ppl = metrics.get("perplexity", 0.0)
 
                     log_msg = (
-                        f"[cyan]Epoch {epoch + 1}/{num_epochs} Step {global_step:>5}[/cyan] │ "
-                        f"Loss: [yellow]{loss:.4f}[/yellow] │ "
-                        f"PPL: [yellow]{ppl:>7.2f}[/yellow] │ "
-                        f"Grad: [green]{grad_norm:>6.2f}[/green] │ "
-                        f"LR: [dim]{lr:.2e}[/dim]"
+                        f"Epoch {epoch + 1}/{num_epochs} Step {global_step:>5} │ "
+                        f"Loss: {loss:.4f} │ "
+                        f"PPL: {ppl:>7.2f} │ "
+                        f"Grad: {grad_norm:>6.2f} │ "
+                        f"LR: {lr:.2e}"
                     )
 
                     # WMTP만: weight_entropy 추가
                     if "weight_entropy" in metrics:
                         w_ent = metrics["weight_entropy"]
-                        log_msg += f" │ W_Ent: [magenta]{w_ent:.3f}[/magenta]"
+                        log_msg += f" │ W_Ent: {w_ent:.3f}"
 
-                    console.print(log_msg)
+                    console_out.detail(log_msg)
 
                 # Early stopping 체크
                 if self.early_stopping:

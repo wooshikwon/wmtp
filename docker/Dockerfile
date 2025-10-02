@@ -25,10 +25,17 @@ RUN uv sync --frozen
 COPY src/ ./src/
 COPY configs/ ./configs/
 COPY tests/ ./tests/
+COPY scripts/ ./scripts/
 
 # Environment variables
 ENV PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app
+
+# Create essential directories for S3 downloads
+RUN mkdir -p /app/models /app/datasets
+
+# Make scripts executable
+RUN chmod +x /app/scripts/*.py /app/scripts/*.sh 2>/dev/null || true
 
 # Default command - can be overridden in vessl.yaml or docker run
 CMD ["uv", "run", "python", "-m", "src.cli.__main__", "--help"]

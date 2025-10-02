@@ -23,12 +23,13 @@ import sys  # 시스템 종료 코드 관리
 from pathlib import Path  # 파일 경로 처리를 위한 모던 Python 패스 객체
 
 import typer  # 현대적인 CLI 인터페이스 라이브러리
-from rich.console import Console  # 컬러풀한 터미널 출력
 from rich.traceback import install  # 아름다운 에러 메시지 표시
+
+from src.utils import get_console_output  # 통합 콘솔 출력 유틸리티
 
 # Rich 트레이스백 활성화 - 에러 발생시 읽기 쉬운 형태로 표시
 install(show_locals=False)
-console = Console()  # 전역 콘솔 객체 - 모든 출력에 사용
+console_out = get_console_output()  # 전역 콘솔 출력 객체
 
 # Typer CLI 애플리케이션 정의
 # WMTP 훈련의 모든 명령어를 관리하는 메인 앱
@@ -122,24 +123,24 @@ def train(
         dry_run: True시 설정 검증만 수행
         verbose: 상세 로그 출력 여부
     """
-    # WMTP 프레임워크 시작 메시지
-    console.print("[bold blue]WMTP 훈련 프레임워크 시작[/bold blue]")
-    console.print(f"환경 설정: {config}")
-    console.print(f"훈련 레시피: {recipe}")
+    # WMTP 프레임워크 시작
+    console_out.pipeline_start("WMTP 훈련 프레임워크")
+    console_out.info(f"환경 설정: {config}")
+    console_out.info(f"훈련 레시피: {recipe}")
 
     # 검증 모드인지 확인 (실제 훈련 없이 설정만 체크)
     if dry_run:
-        console.print("[yellow]DRY RUN 모드 - 설정 검증만 수행합니다[/yellow]")
+        console_out.warning("DRY RUN 모드 - 설정 검증만 수행합니다")
 
     # 태그 문자열을 리스트로 파싱 (MLflow 분류용)
     tag_list = []
     if tags:
         tag_list = [t.strip() for t in tags.split(",")]  # 쉼표로 분리하고 공백 제거
-        console.print(f"실험 태그: {tag_list}")
+        console_out.info(f"실험 태그: {tag_list}")
 
     # 체크포인트에서 재개하는지 확인
     if resume:
-        console.print(f"[green]체크포인트에서 훈련 재개: {resume}[/green]")
+        console_out.info(f"체크포인트에서 훈련 재개: {resume}")
 
     try:
         # 훈련 파이프라인과 설정 로더 임포트
@@ -153,7 +154,7 @@ def train(
         )  # 훈련 레시피 (알고리즘, 하이퍼파라미터)
 
         # 선택된 WMTP 알고리즘 표시
-        console.print(f"[cyan]선택된 알고리즘: {rcp.train.algo}[/cyan]")
+        console_out.info(f"선택된 알고리즘: {rcp.train.algo}")
 
         # 알고리즘별 간단한 설명 출력
         algo_descriptions = {
@@ -162,7 +163,7 @@ def train(
             "rho1-wmtp": "Rho-1 기반 동적 가중치 (Reference Model 차이)",
         }
         if rcp.train.algo in algo_descriptions:
-            console.print(f"[dim]{algo_descriptions[rcp.train.algo]}[/dim]")
+            console_out.detail(algo_descriptions[rcp.train.algo])
 
         # run_name과 tags를 recipe에 반영
         if run_name:
@@ -181,34 +182,29 @@ def train(
 
         # 실행 결과 출력
         if dry_run:
-            console.print("[green]✅ 설정 검증 완료! 모든 설정이 올바릅니다.[/green]")
+            console_out.info("설정 검증 완료! 모든 설정이 올바릅니다.")
         else:
-            console.print(
-                f"[green]🎉 훈련 완료! 최종 메트릭: {outputs.trainer_metrics}[/green]"
-            )
+            console_out.info(f"훈련 완료! 최종 메트릭: {outputs.trainer_metrics}")
 
     # 예외 처리: 다양한 오류 상황에 대한 사용자 친화적 메시지
     except FileNotFoundError as e:
-        console.print(f"[red]❌ 파일을 찾을 수 없습니다: {e}[/red]")
-        console.print("[dim]config 또는 recipe 파일 경로를 확인해주세요.[/dim]")
+        console_out.error(f"파일을 찾을 수 없습니다: {e}")
+        console_out.detail("config 또는 recipe 파일 경로를 확인해주세요.")
         sys.exit(1)
     except ValueError as e:
-        console.print(f"[red]❌ 설정 오류: {e}[/red]")
-        console.print("[dim]YAML 파일의 설정값들을 확인해주세요.[/dim]")
+        console_out.error(f"설정 오류: {e}")
+        console_out.detail("YAML 파일의 설정값들을 확인해주세요.")
         sys.exit(1)
     except KeyboardInterrupt:
-        console.print("\n[yellow]⚠️ 사용자에 의해 훈련이 중단되었습니다[/yellow]")
-        console.print(
-            "[dim]체크포인트가 저장되었다면 --resume으로 재개할 수 있습니다.[/dim]"
-        )
+        console_out.warning("\n사용자에 의해 훈련이 중단되었습니다")
+        console_out.detail("체크포인트가 저장되었다면 --resume으로 재개할 수 있습니다.")
         sys.exit(130)  # SIGINT 표준 종료 코드
     except Exception as e:
-        console.print(f"[red]❌ 예상치 못한 오류: {e}[/red]")
-        console.print(
-            "[dim]이 오류가 계속 발생하면 GitHub Issues에 보고해주세요.[/dim]"
-        )
+        console_out.error(f"예상치 못한 오류: {e}")
+        console_out.detail("이 오류가 계속 발생하면 GitHub Issues에 보고해주세요.")
         if verbose:
-            console.print_exception()  # 상세 모드시 전체 스택 트레이스 출력
+            # 상세 모드시 전체 스택 트레이스 출력
+            console_out.console.print_exception()
         sys.exit(1)
 
 

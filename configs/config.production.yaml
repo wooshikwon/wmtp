@@ -1,0 +1,54 @@
+# Generic Production Configuration for WMTP Algorithm
+# Cloud-agnostic configuration for any GPU cluster (VESSL, RunPod, Kubernetes, etc.)
+
+# Project metadata
+project: "wmtp_production"
+seed: 42
+log_interval: 100  # Production: log every 100 steps
+
+# Path configurations - Container mounted paths
+paths:
+  models:
+    base: "file:///app/models/llama-7b-mtp/"
+    rm: "file:///app/models/starling-rm-7b/"
+    ref: "file:///app/models/sheared-llama-2.7b/"
+  datasets:
+    mbpp: "file:///app/datasets/mbpp"
+    contest: "file:///app/datasets/contest"
+  checkpoints:
+    base_path: "s3://wmtp/checkpoints"  # S3 production checkpoint storage
+    save_interval: 500                  # Save every 500 steps
+    keep_last: 3                        # Keep last 3 checkpoints
+    save_final: true                    # Save final production model
+
+# MLflow configuration - Production tracking
+mlflow:
+  experiment: "wmtp/production"
+  tracking_uri: "s3://wmtp/mlruns"
+  registry_uri: "s3://wmtp/mlruns"
+
+# Launcher configuration - Generic GPU cluster
+launcher:
+  target: "generic"
+  resources:
+    gpus: 4
+    gpu_type: "A100"
+
+# Device configuration for GPU training
+devices:
+  compute_backend: "cuda"
+  mixed_precision: "bf16"  # bfloat16 for A100/RTX30xx+
+  num_proc: 8              # CPU processes for tokenizer parallelization
+  distributed:
+    enabled: true                 # Enable distributed training
+    backend: "nccl"               # NCCL for GPU communication
+    init_method: "env://"         # Use environment variables (torchrun)
+    timeout: 1800                 # NCCL timeout (30 minutes)
+    find_unused_parameters: false # False when using FSDP
+  fsdp:
+    enabled: true
+    auto_wrap: true
+    activation_ckpt: true
+    sharding: "full_shard"
+    offload_params: false
+    offload_grads: false

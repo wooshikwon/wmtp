@@ -63,7 +63,7 @@ critic:
   gamma: 0.99
   gae_lambda: 0.95
   auxiliary_loss_coef: 0.1
-  value_lr: 5.0e-5
+  value_lr: 2.0e-6
   use_pseudo_rewards: true
 
 # Optimizer configuration

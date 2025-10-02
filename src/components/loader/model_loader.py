@@ -17,16 +17,14 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from rich.console import Console
 from safetensors.torch import load_file
 from transformers import AutoConfig, AutoModel, AutoModelForCausalLM, BitsAndBytesConfig
 
 from src.components.loader.base_loader import ModelLoader as BaseModelLoader
 from src.components.registry import loader_registry
+from src.utils import get_console_output
 from src.utils.path_resolver import PathResolver
 from src.utils.s3 import create_s3_manager
-
-console = Console()
 
 
 @loader_registry.register(
@@ -74,8 +72,6 @@ class ModelLoader(BaseModelLoader):
         모델 로딩의 전체 흐름을 관리하는 메인 메서드
         4단계를 순차적으로 실행
         """
-        console.print(f"\n🚀 모델 로딩 시작: {model_path}")
-
         # Step 1: 메타데이터 로드
         metadata, local_path = self.step1_load_metadata(model_path)
 
@@ -96,13 +92,13 @@ class ModelLoader(BaseModelLoader):
 
         ensure_output_hidden_states(model)
 
-        console.print("[green]✅ 모델 로딩 완료[/green]\n")
         return model
 
     # ============= STEP 1: 메타데이터 로드 =============
     def step1_load_metadata(self, model_path: str) -> tuple[dict, Path | None]:
         """Step 1: 메타데이터를 로드하고 경로 타입 확인"""
-        console.print("  [1/4] 메타데이터 로드 중...")
+        console_out = get_console_output()
+        console_out.detail("메타데이터 로드")
 
         path_type, resolved = self.path_resolver.resolve(model_path)
         metadata = {}
@@ -130,13 +126,14 @@ class ModelLoader(BaseModelLoader):
         self, model_path: str, local_path: Path | None, metadata: dict
     ) -> Path:
         """Step 2: S3 경로인 경우 필요한 파일들을 다운로드"""
+        console_out = get_console_output()
         path_type, resolved = self.path_resolver.resolve(model_path)
 
         if path_type != "s3":
-            console.print("  [2/4] 로컬 모델 사용 (다운로드 스킵)")
+            console_out.detail("로컬 모델 사용")
             return local_path
 
-        console.print("  [2/4] S3에서 모델 다운로드 중...")
+        console_out.detail("S3에서 모델 다운로드")
 
         # 임시 디렉토리에 다운로드
         temp_dir = tempfile.mkdtemp()
@@ -160,7 +157,7 @@ class ModelLoader(BaseModelLoader):
     # ============= STEP 3: 전략 결정 =============
     def step3_determine_strategy(self, metadata: dict) -> dict:
         """Step 3: 메타데이터를 기반으로 로딩 전략 결정"""
-        console.print("  [3/4] 로딩 전략 결정 중...")
+        console_out = get_console_output()
 
         strategy = metadata.get("loading_strategy", {})
 
@@ -168,13 +165,14 @@ class ModelLoader(BaseModelLoader):
         strategy.setdefault("loader_type", "huggingface")
         strategy.setdefault("state_dict_mapping", {})
 
-        console.print(f"      → {strategy['loader_type']} 전략 사용")
+        console_out.detail(f"로딩 전략: {strategy['loader_type']}")
         return strategy
 
     # ============= STEP 4: 모델 로드 =============
     def step4_load_custom_model(self, local_path: Path, strategy: dict) -> Any:
         """Step 4-A: 커스텀 MTP 모델 로드"""
-        console.print("  [4/4] 커스텀 MTP 모델 로드 중...")
+        console_out = get_console_output()
+        console_out.detail("커스텀 MTP 모델 로드")
 
         # 4.1: modeling.py 동적 임포트
         module_file = strategy.get("custom_module_file", "modeling.py")
@@ -214,13 +212,13 @@ class ModelLoader(BaseModelLoader):
         # 4.5: Meta MTP 모델에 HuggingFace 호환성 패치 적용
         if "llama" in str(local_path).lower() and hasattr(model, "forward"):
             self._patch_meta_mtp_forward(model)
-            console.print("      → Meta MTP 모델에 HF 호환성 패치 적용 완료")
 
         return model
 
     def step4_load_huggingface_model(self, local_path: Path, strategy: dict) -> Any:
         """Step 4-B: HuggingFace 모델 로드"""
-        console.print("  [4/4] HuggingFace 모델 로드 중...")
+        console_out = get_console_output()
+        console_out.detail("HuggingFace 모델 로드")
 
         # 4.1: 모델 클래스 결정
         transformers_class = strategy.get("transformers_class", "AutoModelForCausalLM")
@@ -235,9 +233,6 @@ class ModelLoader(BaseModelLoader):
                 load_in_4bit=self.use_4bit,
                 load_in_8bit=self.use_8bit,
                 bnb_4bit_compute_dtype=self.get_compute_dtype(),
-            )
-            console.print(
-                f"      → 양자화 적용: 4bit={self.use_4bit}, 8bit={self.use_8bit}"
             )
 
         # 4.3: 모델 로드
@@ -416,4 +411,3 @@ class ModelLoader(BaseModelLoader):
             # 필수 파일이 아니면 경고만
             if filename in ["config.json", "model.safetensors"]:
                 raise RuntimeError(f"Required file {filename} not found: {e}") from e
-            console.print(f"      → {filename} 스킵 (옵션)")

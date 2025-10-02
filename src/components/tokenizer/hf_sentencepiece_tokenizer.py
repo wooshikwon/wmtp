@@ -19,6 +19,7 @@ from typing import Any
 from datasets import Dataset
 from src.components.base import BaseComponent
 from src.components.registry import tokenizer_registry
+from src.utils import get_console_output
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +214,8 @@ class HfSentencePieceTokenizer(BaseComponent):
         Returns:
             토크나이징된 Dataset
         """
+        console_out = get_console_output()
+        console_out.detail(f"{len(dataset)} samples, max_length={max_length}")
 
         def tokenize_function(example: dict[str, Any]) -> dict[str, Any]:
             """개별 샘플 토크나이징 함수"""
@@ -250,7 +253,7 @@ class HfSentencePieceTokenizer(BaseComponent):
         tokenized_dataset = dataset.map(
             tokenize_function,
             remove_columns=remove_columns,
-            desc="HF호환 토크나이저로 데이터셋 토크나이징",
+            desc=None,
             load_from_cache_file=load_from_cache_file,
             num_proc=num_proc,
             **{
@@ -258,14 +261,6 @@ class HfSentencePieceTokenizer(BaseComponent):
                 for k, v in kwargs.items()
                 if k not in ["load_from_cache_file", "num_proc"]
             },
-        )
-
-        logger.info(
-            f"데이터셋 토크나이징 완료:\n"
-            f"  - 원본 샘플 수: {len(dataset)}\n"
-            f"  - 토크나이징된 샘플 수: {len(tokenized_dataset)}\n"
-            f"  - 최대 길이: {max_length}\n"
-            f"  - 컬럼: {tokenized_dataset.column_names}"
         )
 
         return tokenized_dataset

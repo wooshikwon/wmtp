@@ -27,6 +27,8 @@ dependencies = [
     "safetensors>=0.4.0",
     "botocore>=1.40.35",
     "fairscale>=0.4.13",
+    "psutil>=7.0.0",
+    "python-dotenv>=1.0.0",
 ]
 
 [project.optional-dependencies]
